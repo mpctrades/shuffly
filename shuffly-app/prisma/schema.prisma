@@ -1,0 +1,156 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// Note that some adapters may set a maximum length for the String type by default, please ensure your strings are long
+// enough when changing adapters.
+// See https://www.prisma.io/docs/orm/reference/prisma-schema-reference#string for more information
+datasource db {
+  provider = "sqlite"
+  url      = "file:dev.sqlite"
+}
+
+model Session {
+  id            String    @id
+  shop          String
+  state         String
+  isOnline      Boolean   @default(false)
+  scope         String?
+  expires       DateTime?
+  accessToken   String
+  userId        BigInt?
+  firstName     String?
+  lastName      String?
+  email         String?
+  accountOwner  Boolean   @default(false)
+  locale        String?
+  collaborator  Boolean?  @default(false)
+  emailVerified Boolean?  @default(false)
+  refreshToken        String?
+  refreshTokenExpires DateTime?
+}
+
+// ============ Shuffly domain models ============
+
+// Per-shop settings (Settings screen + plan + onboarding state)
+model ShopSettings {
+  id                  String    @id @default(cuid())
+  shop                String    @unique
+  timezone            String    @default("UTC")
+  defaultRunTime      String    @default("06:00") // "HH:MM", local to `timezone`
+  language            String    @default("en") // "en" | "fr"
+  neverMoveTags       String    @default("gift-card,preorder,bundle") // comma-separated
+  emailOnFailure      Boolean   @default(true)
+  emailMonthlySummary Boolean   @default(true)
+  emailMorningRun     Boolean   @default(false)
+  onboardedAt         DateTime?
+  plan                String    @default("FREE") // FREE | STARTER | PRO | AGENCY
+  planUpdatedAt       DateTime?
+  activeSubscriptionId String? // gid://shopify/AppSubscription/... — set once billing.check() confirms it
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+}
+
+// One row per Shopify collection that's been added to Shuffly
+model CollectionConfig {
+  id             String    @id @default(cuid())
+  shop           String
+  collectionGid  String // gid://shopify/Collection/...
+  title          String // cached label, refreshed on load
+  productCount   Int       @default(0)
+  status         String    @default("RUNNING") // RUNNING | PAUSED
+  previousSortOrder String? // what Collection.sortOrder was before we switched it to MANUAL, if we did
+  pins           Int       @default(0) // "pin the first N" — these never move
+  pushSoldOutToEnd Boolean @default(true)
+  boostNewArrivals Boolean @default(true)
+  giveEveryoneATurn Boolean @default(true) // fairness: least-recently-featured first
+  newArrivalDays Int       @default(14) // a product counts as "new" if created within N days
+  scheduleType   String    @default("DAILY") // DAILY | TWICE_DAILY | WEEKLY | MANUAL
+  scheduleTime   String    @default("06:00") // "HH:MM" local time
+  scheduleWeekday Int?     // 0=Sunday..6=Saturday, used when scheduleType=WEEKLY
+  lastRunAt      DateTime?
+  lastSoldOutCount Int?    // sold-out products pushed to the end on the most recent run — real, not estimated
+  lastKnownOrder String?  // JSON array of product GIDs — exactly what we last wrote to Shopify, so the next
+                          // run can tell whether a merchant has since dragged things around by hand
+  nextRunAt      DateTime?
+  turnCounts     String    @default("{}") // JSON map: productId (numeric) -> times featured, for fairness
+  priorityBoostIds String  @default("[]") // JSON array of product GIDs to lead the very next run, then cleared —
+                                          // set by Insights' "Put these first tomorrow"
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  runs ShuffleRun[]
+  exposures ProductExposure[]
+  snapshots PositionSnapshot[]
+
+  @@unique([shop, collectionGid])
+  @@index([shop])
+  @@index([status, nextRunAt])
+}
+
+// A single shuffle/reorder event — powers the Workspace "History" tab, the
+// Activity screen, and Undo.
+model ShuffleRun {
+  id            String    @id @default(cuid())
+  shop          String
+  collectionId  String
+  collection    CollectionConfig @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+  trigger       String // SCHEDULED | MANUAL | SOLD_OUT_REACTION | RESTOCK_REACTION | EXTERNAL_REORDER_DETECTED | PAUSED | RESUMED
+  status        String // OK | FAILED
+  movedCount    Int       @default(0)
+  pinnedCount   Int       @default(0)
+  soldOutCount  Int       @default(0)
+  durationMs    Int       @default(0)
+  message       String? // human-readable summary line, or error detail
+  previousOrder String? // JSON array of product GIDs, in order, before this run — used to Undo
+  batchId       String? // shared by every collection shuffled in the same sweep (a cron tick, or one "Shuffle all now"), so the Activity feed can show them as a single entry
+  createdAt     DateTime  @default(now())
+
+  @@index([shop, createdAt])
+  @@index([shop, batchId])
+  @@index([collectionId, createdAt])
+}
+
+// One row per product actually observed in a collection's live order —
+// created the first time a product is fetched for a run (regardless of
+// position), then updated only while it's within the top PAGE1_SIZE
+// positions. Powers Insights' "seen on page 1", "first time in top 20", and
+// "still never seen" — all computed from Shuffly's own history, no
+// storefront analytics, no extra scopes.
+model ProductExposure {
+  id               String    @id @default(cuid())
+  shop             String
+  collectionId     String
+  collection       CollectionConfig @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+  productGid       String
+  productTitle     String
+  firstSeenPage1At DateTime? // null = never once held a page-1 position
+  lastSeenPage1At  DateTime? // most recent time it held a page-1 position
+  firstSeenTop20At DateTime? // null = never once held a top-20 position
+  updatedAt        DateTime  @updatedAt
+
+  @@unique([shop, collectionId, productGid])
+  @@index([shop, collectionId])
+  @@index([shop, lastSeenPage1At])
+}
+
+// One row per (collection, local calendar day) a run actually happened —
+// upserted, so multiple runs on the same day update today's row rather than
+// double-counting. Powers the "sold-out sitting near the top" trend and its
+// day-of-install baseline.
+model PositionSnapshot {
+  id                String   @id @default(cuid())
+  shop              String
+  collectionId      String
+  collection        CollectionConfig @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+  dateKey           String   // "YYYY-MM-DD" in the shop's own timezone
+  soldOutTop20Count Int
+  capturedAt        DateTime @default(now())
+
+  @@unique([shop, collectionId, dateKey])
+  @@index([shop, dateKey])
+  @@index([shop, capturedAt])
+}

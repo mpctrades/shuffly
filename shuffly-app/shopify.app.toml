@@ -1,0 +1,41 @@
+# Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
+
+client_id = "c815faa338955ffd221fd9823d776fb4"
+application_url = "https://dev.shuffly.mpctrades.com"
+embedded = true
+name = "Shuffly"
+
+[access_scopes]
+# Only the scopes Shuffly actually uses: reading products/collections, and
+# reordering products inside manually-sorted collections.
+scopes = "read_products,write_products"
+
+[webhooks]
+api_version = "2026-10"
+
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/app/uninstalled"
+  topics = [ "app/uninstalled" ]
+
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/app/scopes_update"
+  topics = [ "app/scopes_update" ]
+
+  # Mandatory compliance webhooks — required even though Shuffly never
+  # touches customer data, per https://shopify.dev/docs/apps/build/privacy-law-compliance
+  # These three use `compliance_topics`, not `topics`, and share one URI.
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/compliance"
+  compliance_topics = [ "customers/data_request", "customers/redact", "shop/redact" ]
+
+  # Powers the "sold out within a minute" / "restocked" reactions on the
+  # Workspace and Activity screens.
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/products/update"
+  topics = [ "products/update" ]
+
+[auth]
+redirect_urls = [ "https://dev.shuffly.mpctrades.com/api/auth" ]
+
+[build]
+automatically_update_urls_on_dev = true

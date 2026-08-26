@@ -1,0 +1,25 @@
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    networks:
+      - internal
+    # Bound to localhost only - host nginx (shared with other apps on this
+    # server) reverse-proxies to this from 127.0.0.1:3004; the app is never
+    # directly reachable on the public IP. 3000/3001/3002/3003 are already
+    # taken by other apps on this box.
+    ports:
+      - "127.0.0.1:3004:3000"
+    # SQLite lives at prisma/dev.sqlite (relative to schema.prisma) - mount
+    # the whole prisma/ dir as a named volume so the db file survives
+    # container rebuilds/redeploys. Docker seeds the volume from the image
+    # contents (schema + migrations) on first run.
+    volumes:
+      - shuffly_data:/app/prisma
+
+networks:
+  internal:
+
+volumes:
+  shuffly_data:

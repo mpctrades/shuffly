@@ -1,0 +1,191 @@
+.index {
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  min-height: 100%;
+  width: 100%;
+  padding: 4rem 1.5rem 3rem;
+  background: #fafafa;
+  font-family:
+    "Inter",
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    Roboto,
+    Helvetica,
+    Arial,
+    sans-serif;
+  color: #131110;
+  box-sizing: border-box;
+}
+
+.content {
+  display: grid;
+  justify-items: center;
+  gap: 2.5rem;
+  max-width: 46rem;
+  width: 100%;
+  text-align: center;
+}
+
+.logo {
+  width: 64px;
+  height: 64px;
+  border-radius: 15px; /* tight-inset variant's plate corner radius, 23.8% of side */
+  margin-bottom: -1rem; /* content already has 2.5rem gap; tighten just this gap */
+}
+
+.heading {
+  margin: 0;
+  padding: 0;
+  font-size: 2.5rem;
+  line-height: 1.15;
+  letter-spacing: -0.02em;
+  font-weight: 700;
+}
+
+.text {
+  margin: 0;
+  padding: 0;
+  max-width: 38rem;
+  font-size: 1.1rem;
+  line-height: 1.6;
+  color: #5c5c5c;
+}
+
+/* The login card */
+.form {
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  width: 100%;
+  max-width: 30rem;
+  padding: 1.5rem;
+  background: #ffffff;
+  border: 1px solid #e3e3e3;
+  border-radius: 12px;
+  box-shadow: 0 1px 2px rgba(23, 24, 24, 0.06);
+}
+
+.label {
+  display: grid;
+  gap: 0.4rem;
+  flex: 1 1 14rem;
+  text-align: left;
+  font-size: 0.9rem;
+  font-weight: 500;
+}
+
+.label span:first-child {
+  color: #131110;
+}
+
+.label span:last-child {
+  font-size: 0.8rem;
+  font-weight: 400;
+  color: #8a8a8a;
+}
+
+.input {
+  padding: 0.6rem 0.75rem;
+  font-size: 0.95rem;
+  font-family: inherit;
+  color: #131110;
+  border: 1px solid #cdcdcd;
+  border-radius: 8px;
+  outline: none;
+  transition: border-color 120ms ease;
+}
+
+.input:focus {
+  border-color: #ff4b1f;
+  box-shadow: 0 0 0 3px rgba(255, 75, 31, 0.15);
+}
+
+.button {
+  flex: 0 0 auto;
+  padding: 0.65rem 1.25rem;
+  font-size: 0.95rem;
+  font-weight: 600;
+  font-family: inherit;
+  color: #ffffff;
+  background: #ff4b1f;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background-color 120ms ease;
+}
+
+.button:hover {
+  background: #e13f16;
+}
+
+.button:active {
+  background: #c93611;
+}
+
+/* Feature cards */
+.list {
+  list-style: none;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1.25rem;
+  width: 100%;
+  max-width: 56rem;
+  padding: 0;
+  margin: 1rem 0 0;
+}
+
+.list > li {
+  padding: 1.25rem;
+  text-align: left;
+  font-size: 0.95rem;
+  line-height: 1.55;
+  color: #5c5c5c;
+  background: #ffffff;
+  border: 1px solid #e3e3e3;
+  border-radius: 12px;
+  border-top: 3px solid #ff4b1f;
+}
+
+.list > li > strong {
+  display: block;
+  margin-bottom: 0.35rem;
+  font-size: 1rem;
+  color: #131110;
+}
+
+.footer {
+  margin-top: 0.5rem;
+}
+
+.footer a {
+  font-size: 0.9rem;
+  color: #8a8a8a;
+  text-decoration: underline;
+}
+
+.footer a:hover {
+  color: #131110;
+}
+
+@media only screen and (max-width: 50rem) {
+  .list {
+    grid-template-columns: 1fr;
+  }
+
+  .heading {
+    font-size: 2rem;
+  }
+
+  .form {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .button {
+    width: 100%;
+  }
+}
