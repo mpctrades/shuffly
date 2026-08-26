@@ -1,14 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
-import {
-  data,
-  useLoaderData,
-  useNavigation,
-  useRevalidator,
-  useFetcher,
-  useSearchParams,
-  Link,
-} from "react-router";
+import { data, useLoaderData, useFetcher, useFetchers, useRevalidator, Link } from "react-router";
 import { useAppBridge } from "@shopify/app-bridge-react";
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
@@ -25,67 +17,35 @@ import { previewShuffleAll } from "../lib/shuffle-preview.server";
 import { computeNextRun, formatActivityTimestamp, type ScheduleType } from "../lib/schedule.server";
 import { planOf } from "../lib/plans.server";
 import { closeModal } from "../lib/polaris-modal";
-import {
-  CollectionRow,
-  type CollectionRowData,
-} from "../components/CollectionRow";
+import { CollectionRow, type CollectionRowData } from "../components/CollectionRow";
 import {
   CollectionsFilterBar,
   type CollectionStatusFilter,
   type CollectionSortKey,
 } from "../components/CollectionsFilterBar";
 import { ShuffleAllConfirmModal } from "../components/ShuffleAllConfirmModal";
-import {
-  AddCollectionsModal,
-  type AddCollectionsPickerData,
-} from "../components/AddCollectionsModal";
-import {
-  SwitchToManualModal,
-  type SwitchToManualTarget,
-} from "../components/SwitchToManualModal";
+import { AddCollectionsModal, type AddCollectionsPickerData } from "../components/AddCollectionsModal";
+import { SwitchToManualModal, type SwitchToManualTarget } from "../components/SwitchToManualModal";
 import { BulkRemoveConfirmModal } from "../components/BulkRemoveConfirmModal";
 
-const PAGE_SIZE = 25;
-const WEEKDAYS = [
-  "Sunday",
-  "Monday",
-  "Tuesday",
-  "Wednesday",
-  "Thursday",
-  "Friday",
-  "Saturday",
-];
-const NUMBER_WORDS = [
-  "zero",
-  "one",
-  "two",
-  "three",
-  "four",
-  "five",
-  "six",
-  "seven",
-  "eight",
-  "nine",
-  "ten",
-];
+const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+const SPARKLINE_LENGTH = 7;
 
-interface NeedsAttentionItem {
-  id: string;
-  gid: string;
-  title: string;
-  sortOrderLabel: string;
+interface AttentionLine {
+  key: string;
+  message: string;
+  actionLabel: string;
+  actionKind: "pause" | "switch";
+  id?: string; // pause target — CollectionConfig id
+  switchTarget?: SwitchToManualTarget; // switch target
 }
 
-interface UntrackedAttentionItem {
+interface UntrackedCollectionItem {
   gid: string;
   title: string;
+  productsCount: number;
+  sortOrder: string;
   sortOrderLabel: string;
-}
-
-interface AllSoldOutItem {
-  id: string;
-  title: string;
-  status: "RUNNING" | "PAUSED";
 }
 
 // ============================== loader ==============================
@@ -93,21 +53,16 @@ interface AllSoldOutItem {
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { admin, session } = await authenticate.admin(request);
   const shop = session.shop;
-  const url = new URL(request.url);
-  const page = Math.max(1, parseInt(url.searchParams.get("page") ?? "1", 10) || 1);
-  const q = (url.searchParams.get("q") ?? "").trim();
-  const status = (url.searchParams.get("status") ?? "all") as CollectionStatusFilter;
-  const sort = (url.searchParams.get("sort") ?? "name") as CollectionSortKey;
+  const now = new Date();
 
   const settings = await getOrCreateShopSettings(admin, shop);
-  const now = new Date();
 
   const [tracked, allShopCollections] = await Promise.all([
     db.collectionConfig.findMany({ where: { shop }, orderBy: { createdAt: "asc" } }),
-    // Everything Shuffly needs live (sort order + product count) for every
-    // tracked collection, PLUS enough to name any untracked collection
-    // that can't be shuffled yet — one full-catalogue fetch instead of the
-    // old split of "hydrate this page" + "sort orders for other pages".
+    // One full-catalogue fetch (batched, paginated internally, not one call
+    // per collection) covers store-wide totals, every tracked collection's
+    // live sort order/product count, AND every untracked collection's name/
+    // sort order for the "Not shuffled yet" card below.
     listAllCollections(admin).catch((err) => {
       console.error("[app.collections] listAllCollections failed:", err);
       return null;
@@ -116,15 +71,63 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   const hydrationFailed = allShopCollections == null;
   const liveByGid = new Map<string, ShopifyCollectionSummary>((allShopCollections ?? []).map((c) => [c.id, c]));
+  const trackedIds = tracked.map((t) => t.id);
 
-  const latestRuns = tracked.length
-    ? await db.shuffleRun.findMany({
-        where: { shop, collectionId: { in: tracked.map((t) => t.id) } },
-        orderBy: { createdAt: "desc" },
-        distinct: ["collectionId"],
-      })
-    : [];
+  const [latestRuns, recentRuns, lastScheduledRun] = await Promise.all([
+    trackedIds.length
+      ? db.shuffleRun.findMany({
+          where: { shop, collectionId: { in: trackedIds } },
+          orderBy: { createdAt: "desc" },
+          distinct: ["collectionId"],
+        })
+      : Promise.resolve([]),
+    // Over-fetch a generous recent window (not one query per collection)
+    // and slice the last 7 per collection in memory below — SQLite/Prisma
+    // has no single-query "top N per group".
+    trackedIds.length
+      ? db.shuffleRun.findMany({
+          where: { shop, collectionId: { in: trackedIds } },
+          orderBy: { createdAt: "desc" },
+          take: Math.max(50, trackedIds.length * 20),
+        })
+      : Promise.resolve([]),
+    trackedIds.length
+      ? db.shuffleRun.findFirst({
+          where: { shop, collectionId: { in: trackedIds }, trigger: "SCHEDULED" },
+          orderBy: { createdAt: "desc" },
+        })
+      : Promise.resolve(null),
+  ]);
   const latestRunByCollectionId = new Map(latestRuns.map((r) => [r.collectionId, r]));
+
+  const recentRunsByCollectionId = new Map<string, typeof recentRuns>();
+  for (const run of recentRuns) {
+    const list = recentRunsByCollectionId.get(run.collectionId) ?? [];
+    if (list.length < SPARKLINE_LENGTH) list.push(run);
+    recentRunsByCollectionId.set(run.collectionId, list);
+  }
+
+  // "Last night": every run sharing the most recent SCHEDULED sweep's
+  // batchId — one shared id per shop-wide cron tick (see cron.server.ts) —
+  // summed into one figure, with a critical override if any of them failed.
+  let lastBatch: {
+    totalMoved: number;
+    anyFailed: boolean;
+    failedTitles: string[];
+    at: Date;
+  } | null = null;
+  if (lastScheduledRun?.batchId) {
+    const batchRuns = await db.shuffleRun.findMany({
+      where: { shop, batchId: lastScheduledRun.batchId },
+    });
+    const titleById = new Map(tracked.map((t) => [t.id, t.title]));
+    lastBatch = {
+      totalMoved: batchRuns.reduce((sum, r) => sum + r.movedCount, 0),
+      anyFailed: batchRuns.some((r) => r.status === "FAILED"),
+      failedTitles: batchRuns.filter((r) => r.status === "FAILED").map((r) => titleById.get(r.collectionId) ?? "A collection"),
+      at: lastScheduledRun.createdAt,
+    };
+  }
 
   const fullRows = tracked.map((c) => {
     const live = liveByGid.get(c.collectionGid);
@@ -138,51 +141,72 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     return { config: c, live, needsAttention, allSoldOut };
   });
 
-  const searched = q
-    ? fullRows.filter((r) => r.config.title.toLowerCase().includes(q.toLowerCase()))
-    : fullRows;
+  const trackedGidSet = new Set(tracked.map((t) => t.collectionGid));
 
-  const filtered = searched.filter((r) => {
-    if (status === "running") return r.config.status === "RUNNING";
-    if (status === "paused") return r.config.status === "PAUSED";
-    if (status === "attention") return r.needsAttention;
-    return true;
-  });
+  // ---- status row ----
+  const runningCount = tracked.filter((t) => t.status === "RUNNING").length;
+  const pausedCount = tracked.length - runningCount;
+  const soonestNextRunMs = tracked
+    .filter((t) => t.status === "RUNNING" && t.nextRunAt)
+    .map((t) => t.nextRunAt!.getTime())
+    .sort((a, b) => a - b)[0];
+  const totalProductsInRotation = fullRows.reduce((sum, r) => sum + (r.live?.productsCount ?? r.config.productCount), 0);
+  const productsActuallyMoving = fullRows.reduce((sum, r) => sum + (latestRunByCollectionId.get(r.config.id)?.movedCount ?? 0), 0);
 
-  const sorted = [...filtered].sort((a, b) => {
-    switch (sort) {
-      case "products":
-        return (b.live?.productsCount ?? b.config.productCount) - (a.live?.productsCount ?? a.config.productCount);
-      case "next-run": {
-        const av = a.config.nextRunAt?.getTime() ?? Infinity;
-        const bv = b.config.nextRunAt?.getTime() ?? Infinity;
-        return av - bv;
-      }
-      case "last-run": {
-        const av = a.config.lastRunAt?.getTime() ?? 0;
-        const bv = b.config.lastRunAt?.getTime() ?? 0;
-        return bv - av;
-      }
-      default:
-        return a.config.title.localeCompare(b.config.title);
-    }
-  });
+  // ---- inline attention strip (max 3 shown, "and N more" — capped client-side) ----
+  const attentionLines: AttentionLine[] = [
+    ...fullRows
+      .filter((r) => r.allSoldOut && r.config.status === "RUNNING")
+      .map((r) => ({
+        key: `soldout-${r.config.id}`,
+        message: `${r.config.title} has nothing in stock to shuffle.`,
+        actionLabel: "Pause it",
+        actionKind: "pause" as const,
+        id: r.config.id,
+      })),
+    ...fullRows
+      .filter((r) => r.needsAttention && r.live)
+      .map((r) => ({
+        key: `sort-${r.config.id}`,
+        message: `${r.config.title} can't be shuffled — it uses Shopify's ${sortOrderLabel(r.live!.sortOrder)} sort.`,
+        actionLabel: "Switch to Manual",
+        actionKind: "switch" as const,
+        switchTarget: {
+          id: r.config.id,
+          gid: r.config.collectionGid,
+          title: r.config.title,
+          sortOrderLabel: sortOrderLabel(r.live!.sortOrder),
+        },
+      })),
+  ];
 
-  const totalFiltered = sorted.length;
-  const pageRows = sorted.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
-
-  const pageGids = pageRows.map((r) => r.config.collectionGid);
+  // ---- rows (all tracked — filtering/sorting/paging happens client-side) ----
+  const allGids = tracked.map((t) => t.collectionGid);
   const previewByGid = new Map<string, CollectionRowData["preview"]>();
-  if (!hydrationFailed && pageGids.length) {
+  if (!hydrationFailed && allGids.length) {
     try {
-      const hydrated = await hydrateTrackedCollections(admin, pageGids);
+      const hydrated = await hydrateTrackedCollections(admin, allGids);
       for (const [gid, h] of hydrated) previewByGid.set(gid, h.preview);
     } catch (err) {
       console.error("[app.collections] thumbnail hydration failed:", err);
     }
   }
 
-  const rows: CollectionRowData[] = pageRows.map((r) => {
+  // A settings badge only carries information if it distinguishes a
+  // collection from the others — "Sold-out last" on every single tracked
+  // collection says nothing about any one of them. Uniform-across-all-
+  // tracked settings are suppressed everywhere instead of shown on every
+  // row (with 0 or 1 tracked collections this is vacuously true for all
+  // four, which is the right call: nothing to distinguish means nothing
+  // to badge).
+  const uniform = <T,>(get: (c: (typeof tracked)[number]) => T): boolean =>
+    tracked.every((c) => get(c) === get(tracked[0]));
+  const pushSoldOutVaries = tracked.length > 0 && !uniform((c) => c.pushSoldOutToEnd);
+  const boostNewArrivalsVaries = tracked.length > 0 && !uniform((c) => c.boostNewArrivals);
+  const pinsVaries = tracked.length > 0 && !uniform((c) => c.pins);
+  const giveEveryoneATurnVaries = tracked.length > 0 && !uniform((c) => c.giveEveryoneATurn);
+
+  const rows: CollectionRowData[] = fullRows.map((r) => {
     const c = r.config;
     const live = r.live;
     const liveCount = live?.productsCount ?? c.productCount;
@@ -191,18 +215,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     if (c.lastSoldOutCount != null && c.lastSoldOutCount > 0) factsParts.push(`${c.lastSoldOutCount} sold out`);
 
     const settingsBadges: string[] = [];
-    if (c.pushSoldOutToEnd) settingsBadges.push("Sold-out last");
-    if (c.boostNewArrivals) settingsBadges.push("New arrivals first");
-    if (c.pins > 0) settingsBadges.push(`${c.pins} pin${c.pins === 1 ? "" : "s"}`);
-    if (c.giveEveryoneATurn) settingsBadges.push("Fair rotation");
+    if (c.pushSoldOutToEnd && pushSoldOutVaries) settingsBadges.push("Sold-out last");
+    if (c.boostNewArrivals && boostNewArrivalsVaries) settingsBadges.push("New arrivals first");
+    if (c.pins > 0 && pinsVaries) settingsBadges.push(`${c.pins} pin${c.pins === 1 ? "" : "s"}`);
+    if (c.giveEveryoneATurn && giveEveryoneATurnVaries) settingsBadges.push("Fair rotation");
 
     const scheduleLine = c.status === "PAUSED" ? "Paused" : scheduleLabel(c.scheduleType, c.scheduleTime, c.scheduleWeekday);
     const scheduleSubLine =
-      c.status === "PAUSED"
-        ? "Resume to schedule"
-        : c.nextRunAt
-          ? `Next run in ${formatTimeUntil(c.nextRunAt, now)}`
-          : "Shuffles only when you press Shuffle";
+      c.status === "PAUSED" ? "Resume to schedule" : c.nextRunAt ? "" : "Shuffles only when you press Shuffle";
 
     const latestRun = latestRunByCollectionId.get(c.id);
     const lastRun = latestRun
@@ -210,8 +230,17 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           moved: latestRun.movedCount,
           whenLabel: lastRunLabel(latestRun.createdAt, settings.timezone, now),
           failed: latestRun.status === "FAILED",
+          at: latestRun.createdAt,
         }
       : null;
+
+    const recent = recentRunsByCollectionId.get(c.id) ?? []; // newest-first, up to 7
+    const chronological = [...recent].reverse(); // oldest-first for left-to-right bars
+    const padCount = Math.max(0, SPARKLINE_LENGTH - chronological.length);
+    const sparkline: CollectionRowData["sparkline"] = [
+      ...Array.from({ length: padCount }, () => null),
+      ...chronological.map((run) => ({ moved: run.movedCount })),
+    ];
 
     return {
       id: c.id,
@@ -219,73 +248,53 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       title: live?.title ?? c.title,
       status: c.status as "RUNNING" | "PAUSED",
       needsAttention: r.needsAttention,
+      allSoldOut: r.allSoldOut,
       factsLine: factsParts.join(" · "),
       settingsBadges,
       preview: previewByGid.get(c.collectionGid) ?? [],
       scheduleLine,
       scheduleSubLine,
+      nextRunAt: c.status === "RUNNING" ? c.nextRunAt : null,
       lastRun,
+      sparkline,
     };
   });
 
-  const trackedGidSet = new Set(tracked.map((t) => t.collectionGid));
-
-  const needsAttention: NeedsAttentionItem[] = fullRows
-    .filter((r) => r.needsAttention && r.live)
-    .map((r) => ({
-      id: r.config.id,
-      gid: r.config.collectionGid,
-      title: r.live!.title,
-      sortOrderLabel: sortOrderLabel(r.live!.sortOrder),
-    }));
-
-  const untrackedNeedsAttention: UntrackedAttentionItem[] = hydrationFailed
+  // ---- "Not shuffled yet" card: every untracked collection ----
+  const untrackedCollections: UntrackedCollectionItem[] = hydrationFailed
     ? []
     : (allShopCollections ?? [])
-        .filter((c) => !trackedGidSet.has(c.id) && c.sortOrder !== "MANUAL")
-        .map((c) => ({ gid: c.id, title: c.title, sortOrderLabel: sortOrderLabel(c.sortOrder) }));
+        .filter((c) => !trackedGidSet.has(c.id))
+        .map((c) => ({
+          gid: c.id,
+          title: c.title,
+          productsCount: c.productsCount,
+          sortOrder: c.sortOrder,
+          sortOrderLabel: sortOrderLabel(c.sortOrder),
+        }));
 
-  const allSoldOutCollections: AllSoldOutItem[] = fullRows
-    .filter((r) => r.allSoldOut)
-    .map((r) => ({ id: r.config.id, title: r.config.title, status: r.config.status as "RUNNING" | "PAUSED" }));
-
-  const runningCount = tracked.filter((t) => t.status === "RUNNING").length;
-  const soonestNextRunMs = tracked
-    .filter((t) => t.status === "RUNNING" && t.nextRunAt)
-    .map((t) => t.nextRunAt!.getTime())
-    .sort((a, b) => a - b)[0];
-
-  const totalProductsInRotation = fullRows.reduce(
-    (sum, r) => sum + (r.live?.productsCount ?? r.config.productCount),
-    0,
-  );
+  const plan = planOf(settings.plan);
 
   return {
     rows,
-    page,
-    q,
-    status,
-    sort,
     trackedTotal: tracked.length,
-    totalFiltered,
     totalStoreCollections: hydrationFailed ? null : (allShopCollections?.length ?? null),
-    hasNextPage: page * PAGE_SIZE < totalFiltered,
-    hasPrevPage: page > 1,
     hydrationFailed,
-    needsAttention,
-    untrackedNeedsAttention,
-    allSoldOutCollections,
+    attentionLines,
+    untrackedCollections,
     runningCount,
-    nextRunInLabel: soonestNextRunMs ? formatTimeUntil(new Date(soonestNextRunMs), now) : null,
+    pausedCount,
+    nextRunAtMs: soonestNextRunMs ?? null,
+    nextRunLabel: soonestNextRunMs ? dayRelativeClockLabel(new Date(soonestNextRunMs), settings.timezone, now) : null,
     totalProductsInRotation,
+    productsActuallyMoving,
+    lastBatch,
+    planName: plan.name,
+    planLimit: plan.maxCollections === Infinity ? null : plan.maxCollections,
   };
 };
 
-function scheduleLabel(
-  type: string,
-  time: string,
-  weekday: number | null,
-): string {
+function scheduleLabel(type: string, time: string, weekday: number | null): string {
   switch (type) {
     case "DAILY":
       return `Daily at ${time}`;
@@ -298,16 +307,35 @@ function scheduleLabel(
   }
 }
 
-function formatTimeUntil(target: Date, now: Date): string {
-  const ms = target.getTime() - now.getTime();
-  if (ms <= 0) return "any moment";
-  const totalMinutes = Math.round(ms / 60_000);
-  const days = Math.floor(totalMinutes / 1440);
-  const hours = Math.floor((totalMinutes % 1440) / 60);
-  const minutes = totalMinutes % 60;
-  if (days > 0) return `${days}d ${hours}h`;
-  if (hours > 0) return `${hours}h ${minutes}m`;
-  return `${minutes}m`;
+/** "today at 06:00" / "tomorrow at 06:00" / "26/08 at 06:00" — same
+ * day-diff-via-UTC-midnight technique as schedule.server.ts's
+ * activityDayAndTime, just for a FUTURE instant instead of a past one, so
+ * it stays local to this route rather than growing that module's surface
+ * for a single caller. */
+function dayRelativeClockLabel(target: Date, timezone: string, now: Date): string {
+  const dtf = new Intl.DateTimeFormat("en-US", {
+    timeZone: timezone,
+    hourCycle: "h23",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+  const partsOf = (d: Date) =>
+    dtf.formatToParts(d).reduce<Record<string, string>>((acc, p) => {
+      acc[p.type] = p.value;
+      return acc;
+    }, {});
+  const t = partsOf(target);
+  const n = partsOf(now);
+  const time = `${t.hour}:${t.minute}`;
+  const dayDiff = Math.round(
+    (Date.UTC(Number(t.year), Number(t.month) - 1, Number(t.day)) - Date.UTC(Number(n.year), Number(n.month) - 1, Number(n.day))) /
+      86_400_000,
+  );
+  const dayLabel = dayDiff === 0 ? "today" : dayDiff === 1 ? "tomorrow" : `${t.month}/${t.day}`;
+  return `${dayLabel} at ${time}`;
 }
 
 /** formatActivityTimestamp's "Today 06:01" / "Yesterday 14:22", lower-cased
@@ -318,15 +346,9 @@ function lastRunLabel(createdAt: Date, timezone: string, now: Date): string {
     .replace(/^Yesterday/, "yesterday");
 }
 
-function spellSmallNumber(n: number): string {
-  if (n >= 0 && n <= 10) {
-    const word = NUMBER_WORDS[n];
-    return word.charAt(0).toUpperCase() + word.slice(1);
-  }
-  return String(n);
-}
-
 // ============================== action ==============================
+
+const DEFAULT_ADD_PRESET = { pins: 0, pushSoldOutToEnd: true, boostNewArrivals: false, giveEveryoneATurn: false };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { admin, session } = await authenticate.admin(request);
@@ -340,23 +362,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const existingCount = await db.collectionConfig.count({ where: { shop } });
     const ids = formData.getAll("collectionGid").map(String);
     const startWith = String(formData.get("startWith") ?? "sold-out-only");
-    const room =
-      plan.maxCollections === Infinity
-        ? ids.length
-        : Math.max(0, plan.maxCollections - existingCount);
+    const room = plan.maxCollections === Infinity ? ids.length : Math.max(0, plan.maxCollections - existingCount);
     const toAdd = ids.slice(0, room);
 
-    let preset: {
-      pins: number;
-      pushSoldOutToEnd: boolean;
-      boostNewArrivals: boolean;
-      giveEveryoneATurn: boolean;
-    };
+    let preset: typeof DEFAULT_ADD_PRESET;
     if (startWith === "same") {
-      const first = await db.collectionConfig.findFirst({
-        where: { shop },
-        orderBy: { createdAt: "asc" },
-      });
+      const first = await db.collectionConfig.findFirst({ where: { shop }, orderBy: { createdAt: "asc" } });
       preset = first
         ? {
             pins: first.pins,
@@ -364,57 +375,84 @@ export const action = async ({ request }: ActionFunctionArgs) => {
             boostNewArrivals: first.boostNewArrivals,
             giveEveryoneATurn: first.giveEveryoneATurn,
           }
-        : {
-            pins: 0,
-            pushSoldOutToEnd: true,
-            boostNewArrivals: true,
-            giveEveryoneATurn: true,
-          };
+        : { pins: 0, pushSoldOutToEnd: true, boostNewArrivals: true, giveEveryoneATurn: true };
     } else if (startWith === "nothing") {
-      preset = {
-        pins: 0,
-        pushSoldOutToEnd: false,
-        boostNewArrivals: false,
-        giveEveryoneATurn: false,
-      };
+      preset = { pins: 0, pushSoldOutToEnd: false, boostNewArrivals: false, giveEveryoneATurn: false };
     } else {
-      preset = {
-        pins: 0,
-        pushSoldOutToEnd: true,
-        boostNewArrivals: false,
-        giveEveryoneATurn: false,
-      };
+      preset = DEFAULT_ADD_PRESET;
     }
 
     for (const gid of toAdd) {
-      const title = String(
-        formData.get(`collectionTitle:${gid}`) ?? "Collection",
-      );
-      const nextRunAt = computeNextRun(
-        new Date(),
-        settings.timezone,
-        "DAILY",
-        settings.defaultRunTime,
-        null,
-      );
+      const title = String(formData.get(`collectionTitle:${gid}`) ?? "Collection");
+      const nextRunAt = computeNextRun(new Date(), settings.timezone, "DAILY", settings.defaultRunTime, null);
       await db.collectionConfig.upsert({
         where: { shop_collectionGid: { shop, collectionGid: gid } },
         update: {},
-        create: {
-          shop,
-          collectionGid: gid,
-          title,
-          scheduleTime: settings.defaultRunTime,
-          nextRunAt,
-          ...preset,
-        },
+        create: { shop, collectionGid: gid, title, scheduleTime: settings.defaultRunTime, nextRunAt, ...preset },
       });
     }
-    return data({
-      ok: true,
-      added: toAdd.length,
-      skipped: ids.length - toAdd.length,
+    return data({ ok: true, added: toAdd.length, skipped: ids.length - toAdd.length });
+  }
+
+  if (actionType === "add-untracked") {
+    const plan = planOf(settings.plan);
+    const existingCount = await db.collectionConfig.count({ where: { shop } });
+    if (plan.maxCollections !== Infinity && existingCount >= plan.maxCollections) {
+      return data({ ok: false, error: "You've reached your plan's collection limit." }, { status: 400 });
+    }
+    const gid = String(formData.get("gid"));
+    const title = String(formData.get("title") ?? "Collection");
+    const nextRunAt = computeNextRun(new Date(), settings.timezone, "DAILY", settings.defaultRunTime, null);
+    await db.collectionConfig.upsert({
+      where: { shop_collectionGid: { shop, collectionGid: gid } },
+      update: {},
+      create: { shop, collectionGid: gid, title, scheduleTime: settings.defaultRunTime, nextRunAt, ...DEFAULT_ADD_PRESET },
     });
+    return data({ ok: true });
+  }
+
+  if (actionType === "switch-and-add") {
+    const plan = planOf(settings.plan);
+    const existingCount = await db.collectionConfig.count({ where: { shop } });
+    if (plan.maxCollections !== Infinity && existingCount >= plan.maxCollections) {
+      return data({ ok: false, error: "You've reached your plan's collection limit." }, { status: 400 });
+    }
+    const gid = String(formData.get("gid"));
+    const title = String(formData.get("title") ?? "Collection");
+    const switched = await setCollectionManualSort(admin, gid);
+    if (!switched.ok) return data({ ok: false, error: switched.error ?? "Couldn't switch that collection." }, { status: 400 });
+    const nextRunAt = computeNextRun(new Date(), settings.timezone, "DAILY", settings.defaultRunTime, null);
+    await db.collectionConfig.upsert({
+      where: { shop_collectionGid: { shop, collectionGid: gid } },
+      update: {},
+      create: { shop, collectionGid: gid, title, scheduleTime: settings.defaultRunTime, nextRunAt, ...DEFAULT_ADD_PRESET },
+    });
+    return data({ ok: true });
+  }
+
+  if (actionType === "add-all-untracked") {
+    const gids = formData.getAll("gid").map(String);
+    const titles = formData.getAll("title").map(String);
+    const sortOrders = formData.getAll("sortOrder").map(String);
+    const plan = planOf(settings.plan);
+    const existingCount = await db.collectionConfig.count({ where: { shop } });
+    const room = plan.maxCollections === Infinity ? gids.length : Math.max(0, plan.maxCollections - existingCount);
+    let added = 0;
+    for (let i = 0; i < gids.length && added < room; i++) {
+      const gid = gids[i];
+      if (sortOrders[i] !== "MANUAL") {
+        const switched = await setCollectionManualSort(admin, gid);
+        if (!switched.ok) continue;
+      }
+      const nextRunAt = computeNextRun(new Date(), settings.timezone, "DAILY", settings.defaultRunTime, null);
+      await db.collectionConfig.upsert({
+        where: { shop_collectionGid: { shop, collectionGid: gid } },
+        update: {},
+        create: { shop, collectionGid: gid, title: titles[i] ?? "Collection", scheduleTime: settings.defaultRunTime, nextRunAt, ...DEFAULT_ADD_PRESET },
+      });
+      added++;
+    }
+    return data({ ok: true, added, skipped: gids.length - added });
   }
 
   if (actionType === "switch-to-manual") {
@@ -422,11 +460,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const gid = String(formData.get("gid"));
     const keepOrder = formData.get("keepOrder") !== "false";
     const config = await db.collectionConfig.findFirst({ where: { id, shop } });
-    if (!config)
-      return data(
-        { ok: false, error: "That collection couldn't be found." },
-        { status: 404 },
-      );
+    if (!config) return data({ ok: false, error: "That collection couldn't be found." }, { status: 404 });
 
     const result = await setCollectionManualSort(admin, gid);
     if (!result.ok) return data(result);
@@ -437,23 +471,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     });
 
     if (!keepOrder) {
-      await runShuffleForCollection(
-        admin,
-        shop,
-        config,
-        settings.timezone,
-        settings.neverMoveTags,
-        "MANUAL",
-      );
-    }
-    return data({ ok: true });
-  }
-
-  if (actionType === "switch-untracked-to-manual") {
-    const gid = String(formData.get("gid"));
-    const result = await setCollectionManualSort(admin, gid);
-    if (!result.ok) {
-      return data({ ok: false, error: result.error ?? "Couldn't switch that collection." }, { status: 400 });
+      await runShuffleForCollection(admin, shop, config, settings.timezone, settings.neverMoveTags, "MANUAL");
     }
     return data({ ok: true });
   }
@@ -465,29 +483,17 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const nextStatus = actionType === "pause" ? "PAUSED" : "RUNNING";
     const nextRunAt =
       nextStatus === "RUNNING"
-        ? computeNextRun(
-            new Date(),
-            settings.timezone,
-            config.scheduleType as ScheduleType,
-            config.scheduleTime,
-            config.scheduleWeekday,
-          )
+        ? computeNextRun(new Date(), settings.timezone, config.scheduleType as ScheduleType, config.scheduleTime, config.scheduleWeekday)
         : null;
     await db.$transaction([
-      db.collectionConfig.update({
-        where: { id },
-        data: { status: nextStatus, nextRunAt },
-      }),
+      db.collectionConfig.update({ where: { id }, data: { status: nextStatus, nextRunAt } }),
       db.shuffleRun.create({
         data: {
           shop,
           collectionId: config.id,
           trigger: nextStatus === "PAUSED" ? "PAUSED" : "RESUMED",
           status: "OK",
-          message:
-            nextStatus === "PAUSED"
-              ? `${config.title} paused`
-              : `${config.title} resumed`,
+          message: nextStatus === "PAUSED" ? `${config.title} paused` : `${config.title} resumed`,
         },
       }),
     ]);
@@ -495,23 +501,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   }
 
   if (actionType === "pause-all") {
-    const running = await db.collectionConfig.findMany({
-      where: { shop, status: "RUNNING" },
-    });
+    const running = await db.collectionConfig.findMany({ where: { shop, status: "RUNNING" } });
     await db.$transaction([
-      db.collectionConfig.updateMany({
-        where: { shop, status: "RUNNING" },
-        data: { status: "PAUSED", nextRunAt: null },
-      }),
+      db.collectionConfig.updateMany({ where: { shop, status: "RUNNING" }, data: { status: "PAUSED", nextRunAt: null } }),
       ...running.map((c) =>
         db.shuffleRun.create({
-          data: {
-            shop,
-            collectionId: c.id,
-            trigger: "PAUSED",
-            status: "OK",
-            message: `${c.title} paused`,
-          },
+          data: { shop, collectionId: c.id, trigger: "PAUSED", status: "OK", message: `${c.title} paused` },
         }),
       ),
     ]);
@@ -572,47 +567,24 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const id = String(formData.get("id"));
     const config = await db.collectionConfig.findFirst({ where: { id, shop } });
     if (!config) return data({ ok: false }, { status: 404 });
-    const result = await runShuffleForCollection(
-      admin,
-      shop,
-      config,
-      settings.timezone,
-      settings.neverMoveTags,
-      "MANUAL",
-    );
+    const result = await runShuffleForCollection(admin, shop, config, settings.timezone, settings.neverMoveTags, "MANUAL");
     return data(result);
   }
 
   if (actionType === "shuffle-remaining") {
     const onPageIds = formData.getAll("onPageId").map(String);
-    const remaining = await db.collectionConfig.findMany({
-      where: { shop, status: "RUNNING", id: { notIn: onPageIds } },
-    });
+    const remaining = await db.collectionConfig.findMany({ where: { shop, status: "RUNNING", id: { notIn: onPageIds } } });
     let moved = 0;
     for (const config of remaining) {
-      const result = await runShuffleForCollection(
-        admin,
-        shop,
-        config,
-        settings.timezone,
-        settings.neverMoveTags,
-        "MANUAL",
-      );
+      const result = await runShuffleForCollection(admin, shop, config, settings.timezone, settings.neverMoveTags, "MANUAL");
       if (result.ok) moved += result.movedCount;
     }
     return data({ ok: true, collections: remaining.length, moved });
   }
 
   if (actionType === "preview-shuffle-all") {
-    const running = await db.collectionConfig.findMany({
-      where: { shop, status: "RUNNING" },
-    });
-    const preview = await previewShuffleAll(
-      admin,
-      shop,
-      running,
-      settings.neverMoveTags,
-    );
+    const running = await db.collectionConfig.findMany({ where: { shop, status: "RUNNING" } });
+    const preview = await previewShuffleAll(admin, shop, running, settings.neverMoveTags);
     return data(preview);
   }
 
@@ -621,32 +593,28 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
 // ============================== component ==============================
 
+const PAGE_SIZE = 25;
+
 export default function Collections() {
   const {
     rows,
-    page,
-    q,
-    status,
-    sort,
     trackedTotal,
     totalStoreCollections,
-    hasNextPage,
-    hasPrevPage,
     hydrationFailed,
-    needsAttention,
-    untrackedNeedsAttention,
-    allSoldOutCollections,
+    attentionLines,
+    untrackedCollections,
     runningCount,
-    nextRunInLabel,
+    nextRunAtMs,
+    nextRunLabel,
     totalProductsInRotation,
+    productsActuallyMoving,
+    lastBatch,
+    planName,
+    planLimit,
   } = useLoaderData<typeof loader>();
-  const navigation = useNavigation();
   const revalidator = useRevalidator();
-  const [searchParams, setSearchParams] = useSearchParams();
   const shopify = useAppBridge();
-  const isPaginating =
-    navigation.state === "loading" &&
-    navigation.location?.pathname === "/app/collections";
+  const allFetchers = useFetchers();
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- showOverlay/hideOverlay aren't on the typed public props
   const addModalRef = useRef<any>(null);
@@ -657,53 +625,81 @@ export default function Collections() {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- showOverlay/hideOverlay aren't on the typed public props
   const bulkRemoveModalRef = useRef<any>(null);
 
-  const picker = useFetcher<AddCollectionsPickerData>({
-    key: "collections-picker",
-  });
+  const picker = useFetcher<AddCollectionsPickerData>({ key: "collections-picker" });
   const previewFetcher = useFetcher({ key: "shuffle-all-preview" });
   const remainingFetcher = useFetcher({ key: "shuffle-remaining" });
-  const switchFetcher = useFetcher<{ ok: boolean; error?: string }>({
-    key: "switch-to-manual",
-  });
-  const untrackedSwitchFetcher = useFetcher<{ ok: boolean; error?: string }>({
-    key: "switch-untracked-to-manual",
-  });
-  const addFetcher = useFetcher<{
-    ok: boolean;
-    added?: number;
-    skipped?: number;
-  }>({ key: "add-collections" });
-  const bulkFetcher = useFetcher<{ ok: boolean; moved?: number; collections?: number }>({
-    key: "bulk-action",
-  });
+  const switchFetcher = useFetcher<{ ok: boolean; error?: string }>({ key: "switch-to-manual" });
+  const addFetcher = useFetcher<{ ok: boolean; added?: number; skipped?: number }>({ key: "add-collections" });
+  const bulkFetcher = useFetcher<{ ok: boolean; moved?: number; collections?: number }>({ key: "bulk-action" });
+
+  // ---- client-side search / filter / sort / page (spec: no server round-trip) ----
+  const [q, setQ] = useState("");
+  const [status, setStatus] = useState<CollectionStatusFilter>("all");
+  const [sort, setSort] = useState<CollectionSortKey>("next-run");
+  const [page, setPage] = useState(1);
+
+  const isRowAttention = (r: CollectionRowData) => r.needsAttention || (r.allSoldOut && r.status === "RUNNING");
+
+  const statusCounts = useMemo(
+    () => ({
+      all: rows.length,
+      running: rows.filter((r) => r.status === "RUNNING").length,
+      paused: rows.filter((r) => r.status === "PAUSED").length,
+      attention: rows.filter(isRowAttention).length,
+    }),
+    [rows],
+  );
+
+  const filteredSortedRows = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    const searched = needle ? rows.filter((r) => r.title.toLowerCase().includes(needle)) : rows;
+    const filtered = searched.filter((r) => {
+      if (status === "running") return r.status === "RUNNING";
+      if (status === "paused") return r.status === "PAUSED";
+      if (status === "attention") return isRowAttention(r);
+      return true;
+    });
+    const sorted = [...filtered].sort((a, b) => {
+      switch (sort) {
+        case "products": {
+          const av = Number(a.factsLine.match(/^(\d+)/)?.[1] ?? 0);
+          const bv = Number(b.factsLine.match(/^(\d+)/)?.[1] ?? 0);
+          return bv - av;
+        }
+        case "last-run": {
+          const av = a.lastRun ? new Date(a.lastRun.at).getTime() : 0;
+          const bv = b.lastRun ? new Date(b.lastRun.at).getTime() : 0;
+          return bv - av;
+        }
+        case "name":
+          return a.title.localeCompare(b.title);
+        default: // next-run
+          return (a.nextRunAt ? new Date(a.nextRunAt).getTime() : Infinity) - (b.nextRunAt ? new Date(b.nextRunAt).getTime() : Infinity);
+      }
+    });
+    return sorted;
+  }, [rows, q, status, sort]);
+
+  const totalPages = Math.max(1, Math.ceil(filteredSortedRows.length / PAGE_SIZE));
+  const clampedPage = Math.min(page, totalPages);
+  const pageRows = filteredSortedRows.slice((clampedPage - 1) * PAGE_SIZE, clampedPage * PAGE_SIZE);
+
+  useEffect(() => {
+    setPage(1);
+  }, [q, status, sort]);
 
   const [shuffleRunId, setShuffleRunId] = useState<number | null>(null);
   const [pendingRowIds, setPendingRowIds] = useState<Set<string>>(new Set());
-  const [switchTarget, setSwitchTarget] = useState<SwitchToManualTarget | null>(
-    null,
-  );
+  const [switchTarget, setSwitchTarget] = useState<SwitchToManualTarget | null>(null);
   const [awaitingAddModal, setAwaitingAddModal] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const shuffleWasActive = useRef(false);
 
-  // A filter/search/sort change (or a page change) makes the previous
-  // selection meaningless — rows on screen are a different set now.
   useEffect(() => {
     setSelected(new Set());
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- resync on any change to which rows are showing
-  }, [q, status, sort, page]);
-
-  function updateParam(key: string, value: string | null) {
-    const next = new URLSearchParams(searchParams);
-    next.delete("page");
-    if (value == null || value === "") next.delete(key);
-    else next.set(key, value);
-    setSearchParams(next);
-  }
+  }, [q, status, sort, clampedPage]);
 
   function openAddModal() {
-    // Reload every time (not just when empty) so the addable count is never
-    // stale — we decide whether to actually open the modal once it's in.
     setAwaitingAddModal(true);
     picker.load("/app/collections/picker");
   }
@@ -746,26 +742,18 @@ export default function Collections() {
   }, [addFetcher.state, addFetcher.data]);
 
   function openShuffleAllModal() {
-    previewFetcher.submit(
-      { _action: "preview-shuffle-all" },
-      { method: "post" },
-    );
+    previewFetcher.submit({ _action: "preview-shuffle-all" }, { method: "post" });
     shuffleAllModalRef.current?.showOverlay();
   }
 
   function confirmShuffleAll() {
     closeModal(shuffleAllModalRef.current);
-    const runningOnPage = rows.filter(
-      (r) => r.status === "RUNNING" && !r.needsAttention,
-    );
-    if (runningOnPage.length === 0 && rows.length === trackedTotal) return; // nothing to do at all
+    if (trackedTotal === 0) return; // nothing tracked at all — the button wouldn't be visible anyway
+    const runningOnPage = pageRows.filter((r) => r.status === "RUNNING" && !r.needsAttention);
     setPendingRowIds(new Set(runningOnPage.map((r) => r.id)));
     shuffleWasActive.current = true;
     setShuffleRunId((n) => (n ?? 0) + 1);
-    remainingFetcher.submit(
-      { _action: "shuffle-remaining", onPageId: rows.map((r) => r.id) },
-      { method: "post" },
-    );
+    remainingFetcher.submit(formDataOf({ _action: "shuffle-remaining", onPageId: pageRows.map((r) => r.id) }), { method: "post" });
   }
 
   function handleRowSettled(id: string) {
@@ -792,12 +780,7 @@ export default function Collections() {
   function confirmSwitch(keepOrder: boolean) {
     if (!switchTarget) return;
     switchFetcher.submit(
-      {
-        _action: "switch-to-manual",
-        id: switchTarget.id,
-        gid: switchTarget.gid,
-        keepOrder: String(keepOrder),
-      },
+      { _action: "switch-to-manual", id: switchTarget.id, gid: switchTarget.gid, keepOrder: String(keepOrder) },
       { method: "post" },
     );
   }
@@ -806,35 +789,13 @@ export default function Collections() {
     if (switchFetcher.state === "idle" && switchFetcher.data) {
       closeModal(switchModalRef.current);
       if (switchFetcher.data.ok) {
-        shopify.toast.show(
-          `${switchTarget?.title ?? "Collection"} switched to Manual sort`,
-        );
+        shopify.toast.show(`${switchTarget?.title ?? "Collection"} switched to Manual sort`);
       } else {
-        shopify.toast.show(
-          switchFetcher.data.error ?? "Couldn't switch that collection",
-          { isError: true },
-        );
+        shopify.toast.show(switchFetcher.data.error ?? "Couldn't switch that collection", { isError: true });
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- fires only on fetcher settle
   }, [switchFetcher.state, switchFetcher.data]);
-
-  function switchUntrackedToManual(gid: string, title: string) {
-    untrackedSwitchFetcher.submit({ _action: "switch-untracked-to-manual", gid }, { method: "post" });
-    shopify.toast.show(`Switching ${title} to Manual sort…`);
-  }
-
-  useEffect(() => {
-    if (untrackedSwitchFetcher.state === "idle" && untrackedSwitchFetcher.data) {
-      if (untrackedSwitchFetcher.data.ok) {
-        shopify.toast.show("Switched to Manual sort");
-        revalidator.revalidate();
-      } else {
-        shopify.toast.show(untrackedSwitchFetcher.data.error ?? "Couldn't switch that collection", { isError: true });
-      }
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- fires only on fetcher settle
-  }, [untrackedSwitchFetcher.state, untrackedSwitchFetcher.data]);
 
   function toggleSelect(id: string, checked: boolean) {
     setSelected((prev) => {
@@ -853,7 +814,7 @@ export default function Collections() {
 
   function runBulk(actionName: "bulk-pause" | "bulk-resume" | "bulk-shuffle" | "bulk-remove") {
     setLastBulkAction(actionName);
-    bulkFetcher.submit({ _action: actionName, id: Array.from(selected) }, { method: "post" });
+    bulkFetcher.submit(formDataOf({ _action: actionName, id: Array.from(selected) }), { method: "post" });
   }
 
   function confirmBulkRemove() {
@@ -883,13 +844,26 @@ export default function Collections() {
 
   const hasAnythingTracked = trackedTotal > 0;
   const bulkBusy = bulkFetcher.state !== "idle";
-  // Which bulk action is actually in flight — so only the pressed button
-  // shows a spinner while all four stay disabled, instead of all four
-  // spinning at once.
   const pendingBulkAction = bulkBusy ? lastBulkAction : null;
   const selectedRows = rows.filter((r) => selected.has(r.id));
   const selectionHasRunning = selectedRows.some((r) => r.status === "RUNNING");
   const selectionHasPaused = selectedRows.some((r) => r.status === "PAUSED");
+
+  // Real-time poll: only while something is actually in flight — a fetcher
+  // submitting/loading, or a RUNNING collection whose nextRunAt has already
+  // passed (the in-process scheduler ticks once a minute, so there's a real
+  // gap between "countdown hit zero" and "the row actually updated"). Never
+  // otherwise — a page with nothing due sits completely idle, no requests.
+  const anyActionFetcherBusy = allFetchers.some(
+    (f) => f.state !== "idle" && typeof f.key === "string" && (f.key.startsWith("shuffle-") || f.key.startsWith("row-action-") || f.key === "bulk-action"),
+  );
+  const anyOverdueRunning = rows.some((r) => r.status === "RUNNING" && r.nextRunAt && new Date(r.nextRunAt).getTime() <= Date.now());
+  const shouldPoll = anyActionFetcherBusy || anyOverdueRunning;
+  useEffect(() => {
+    if (!shouldPoll) return;
+    const id = setInterval(() => revalidator.revalidate(), 5000);
+    return () => clearInterval(id);
+  }, [shouldPoll, revalidator]);
 
   // Polaris relocates slot="primary-action"/"secondary-actions" children
   // into Shopify Admin's native title bar and mutates their own `style`
@@ -907,20 +881,28 @@ export default function Collections() {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- suppressHydrationWarning is a React-only prop, absent from the generated custom-element prop types
   const noHydrationWarning = { suppressHydrationWarning: true } as any;
 
-  const subtitle = (() => {
-    if (!hasAnythingTracked || totalStoreCollections == null) return null;
-    const base = `${spellSmallNumber(trackedTotal)} of your ${totalStoreCollections} collection${totalStoreCollections === 1 ? "" : "s"} ${trackedTotal === 1 ? "is" : "are"} being kept fresh.`;
-    if (runningCount === 0) return base; // everything's paused — no "next run" to report
-    return `${base} Next run in ${nextRunInLabel ?? "—"}.`;
-  })();
+  const untrackedFetcher = useFetcher<{ ok: boolean; added?: number; skipped?: number }>({ key: "add-all-untracked" });
+  function addAllUntracked() {
+    untrackedFetcher.submit(
+      formDataOf({
+        _action: "add-all-untracked",
+        gid: untrackedCollections.map((u) => u.gid),
+        title: untrackedCollections.map((u) => u.title),
+        sortOrder: untrackedCollections.map((u) => u.sortOrder),
+      }),
+      { method: "post" },
+    );
+  }
+  useEffect(() => {
+    if (untrackedFetcher.state === "idle" && untrackedFetcher.data?.ok) {
+      shopify.toast.show(`${untrackedFetcher.data.added ?? 0} collection${(untrackedFetcher.data.added ?? 0) === 1 ? "" : "s"} added`);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- fires only on fetcher settle
+  }, [untrackedFetcher.state, untrackedFetcher.data]);
 
   return (
     <s-page heading="Collections" {...noHydrationWarning}>
-      <s-button
-        slot="secondary-actions"
-        onClick={openAddModal}
-        {...noHydrationWarning}
-      >
+      <s-button slot="secondary-actions" onClick={openAddModal} {...noHydrationWarning}>
         Add collection
       </s-button>
       <s-button
@@ -933,133 +915,100 @@ export default function Collections() {
         ···
       </s-button>
       <s-menu id="collections-overflow-menu" accessibilityLabel="More actions">
-        <s-button
-          onClick={() => shopify.toast.show("Export isn't available yet")}
-        >
-          Export
-        </s-button>
+        <s-button onClick={() => shopify.toast.show("Export isn't available yet")}>Export</s-button>
         <PauseAllButton />
       </s-menu>
 
       {hasAnythingTracked && (
-        <s-button
-          slot="primary-action"
-          variant="primary"
-          onClick={openShuffleAllModal}
-          {...noHydrationWarning}
-        >
+        <s-button slot="primary-action" variant="primary" onClick={openShuffleAllModal} {...noHydrationWarning}>
           Shuffle all now
         </s-button>
       )}
 
-      {hasAnythingTracked && subtitle && <s-paragraph>{subtitle}</s-paragraph>}
-
-      {hydrationFailed ? (
-        <s-banner tone="warning" heading="Couldn't load live data from Shopify">
-          <s-paragraph>
-            Counts, thumbnails, and the &quot;needs attention&quot; check need a
-            live connection — everything below still reflects what Shuffly is
-            tracking, just without that extra detail for now.
-          </s-paragraph>
-          <div>
-            <s-button
-              onClick={() => revalidator.revalidate()}
-              {...(revalidator.state !== "idle" ? { loading: true } : {})}
-            >
-              Retry
-            </s-button>
-          </div>
-        </s-banner>
-      ) : (
-        <>
-          <NeedsAttentionBanner list={needsAttention} onSwitch={openSwitchModal} />
-          <UntrackedAttentionBanner
-            list={untrackedNeedsAttention}
-            busy={untrackedSwitchFetcher.state !== "idle"}
-            onSwitch={switchUntrackedToManual}
-          />
-          <AllSoldOutBanner list={allSoldOutCollections} />
-        </>
+      {hasAnythingTracked && !hydrationFailed && (
+        <StatusRow
+          runningCount={runningCount}
+          nextRunLabel={nextRunLabel}
+          nextRunAtMs={nextRunAtMs}
+          lastBatch={lastBatch}
+          totalProductsInRotation={totalProductsInRotation}
+          productsActuallyMoving={productsActuallyMoving}
+          trackedTotal={trackedTotal}
+          totalStoreCollections={totalStoreCollections}
+        />
       )}
 
-      {hasAnythingTracked && trackedTotal > 5 && (
-        <s-section padding="none">
+      {hydrationFailed ? (
+        <AttentionBanner
+          tone="warning"
+          heading="Couldn't load live data from Shopify"
+          action={
+            <s-button onClick={() => revalidator.revalidate()} {...(revalidator.state !== "idle" ? { loading: true } : {})}>
+              Retry
+            </s-button>
+          }
+        >
+          Counts, thumbnails, and the &quot;needs attention&quot; check need a live connection — everything below
+          still reflects what Shuffly is tracking, just without that extra detail for now.
+        </AttentionBanner>
+      ) : (
+        <AttentionStrip
+          lines={attentionLines}
+          onSwitch={openSwitchModal}
+          pauseFetcherKeyPrefix="row-action-"
+        />
+      )}
+
+      <s-section padding="none">
+        {hasAnythingTracked && trackedTotal > 5 && (
           <CollectionsFilterBar
             q={q}
             status={status}
             sort={sort}
-            onQChange={(v) => updateParam("q", v)}
-            onStatusChange={(v) => updateParam("status", v === "all" ? null : v)}
-            onSortChange={(v) => updateParam("sort", v === "name" ? null : v)}
+            counts={statusCounts}
+            onQChange={setQ}
+            onStatusChange={setStatus}
+            onSortChange={setSort}
           />
-        </s-section>
-      )}
+        )}
 
-      <s-section padding="none">
         {selected.size > 0 && (
           <div className="shuffly-bulk-bar">
             <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
               <s-text type="strong">{selected.size} selected</s-text>
-              <button
-                type="button"
-                className="shuffly-bulk-clear"
-                aria-label="Clear selection"
-                onClick={() => setSelected(new Set())}
-              >
+              <button type="button" className="shuffly-bulk-clear" aria-label="Clear selection" onClick={() => setSelected(new Set())}>
                 <XGlyph />
               </button>
             </div>
 
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <button
-                type="button"
-                className="shuffly-bulk-btn shuffly-bulk-btn--primary"
-                onClick={() => runBulk("bulk-shuffle")}
-                disabled={bulkBusy}
-              >
+              <button type="button" className="shuffly-bulk-btn shuffly-bulk-btn--primary" onClick={() => runBulk("bulk-shuffle")} disabled={bulkBusy}>
                 {pendingBulkAction === "bulk-shuffle" ? "Shuffling…" : "Shuffle now"}
               </button>
 
               {selectionHasRunning && (
-                <button
-                  type="button"
-                  className="shuffly-bulk-btn shuffly-bulk-btn--secondary"
-                  onClick={() => runBulk("bulk-pause")}
-                  disabled={bulkBusy}
-                >
+                <button type="button" className="shuffly-bulk-btn shuffly-bulk-btn--secondary" onClick={() => runBulk("bulk-pause")} disabled={bulkBusy}>
                   {pendingBulkAction === "bulk-pause" ? "Pausing…" : "Pause"}
                 </button>
               )}
               {selectionHasPaused && (
-                <button
-                  type="button"
-                  className="shuffly-bulk-btn shuffly-bulk-btn--secondary"
-                  onClick={() => runBulk("bulk-resume")}
-                  disabled={bulkBusy}
-                >
+                <button type="button" className="shuffly-bulk-btn shuffly-bulk-btn--secondary" onClick={() => runBulk("bulk-resume")} disabled={bulkBusy}>
                   {pendingBulkAction === "bulk-resume" ? "Resuming…" : "Resume"}
                 </button>
               )}
 
               <span className="shuffly-bulk-divider" aria-hidden="true" />
 
-              <button
-                type="button"
-                className="shuffly-bulk-btn shuffly-bulk-btn--critical"
-                onClick={() => bulkRemoveModalRef.current?.showOverlay()}
-                disabled={bulkBusy}
-              >
+              <button type="button" className="shuffly-bulk-btn shuffly-bulk-btn--critical" onClick={() => bulkRemoveModalRef.current?.showOverlay()} disabled={bulkBusy}>
                 {pendingBulkAction === "bulk-remove" ? "Removing…" : "Remove from Shuffly"}
               </button>
             </div>
           </div>
         )}
 
-        {isPaginating ? (
-          <SkeletonRows />
-        ) : rows.length === 0 && trackedTotal === 0 ? (
+        {pageRows.length === 0 && trackedTotal === 0 ? (
           <EmptyCollectionsState onAdd={openAddModal} />
-        ) : rows.length === 0 ? (
+        ) : pageRows.length === 0 ? (
           <s-box padding="large-500">
             <s-stack direction="block" gap="small" alignItems="center">
               <s-text color="subdued">No collections match this filter.</s-text>
@@ -1069,7 +1018,7 @@ export default function Collections() {
           <>
             <div className="shuffly-collections-grid-container">
               <CollectionsHeaderRow />
-              {rows.map((r, i) => (
+              {pageRows.map((r, i) => (
                 <div key={r.id}>
                   <CollectionRow
                     collection={r}
@@ -1078,41 +1027,26 @@ export default function Collections() {
                     selected={selected.has(r.id)}
                     onToggleSelect={toggleSelect}
                   />
-                  {i < rows.length - 1 && <s-divider />}
+                  {i < pageRows.length - 1 && <s-divider />}
                 </div>
               ))}
             </div>
             <s-divider />
-            <s-box padding="base">
-              <s-stack
-                direction="inline"
-                justifyContent="space-between"
-                alignItems="center"
-              >
+            <div style={{ padding: "12px 16px" }}>
+              <s-stack direction="inline" justifyContent="space-between" alignItems="center">
                 <s-text color="subdued">
                   {trackedTotal} of {totalStoreCollections ?? "?"} collections · {totalProductsInRotation} products in rotation
+                  {" · "}Bars show the last 7 runs
                 </s-text>
                 <s-stack direction="inline" gap="small-200" alignItems="center">
-                  {(hasPrevPage || hasNextPage) && (
+                  {totalPages > 1 && (
                     <>
-                      {hasPrevPage ? (
-                        <Link to={`?${withParam(searchParams, "page", String(page - 1))}`}>
-                          <s-button variant="tertiary">Previous</s-button>
-                        </Link>
-                      ) : (
-                        <s-button variant="tertiary" disabled>
-                          Previous
-                        </s-button>
-                      )}
-                      {hasNextPage ? (
-                        <Link to={`?${withParam(searchParams, "page", String(page + 1))}`}>
-                          <s-button variant="tertiary">Next</s-button>
-                        </Link>
-                      ) : (
-                        <s-button variant="tertiary" disabled>
-                          Next
-                        </s-button>
-                      )}
+                      <s-button variant="tertiary" disabled={clampedPage <= 1 || undefined} onClick={() => setPage((p) => Math.max(1, p - 1))}>
+                        Previous
+                      </s-button>
+                      <s-button variant="tertiary" disabled={clampedPage >= totalPages || undefined} onClick={() => setPage((p) => Math.min(totalPages, p + 1))}>
+                        Next
+                      </s-button>
                     </>
                   )}
                   <s-button variant="tertiary" onClick={openAddModal}>
@@ -1120,23 +1054,29 @@ export default function Collections() {
                   </s-button>
                 </s-stack>
               </s-stack>
-            </s-box>
+            </div>
           </>
         )}
       </s-section>
 
-      <AddCollectionsModal
-        ref={addModalRef}
-        picker={picker}
-        onSubmit={submitAddCollections}
-        onCancel={() => closeModal(addModalRef.current)}
-      />
+      {untrackedCollections.length > 0 && (
+        <NotShuffledYetCard items={untrackedCollections} onAddAll={addAllUntracked} addingAll={untrackedFetcher.state !== "idle"} />
+      )}
 
-      <ShuffleAllConfirmModal
-        ref={shuffleAllModalRef}
-        onConfirm={confirmShuffleAll}
-        onCancel={() => closeModal(shuffleAllModalRef.current)}
-      />
+      {planLimit != null && (
+        <div style={{ textAlign: "center", padding: "20px 0" }}>
+          <s-text color="subdued">
+            {planName} plan · {trackedTotal} of {planLimit} collections used.{" "}
+          </s-text>
+          <Link to="/app/plan" className="shuffly-quiet-link" style={{ textDecoration: "underline" }}>
+            See plans
+          </Link>
+        </div>
+      )}
+
+      <AddCollectionsModal ref={addModalRef} picker={picker} onSubmit={submitAddCollections} onCancel={() => closeModal(addModalRef.current)} />
+
+      <ShuffleAllConfirmModal ref={shuffleAllModalRef} onConfirm={confirmShuffleAll} onCancel={() => closeModal(shuffleAllModalRef.current)} />
 
       <SwitchToManualModal
         ref={switchModalRef}
@@ -1155,6 +1095,83 @@ export default function Collections() {
       />
 
       <style>{`
+        .shuffly-status-row {
+          display: grid;
+          grid-template-columns: repeat(3, 1fr);
+          gap: 16px;
+          margin: 20px 0;
+        }
+        .shuffly-status-card {
+          display: flex;
+          align-items: flex-start;
+          gap: 12px;
+          padding: 16px;
+          border: 1px solid var(--p-color-border, #e3e3e3);
+          border-radius: 12px;
+          background: var(--p-color-bg-surface, #ffffff);
+        }
+        .shuffly-status-chip {
+          flex: none;
+          width: 32px;
+          height: 32px;
+          border-radius: 8px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+        }
+        .shuffly-status-label { font-size: 12px; color: var(--p-color-text-secondary, #6b6b6b); }
+        .shuffly-status-value { font-size: 15px; font-weight: 700; color: var(--p-color-text, #131110); margin-top: 1px; }
+        .shuffly-status-detail { font-size: 12px; color: var(--p-color-text-secondary, #6b6b6b); margin-top: 2px; }
+        @container shuffly-status (max-width: 640px) {
+          .shuffly-status-row { grid-template-columns: 1fr; }
+        }
+        /* Amber, not brand orange — "attention" is a semantic tone, and
+           orange is reserved for exactly four things per spec (the Add-all
+           button, the next-run chip, the sparkline bars, the selected-row
+           accent). --p-color-*-caution is Polaris's real amber role; the
+           hex fallback is a genuine gold/amber, deliberately a different
+           hue from #FF4B1F so it never reads as "the brand color" here. */
+        .shuffly-attention-strip {
+          border: 1px solid var(--p-color-border-caution, #946200);
+          background: var(--p-color-bg-fill-caution-secondary, #FFF4D6);
+          border-radius: 10px;
+          overflow: hidden;
+          margin-bottom: 20px;
+        }
+        .shuffly-attention-line {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          padding: 10px 16px;
+          font-size: 13px;
+        }
+        .shuffly-attention-line + .shuffly-attention-line {
+          border-top: 1px solid var(--p-color-border-caution, #946200);
+        }
+        .shuffly-attention-dot {
+          flex: none;
+          width: 6px;
+          height: 6px;
+          border-radius: 50%;
+          background: var(--p-color-icon-caution, #946200);
+        }
+        .shuffly-attention-message { flex: 1 1 0%; min-width: 0; color: var(--p-color-text, #131110); }
+        .shuffly-attention-message strong { font-weight: 600; }
+        .shuffly-attention-action {
+          flex: none;
+          border: none;
+          outline: none;
+          background: transparent;
+          padding: 0;
+          font: inherit;
+          font-size: 13px;
+          font-weight: 600;
+          color: var(--p-color-text-caution, #946200);
+          text-decoration: underline;
+          cursor: pointer;
+        }
+        .shuffly-attention-action:disabled { opacity: 0.6; cursor: default; }
+        .shuffly-attention-more { padding: 8px 16px; font-size: 12px; color: var(--p-color-text-secondary, #6b6b6b); }
         /* The one grid template — shared verbatim by the header and every
            data row via the same .shuffly-row class, so there is exactly
            one definition, not two that could drift apart. All 6 cells
@@ -1187,7 +1204,7 @@ export default function Collections() {
         }
         .shuffly-row--header:hover { background: var(--p-color-bg-surface, #ffffff); }
         .shuffly-row--header > * {
-          font-size: 11px;
+          font-size: 12px;
           font-weight: 700;
           letter-spacing: 0.06em;
           text-transform: uppercase;
@@ -1205,45 +1222,37 @@ export default function Collections() {
           z-index: 0;
         }
         .shuffly-row-select, .shuffly-row-actions { position: relative; z-index: 1; }
-        /* Only the actions cluster rings the row on keyboard focus — not
-           the checkbox. Checkboxes keep :focus-visible on a plain mouse
-           click (correct, standard behavior for form controls), which was
-           making a click that just selects a row also draw the row-wide
-           ring, reading as a stray outline. A plain div/link can't itself
-           match :focus-visible via :focus-within reliably without also
-           catching that mouse click, so :has() targeting the specific
-           descendant is what actually scopes this correctly. */
         .shuffly-row:has(> .shuffly-row-link-overlay:focus-visible),
         .shuffly-row:has(> .shuffly-row-actions :focus-visible) {
           outline: 2px solid var(--p-color-border-focus, #005bd3);
           outline-offset: -2px;
         }
-        /* Selected: a tint across the full row plus a left accent bar
-           (inset box-shadow, so it adds no width and shifts nothing) —
-           never a rectangle drawn around content. */
+        /* Amber, not brand orange — same "attention, not the brand" reasoning
+           as the strip above. */
+        .shuffly-row--sold-out {
+          box-shadow: inset 3px 0 0 0 var(--p-color-border-caution, #946200);
+        }
+        /* The selected-row accent bar is one of the four sanctioned uses of
+           brand orange — background tint stays the neutral info-blue
+           Polaris already uses for "selected", only the bar itself is
+           brand orange. */
         .shuffly-row--selected,
         .shuffly-row--selected:hover {
           background: var(--p-color-bg-fill-info-secondary, #EAF2FF);
-          box-shadow: inset 3px 0 0 0 var(--p-color-border-info, #1F5199);
+          box-shadow: inset 3px 0 0 0 var(--p-color-bg-fill-warning, #FF4B1F);
         }
         .shuffly-row-select { display: flex; align-items: center; justify-content: center; }
-        /* s-checkbox has no size prop of its own — scaling it down is the
-           only reliable way to make the box itself smaller. transform
-           doesn't affect layout size, so the 36px column still reserves
-           the same width either way. */
         .shuffly-row-select s-checkbox { transform: scale(0.65); }
         .shuffly-row-text, .shuffly-thumbs, .shuffly-row-schedule, .shuffly-row-lastrun {
           min-width: 0;
         }
         .shuffly-row-title, .shuffly-row-meta { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        /* Left-aligned, like every other column — Schedule and Last run
-           used to be right-aligned, which pushed them together into one
-           blob with a gap in front. Aligning every column under its own
-           header, left edge to left edge, is what makes the grid scannable
-           down the page. */
         .shuffly-thumbs { display: flex; align-items: center; gap: 4px; }
         .shuffly-row-schedule, .shuffly-row-lastrun { text-align: left; }
         .shuffly-row-mobile-label { display: none; }
+        .shuffly-sparkline { display: flex; align-items: flex-end; gap: 2px; height: 16px; margin-top: 4px; }
+        .shuffly-sparkline-bar { width: 4px; border-radius: 1px; background: var(--p-color-bg-fill-warning, #FF4B1F); }
+        .shuffly-sparkline-bar--empty { background: var(--p-color-bg-surface-tertiary, #e3e3e3); min-height: 3px; }
         .shuffly-row-actions {
           display: flex;
           align-items: center;
@@ -1252,12 +1261,6 @@ export default function Collections() {
           padding-right: 8px;
         }
         .shuffly-row-quick-buttons { display: flex; align-items: center; gap: 4px; }
-        /* A real container query, not @media — @media measures the whole
-           embedded iframe's own viewport, which is narrower than it looks
-           because of Admin's surrounding chrome (nav sidebar etc.), so it
-           was collapsing the buttons at widths where the CARD itself had
-           plenty of room. This measures .shuffly-collections-grid-container
-           itself, which is what actually matters. */
         @container shuffly-collections (max-width: 820px) {
           .shuffly-row--header { display: none; }
           .shuffly-row:not(.shuffly-row--header) {
@@ -1283,9 +1286,6 @@ export default function Collections() {
             color: var(--p-color-text-secondary, #6b6b6b);
             margin-bottom: 2px;
           }
-          /* Below this width the quick buttons collapse into the overflow
-             menu (mirrored there — see CollectionRow.tsx), so the row
-             never has to scroll sideways to fit them. */
           .shuffly-row-quick-buttons { display: none; }
         }
         .shuffly-row-action-btn {
@@ -1312,6 +1312,17 @@ export default function Collections() {
           outline: 2px solid var(--p-color-border-warning, #FF4B1F);
           outline-offset: 1px;
         }
+        /* Green (success), not brand orange — resuming is a positive/
+           "turned back on" action, the same semantic as the bulk bar's
+           "Shuffle now"; orange stays reserved for the four spots above. */
+        .shuffly-row-action-btn--primary {
+          border-color: transparent;
+          background: var(--p-color-bg-fill-success, #008060);
+          color: #ffffff;
+        }
+        .shuffly-row-action-btn--primary:hover:not(:disabled) {
+          background: var(--p-color-bg-fill-success-hover, #006e52);
+        }
         .shuffly-bulk-bar {
           position: sticky;
           top: 0;
@@ -1321,8 +1332,6 @@ export default function Collections() {
           justify-content: space-between;
           min-height: 36px;
           padding: 10px 16px;
-          /* Light green — same success tint used elsewhere in the app
-             (e.g. the Plan page's icon chips). */
           background: var(--p-color-bg-fill-success-secondary, #E3F5EE);
           border-bottom: 1px solid var(--p-color-border, #e3e3e3);
         }
@@ -1383,10 +1392,6 @@ export default function Collections() {
         }
         .shuffly-bulk-btn--secondary:hover:not(:disabled) { background: var(--p-color-bg-surface-secondary, #f6f6f7); }
         .shuffly-bulk-btn--critical {
-          /* Quiet at rest — same neutral border as the secondary buttons,
-             not a red outline. The red text alone is enough to mark it as
-             destructive without it shouting; the border only turns red on
-             hover/focus, as an "about to act" signal. */
           border: 1px solid var(--p-color-border, #e3e3e3);
           background: var(--p-color-bg-surface, #ffffff);
           color: var(--p-color-text-critical, #D82C0D);
@@ -1433,155 +1438,377 @@ export default function Collections() {
           outline: 2px solid var(--p-color-border-warning, #FF4B1F);
           outline-offset: 2px;
         }
+        .shuffly-quiet-link {
+          border: none;
+          outline: none;
+          padding: 0;
+          background: transparent;
+          font: inherit;
+          font-size: 13px;
+          font-weight: 600;
+          color: var(--p-color-text-link, #1F5199);
+          text-decoration: underline;
+          cursor: pointer;
+        }
+        .shuffly-quiet-link:hover { color: var(--p-color-text-link-hover, #1a4680); }
+        .shuffly-quiet-link:focus-visible {
+          outline: 2px solid var(--p-color-border-warning, #FF4B1F);
+          outline-offset: 2px;
+        }
+        .shuffly-untracked-card {
+          border: 1px solid var(--p-color-border, #e3e3e3);
+          border-radius: 12px;
+          background: var(--p-color-bg-surface, #ffffff);
+          overflow: hidden;
+        }
+        .shuffly-untracked-header {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          padding: 14px 16px;
+          border-bottom: 1px solid var(--p-color-border, #e3e3e3);
+        }
+        .shuffly-untracked-row {
+          display: flex;
+          align-items: center;
+          gap: 12px;
+          padding: 12px 16px;
+        }
+        .shuffly-untracked-row + .shuffly-untracked-row { border-top: 1px solid var(--p-color-border, #e3e3e3); }
+        .shuffly-untracked-thumbs { display: flex; align-items: center; gap: 4px; flex: none; }
+        .shuffly-untracked-thumb {
+          width: 26px;
+          height: 26px;
+          border-radius: 6px;
+          background: var(--p-color-bg-fill-secondary, #e3dbd3);
+          flex: none;
+        }
+        .shuffly-add-all-btn {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          height: 30px;
+          padding: 0 14px;
+          border: none;
+          outline: none;
+          border-radius: 7px;
+          background: var(--p-color-bg-fill-warning, #FF4B1F);
+          color: #ffffff;
+          font: inherit;
+          font-size: 12px;
+          font-weight: 600;
+          cursor: pointer;
+        }
+        .shuffly-add-all-btn:hover:not(:disabled) { background: var(--p-color-bg-fill-warning-hover, #d93c15); }
+        .shuffly-add-all-btn:disabled { opacity: 0.6; cursor: default; }
+        .shuffly-add-all-btn:focus-visible {
+          outline: 2px solid var(--p-color-border-warning, #FF4B1F);
+          outline-offset: 2px;
+        }
       `}</style>
     </s-page>
   );
 }
 
-function withParam(searchParams: URLSearchParams, key: string, value: string): string {
-  const next = new URLSearchParams(searchParams);
-  next.set(key, value);
-  return next.toString();
+/** Build a real FormData instance for fetcher.submit() instead of handing
+ * it a plain object — react-router converts a plain-object submit target
+ * via `new URLSearchParams(obj)`, and URLSearchParams stringifies an array
+ * value with `String(array)`, which comma-joins it into ONE field instead
+ * of appending one field per element. That silently breaks any action
+ * relying on `formData.getAll(key)` for a multi-value field (bulk actions,
+ * "shuffle all except these ids", "add all these collections") — it
+ * worked with exactly one item, broke with two or more. Passing a real
+ * FormData bypasses that conversion entirely. */
+function formDataOf(fields: Record<string, string | string[]>): FormData {
+  const fd = new FormData();
+  for (const [key, value] of Object.entries(fields)) {
+    if (Array.isArray(value)) {
+      for (const v of value) fd.append(key, v);
+    } else {
+      fd.set(key, value);
+    }
+  }
+  return fd;
 }
 
 function PauseAllButton() {
   const fetcher = useFetcher();
   return (
-    <s-button
-      onClick={() =>
-        fetcher.submit({ _action: "pause-all" }, { method: "post" })
-      }
-      {...(fetcher.state !== "idle" ? { loading: true } : {})}
-    >
+    <s-button onClick={() => fetcher.submit({ _action: "pause-all" }, { method: "post" })} {...(fetcher.state !== "idle" ? { loading: true } : {})}>
       Pause all
     </s-button>
   );
 }
 
-function NeedsAttentionBanner({
-  list,
-  onSwitch,
+// ---- status row ----
+
+function ClockGlyph({ color }: { color: string }) {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <circle cx="8" cy="8" r="6.25" stroke={color} strokeWidth="1.4" />
+      <path d="M8 4.8V8L10.2 9.4" stroke={color} strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function CheckCircleGlyph({ color }: { color: string }) {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <circle cx="8" cy="8" r="6.25" stroke={color} strokeWidth="1.4" />
+      <path d="M5.3 8.2L7.2 10L10.7 6.2" stroke={color} strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function AlertCircleGlyph({ color }: { color: string }) {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <circle cx="8" cy="8" r="6.25" stroke={color} strokeWidth="1.4" />
+      <path d="M8 5V8.6" stroke={color} strokeWidth="1.4" strokeLinecap="round" />
+      <circle cx="8" cy="10.8" r="0.9" fill={color} />
+    </svg>
+  );
+}
+
+function GridGlyph({ color }: { color: string }) {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <rect x="2.5" y="2.5" width="4.5" height="4.5" rx="1" stroke={color} strokeWidth="1.4" />
+      <rect x="9" y="2.5" width="4.5" height="4.5" rx="1" stroke={color} strokeWidth="1.4" />
+      <rect x="2.5" y="9" width="4.5" height="4.5" rx="1" stroke={color} strokeWidth="1.4" />
+      <rect x="9" y="9" width="4.5" height="4.5" rx="1" stroke={color} strokeWidth="1.4" />
+    </svg>
+  );
+}
+
+/** Three equal cards, one bordered container, 1px dividers — the "how is
+ * my shop actually doing right now" summary. Only the next-run chip uses
+ * brand orange; the other two use real semantic tones (green for a clean
+ * run, red if last night's run had a failure) — orange is never used for
+ * a warning or an error, per spec. */
+function StatusRow({
+  runningCount,
+  nextRunLabel,
+  nextRunAtMs,
+  lastBatch,
+  totalProductsInRotation,
+  productsActuallyMoving,
+  trackedTotal,
+  totalStoreCollections,
 }: {
-  list: NeedsAttentionItem[];
+  runningCount: number;
+  nextRunLabel: string | null;
+  nextRunAtMs: number | null;
+  lastBatch: { totalMoved: number; anyFailed: boolean; failedTitles: string[]; at: Date } | null;
+  totalProductsInRotation: number;
+  productsActuallyMoving: number;
+  trackedTotal: number;
+  totalStoreCollections: number | null;
+}) {
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    if (!nextRunAtMs || runningCount === 0) return;
+    const id = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [nextRunAtMs, runningCount]);
+
+  const countdown = runningCount === 0 || !nextRunAtMs ? "Only when you press Shuffle" : formatCountdown(nextRunAtMs - nowMs);
+
+  const lastNightCritical = lastBatch?.anyFailed ?? false;
+  const lastNightValue = lastBatch
+    ? lastNightCritical
+      ? `${lastBatch.failedTitles.length} collection${lastBatch.failedTitles.length === 1 ? "" : "s"} failed`
+      : `${lastBatch.totalMoved} products moved`
+    : "Not run yet";
+  const lastNightDetail = lastBatch
+    ? lastNightCritical
+      ? `Failed: ${lastBatch.failedTitles.slice(0, 2).join(", ")}${lastBatch.failedTitles.length > 2 ? "…" : ""}`
+      : `${formatClock(lastBatch.at)} · nothing failed`
+    : "The first scheduled run will show up here";
+
+  const rotationTone = TONE_TOKENS.info;
+
+  return (
+    <div className="shuffly-status-row" style={{ containerType: "inline-size", containerName: "shuffly-status" }}>
+      <div className="shuffly-status-card">
+        <div className="shuffly-status-chip" style={{ background: TONE_TOKENS.warning.tint }}>
+          <ClockGlyph color={TONE_TOKENS.warning.accent} />
+        </div>
+        <div style={{ minWidth: 0 }}>
+          <div className="shuffly-status-label">Next run</div>
+          <div className="shuffly-status-value">{countdown}</div>
+          <div className="shuffly-status-detail">
+            {nextRunLabel ?? "—"} · {runningCount} collection{runningCount === 1 ? "" : "s"}
+          </div>
+        </div>
+      </div>
+      <div className="shuffly-status-card">
+        <div className="shuffly-status-chip" style={{ background: lastNightCritical ? TONE_TOKENS.critical.tint : TONE_TOKENS.success.tint }}>
+          {lastNightCritical ? (
+            <AlertCircleGlyph color={TONE_TOKENS.critical.accent} />
+          ) : (
+            <CheckCircleGlyph color={TONE_TOKENS.success.accent} />
+          )}
+        </div>
+        <div style={{ minWidth: 0 }}>
+          <div className="shuffly-status-label">Last night</div>
+          <div className="shuffly-status-value" style={lastNightCritical ? { color: TONE_TOKENS.critical.accent } : undefined}>
+            {lastNightValue}
+          </div>
+          <div className="shuffly-status-detail">{lastNightDetail}</div>
+        </div>
+      </div>
+      <div className="shuffly-status-card">
+        <div className="shuffly-status-chip" style={{ background: rotationTone.tint }}>
+          <GridGlyph color={rotationTone.accent} />
+        </div>
+        <div style={{ minWidth: 0 }}>
+          <div className="shuffly-status-label">In rotation</div>
+          <div className="shuffly-status-value">
+            {productsActuallyMoving} of {totalProductsInRotation} products
+          </div>
+          <div className="shuffly-status-detail">
+            across {trackedTotal} of your {totalStoreCollections ?? "?"} collections
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const TONE_TOKENS: Record<"warning" | "success" | "critical" | "info", { accent: string; tint: string }> = {
+  warning: { accent: "var(--p-color-icon-warning, #FF4B1F)", tint: "var(--p-color-bg-fill-warning-secondary, #FFF1E4)" },
+  success: { accent: "var(--p-color-icon-success, #008060)", tint: "var(--p-color-bg-fill-success-secondary, #E3F5EE)" },
+  critical: { accent: "var(--p-color-icon-critical, #D82C0D)", tint: "var(--p-color-bg-fill-critical-secondary, #FEE9E8)" },
+  info: { accent: "var(--p-color-icon-info, #1F5199)", tint: "var(--p-color-bg-fill-info-secondary, #EAF2FF)" },
+};
+
+function formatCountdown(ms: number): string {
+  if (ms <= 0) return "any moment";
+  const totalSeconds = Math.floor(ms / 1000);
+  const days = Math.floor(totalSeconds / 86_400);
+  const hours = Math.floor((totalSeconds % 86_400) / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  if (days > 0) return `in ${days}d ${hours}h`;
+  if (hours > 0) return `in ${hours}h ${minutes}m`;
+  return `in ${minutes}m`;
+}
+
+function formatClock(d: Date): string {
+  return new Intl.DateTimeFormat("en-US", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(d);
+}
+
+// ---- inline attention strip ----
+
+const ATTENTION_DISPLAY_MAX = 3;
+
+function AttentionStrip({
+  lines,
+  onSwitch,
+  pauseFetcherKeyPrefix,
+}: {
+  lines: AttentionLine[];
   onSwitch: (target: SwitchToManualTarget) => void;
+  pauseFetcherKeyPrefix: string;
 }) {
-  if (list.length === 0) return null;
-  const [first, ...rest] = list;
-  const heading =
-    rest.length > 0
-      ? `“${first.title}” and ${rest.length} other${rest.length === 1 ? "" : "s"} can't be shuffled yet`
-      : `“${first.title}” can't be shuffled yet`;
-
+  if (lines.length === 0) return null;
+  const shown = lines.slice(0, ATTENTION_DISPLAY_MAX);
+  const overflow = lines.length - shown.length;
   return (
-    <s-banner tone="warning" heading={heading}>
-      <s-paragraph>
-        It uses Shopify&apos;s{" "}
-        <s-text type="strong">{first.sortOrderLabel}</s-text> sort
-        {rest.length > 0
-          ? ", and the others use their own sort orders too"
-          : ""}
-        . Shuffly needs Manual sort to set positions.
-      </s-paragraph>
-      <div>
-        <s-button
-          onClick={() =>
-            onSwitch({
-              id: first.id,
-              gid: first.gid,
-              title: first.title,
-              sortOrderLabel: first.sortOrderLabel,
-            })
-          }
-        >
-          Switch to Manual
-        </s-button>
-      </div>
-    </s-banner>
-  );
-}
-
-function UntrackedAttentionBanner({
-  list,
-  busy,
-  onSwitch,
-}: {
-  list: UntrackedAttentionItem[];
-  busy: boolean;
-  onSwitch: (gid: string, title: string) => void;
-}) {
-  if (list.length === 0) return null;
-  const [first, ...rest] = list;
-  const heading =
-    rest.length > 0
-      ? `“${first.title}” and ${rest.length} other${rest.length === 1 ? "" : "s"} you haven't added yet can't be shuffled`
-      : `“${first.title}” can't be shuffled if you add it`;
-
-  return (
-    <s-banner tone="warning" heading={heading}>
-      <s-paragraph>
-        It uses Shopify&apos;s <s-text type="strong">{first.sortOrderLabel}</s-text> sort. Switch it to
-        Manual now, or Shuffly will offer to when you add it.
-      </s-paragraph>
-      <div>
-        <s-button
-          onClick={() => onSwitch(first.gid, first.title)}
-          {...(busy ? { loading: true } : {})}
-        >
-          Switch to Manual
-        </s-button>
-      </div>
-    </s-banner>
-  );
-}
-
-function AllSoldOutBanner({ list }: { list: AllSoldOutItem[] }) {
-  if (list.length === 0) return null;
-  return (
-    <>
-      {list.map((c) => (
-        <SoldOutBannerItem key={c.id} item={c} />
+    <div className="shuffly-attention-strip">
+      {shown.map((line) => (
+        <AttentionLineRow key={line.key} line={line} onSwitch={onSwitch} pauseFetcherKeyPrefix={pauseFetcherKeyPrefix} />
       ))}
-    </>
+      {overflow > 0 && <div className="shuffly-attention-more">and {overflow} more</div>}
+    </div>
   );
 }
 
-/** Same heading + paragraph + action shape as NeedsAttentionBanner and
- * UntrackedAttentionBanner above — this one was a bare sentence with no
- * heading and nothing to actually do about it, which is why it read as
- * plainer/lower-effort than its two siblings on the same page. Pausing a
- * collection that's 100% sold out is also a genuinely useful default
- * action, not just a cosmetic one — there's nothing for Shuffly to
- * meaningfully do with it until it's back in stock. */
-function SoldOutBannerItem({ item }: { item: AllSoldOutItem }) {
-  const shopify = useAppBridge();
-  const fetcher = useFetcher<{ ok: boolean }>({ key: `pause-soldout-${item.id}` });
-  const busy = fetcher.state !== "idle";
+function AttentionLineRow({
+  line,
+  onSwitch,
+  pauseFetcherKeyPrefix,
+}: {
+  line: AttentionLine;
+  onSwitch: (target: SwitchToManualTarget) => void;
+  pauseFetcherKeyPrefix: string;
+}) {
+  const pauseFetcher = useFetcher({ key: `${pauseFetcherKeyPrefix}attn-${line.id ?? line.key}` });
+  const busy = pauseFetcher.state !== "idle";
 
-  function pause() {
-    fetcher.submit({ _action: "pause", id: item.id }, { method: "post" });
+  function onAction() {
+    if (line.actionKind === "pause" && line.id) {
+      pauseFetcher.submit({ _action: "pause", id: line.id }, { method: "post" });
+    } else if (line.actionKind === "switch" && line.switchTarget) {
+      onSwitch(line.switchTarget);
+    }
   }
 
-  useEffect(() => {
-    if (fetcher.state === "idle" && fetcher.data?.ok) {
-      shopify.toast.show(`${item.title} paused`);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- fires only on fetcher settle
-  }, [fetcher.state, fetcher.data]);
-
   return (
-    <s-banner tone="info" heading={`Every product in ${item.title} is sold out`}>
-      <s-paragraph>
-        Shuffling it won&apos;t change anything until something&apos;s back in stock — pause it for
-        now, or leave it running and it&apos;ll pick back up on its own once inventory changes.
-      </s-paragraph>
-      {item.status === "RUNNING" && (
-        <div>
-          <s-button onClick={pause} disabled={busy || undefined} {...(busy ? { loading: true } : {})}>
-            Pause {item.title}
-          </s-button>
-        </div>
-      )}
-    </s-banner>
+    <div className="shuffly-attention-line">
+      <span className="shuffly-attention-dot" aria-hidden="true" />
+      <span className="shuffly-attention-message">{line.message}</span>
+      <button type="button" className="shuffly-attention-action" onClick={onAction} disabled={busy}>
+        {busy ? "Pausing…" : line.actionLabel}
+      </button>
+    </div>
+  );
+}
+
+// "warning" here means real caution/amber, not brand orange — orange is
+// reserved for exactly four spots elsewhere on this page (see the CSS
+// block's comment above .shuffly-attention-strip).
+const ATTENTION_BANNER_TOKENS: Record<"warning" | "info", { accent: string; tint: string; border: string }> = {
+  warning: {
+    accent: "var(--p-color-icon-caution, #946200)",
+    tint: "var(--p-color-bg-fill-caution-secondary, #FFF4D6)",
+    border: "var(--p-color-border-caution, #946200)",
+  },
+  info: {
+    accent: "var(--p-color-icon-info, #1F5199)",
+    tint: "var(--p-color-bg-fill-info-secondary, #EAF2FF)",
+    border: "var(--p-color-border-info, #1F5199)",
+  },
+};
+
+/** A softer stand-in for raw `s-banner` — that component renders as a
+ * solid, fully-saturated block of tone color. Used only for the
+ * hydration-failure state now — every per-collection issue goes through
+ * AttentionStrip's compact line format instead. */
+function AttentionBanner({
+  tone,
+  heading,
+  children,
+  action,
+}: {
+  tone: "warning" | "info";
+  heading: string;
+  children: React.ReactNode;
+  action?: React.ReactNode;
+}) {
+  const tokens = ATTENTION_BANNER_TOKENS[tone];
+  return (
+    <div
+      style={{
+        display: "flex",
+        gap: 12,
+        alignItems: "flex-start",
+        background: tokens.tint,
+        border: `1px solid ${tokens.border}`,
+        borderRadius: 10,
+        padding: "14px 16px",
+      }}
+    >
+      <div
+        aria-hidden="true"
+        style={{ flex: "none", width: 8, height: 8, marginTop: 6, borderRadius: "50%", background: tokens.accent }}
+      />
+      <div style={{ flex: "1 1 0%", minWidth: 0 }}>
+        <div style={{ fontWeight: 600, fontSize: 14, color: "var(--p-color-text, #131110)" }}>{heading}</div>
+        <div style={{ marginTop: 4, fontSize: 13, color: "var(--p-color-text-secondary, #6b6b6b)" }}>{children}</div>
+        {action && <div style={{ marginTop: 10 }}>{action}</div>}
+      </div>
+    </div>
   );
 }
 
@@ -1608,10 +1835,7 @@ function EmptyCollectionsState({ onAdd }: { onAdd: () => void }) {
       <s-stack direction="block" gap="small" alignItems="center">
         <s-icon type="collection" color="subdued" />
         <s-heading>No collections yet</s-heading>
-        <s-text color="subdued">
-          Add your first collection and Shuffly will keep it fresh
-          automatically.
-        </s-text>
+        <s-text color="subdued">Add your first collection and Shuffly will keep it fresh automatically.</s-text>
         <div style={{ marginTop: 4 }}>
           <s-button variant="primary" onClick={onAdd}>
             Add collection
@@ -1625,49 +1849,90 @@ function EmptyCollectionsState({ onAdd }: { onAdd: () => void }) {
 function XGlyph() {
   return (
     <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
-      <path
-        d="M2 2L10 10M10 2L2 10"
-        stroke="currentColor"
-        strokeWidth="1.6"
-        strokeLinecap="round"
-      />
+      <path d="M2 2L10 10M10 2L2 10" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
     </svg>
   );
 }
 
-function Bar({ width }: { width: number }) {
+// ---- "Not shuffled yet" card ----
+
+function NotShuffledYetCard({
+  items,
+  onAddAll,
+  addingAll,
+}: {
+  items: UntrackedCollectionItem[];
+  onAddAll: () => void;
+  addingAll: boolean;
+}) {
   return (
-    <div
-      style={{
-        width,
-        height: 12,
-        borderRadius: 4,
-        background: "var(--p-color-bg-surface-tertiary, #e3e3e3)",
-      }}
-    />
+    <div className="shuffly-untracked-card">
+      <div className="shuffly-untracked-header">
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <s-text type="strong">Not shuffled yet</s-text>
+          <s-badge tone="neutral">{items.length} collection{items.length === 1 ? "" : "s"}</s-badge>
+        </div>
+        <button type="button" className="shuffly-add-all-btn" onClick={onAddAll} disabled={addingAll}>
+          {addingAll ? "Adding…" : `Add all ${items.length}`}
+        </button>
+      </div>
+      {items.map((item) => (
+        <UntrackedRow key={item.gid} item={item} />
+      ))}
+    </div>
   );
 }
 
-function SkeletonRows() {
+function UntrackedRow({ item }: { item: UntrackedCollectionItem }) {
+  const needsManual = item.sortOrder !== "MANUAL";
+  const addFetcher = useFetcher<{ ok: boolean; error?: string }>({ key: `row-action-untracked-${item.gid}` });
+  const shopify = useAppBridge();
+  const busy = addFetcher.state !== "idle";
+
+  function onClick() {
+    addFetcher.submit(
+      { _action: needsManual ? "switch-and-add" : "add-untracked", gid: item.gid, title: item.title },
+      { method: "post" },
+    );
+  }
+
+  useEffect(() => {
+    if (addFetcher.state === "idle" && addFetcher.data) {
+      if (addFetcher.data.ok) {
+        shopify.toast.show(`${item.title} added`);
+      } else {
+        shopify.toast.show(addFetcher.data.error ?? "Couldn't add that collection", { isError: true });
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- fires only on fetcher settle
+  }, [addFetcher.state, addFetcher.data]);
+
   return (
-    <s-box padding="base">
-      <s-stack direction="block" gap="base">
-        {[0, 1, 2, 3].map((i) => (
-          <s-stack
-            key={i}
-            direction="inline"
-            gap="base"
-            alignItems="center"
-            justifyContent="space-between"
-          >
-            <s-stack direction="block" gap="small-200">
-              <Bar width={160} />
-              <Bar width={220} />
-            </s-stack>
-            <Bar width={80} />
-          </s-stack>
-        ))}
-      </s-stack>
-    </s-box>
+    <div className="shuffly-untracked-row">
+      <div className="shuffly-untracked-thumbs" aria-hidden="true">
+        <div className="shuffly-untracked-thumb" />
+        <div className="shuffly-untracked-thumb" />
+        <div className="shuffly-untracked-thumb" />
+      </div>
+      <div style={{ flex: "1 1 0%", minWidth: 0 }}>
+        <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          <s-text type="strong">{item.title}</s-text>
+        </div>
+        <div style={{ fontSize: 12 }}>
+          <s-text color="subdued">
+            {item.productsCount} product{item.productsCount === 1 ? "" : "s"} ·{" "}
+            {needsManual ? `uses Shopify's "${item.sortOrderLabel}" sort` : "ready to add"}
+          </s-text>
+        </div>
+      </div>
+      {needsManual && (
+        <span style={{ flex: "none" }}>
+          <s-badge tone="neutral">Needs Manual sort</s-badge>
+        </span>
+      )}
+      <button type="button" className="shuffly-row-action-btn" onClick={onClick} disabled={busy} style={{ flex: "none" }}>
+        {busy ? "Adding…" : needsManual ? "Switch & add" : "Add"}
+      </button>
+    </div>
   );
 }

@@ -41,20 +41,24 @@ function reconcileExternalReorder(
   currentOrder: string[],
   lastKnownOrder: string[] | null,
   pins: number,
-): { order: string[]; externalChangeCount: number } {
-  if (!lastKnownOrder || pins <= 0) return { order: currentOrder, externalChangeCount: 0 };
+): { order: string[]; externalChangeCount: number; diff: { before: string[]; after: string[] } | null } {
+  if (!lastKnownOrder || pins <= 0) return { order: currentOrder, externalChangeCount: 0, diff: null };
 
   const expectedPinned = lastKnownOrder.slice(0, pins).filter((id) => currentOrder.includes(id));
   const actualPinned = currentOrder.slice(0, pins);
   const drifted = expectedPinned.length > 0 && JSON.stringify(expectedPinned) !== JSON.stringify(actualPinned);
-  if (!drifted) return { order: currentOrder, externalChangeCount: 0 };
+  if (!drifted) return { order: currentOrder, externalChangeCount: 0, diff: null };
 
   const pinnedSet = new Set(expectedPinned);
   const rest = currentOrder.filter((id) => !pinnedSet.has(id));
   // How many of our old top-N no longer occupy their spot — a simple,
   // honest measure of "how much someone moved", not a fabricated number.
   const externalChangeCount = actualPinned.filter((id, i) => id !== expectedPinned[i]).length;
-  return { order: [...expectedPinned, ...rest], externalChangeCount };
+  // The Activity feed's "See what changed" diff — what the merchant's own
+  // drag actually showed (before we corrected it) vs. the pinned order we
+  // put back (after). Just the pinned zone, since that's the only part
+  // this reconciliation touches.
+  return { order: [...expectedPinned, ...rest], externalChangeCount, diff: { before: actualPinned, after: expectedPinned } };
 }
 
 /** Runs one shuffle for a single collection: fetch → compute → reorder →
@@ -98,7 +102,7 @@ export async function runShuffleForCollection(
 
   const fetchedOrder = products.map((p) => p.id);
   const lastKnownOrder: string[] | null = config.lastKnownOrder ? JSON.parse(config.lastKnownOrder) : null;
-  const { order: currentOrder, externalChangeCount } = reconcileExternalReorder(fetchedOrder, lastKnownOrder, config.pins);
+  const { order: currentOrder, externalChangeCount, diff: externalReorderDiff } = reconcileExternalReorder(fetchedOrder, lastKnownOrder, config.pins);
 
   const neverMoveTags = parseNeverMoveTags(neverMoveTagsCsv);
   const now = Date.now();
@@ -211,6 +215,12 @@ export async function runShuffleForCollection(
           // its own title ("Someone re-ordered X by hand") from the collection,
           // and shows this as the meta line underneath.
           message: `Your ${config.pins} pin${config.pins === 1 ? "" : "s"} were put back at the next run`,
+          // Reusing `previousOrder` for this trigger type only — it's a
+          // {before, after} pinned-zone snapshot for the Activity feed's
+          // "See what changed" diff, not the full-collection order Undo
+          // uses for SCHEDULED/MANUAL runs (this trigger never offers
+          // Restore, so there's no ambiguity between the two shapes).
+          previousOrder: externalReorderDiff ? JSON.stringify(externalReorderDiff) : null,
         },
       }),
     );

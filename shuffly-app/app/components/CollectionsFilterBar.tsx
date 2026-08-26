@@ -1,21 +1,30 @@
 // Search + status filter + sort for the Collections list — only shown once
 // there are enough tracked collections that finding one by scrolling stops
-// being reasonable (see app.collections.tsx).
+// being reasonable (see app.collections.tsx). Filtering/sorting itself
+// happens entirely client-side on the already-loaded rows — this component
+// just reports state changes upward.
 
 export type CollectionStatusFilter = "all" | "running" | "paused" | "attention";
-export type CollectionSortKey = "name" | "products" | "next-run" | "last-run";
+export type CollectionSortKey = "next-run" | "name" | "products" | "last-run";
 
-const STATUS_OPTIONS: Array<{ value: CollectionStatusFilter; label: string }> = [
-  { value: "all", label: "All" },
-  { value: "running", label: "Running" },
-  { value: "paused", label: "Paused" },
-  { value: "attention", label: "Needs attention" },
+export interface CollectionStatusCounts {
+  all: number;
+  running: number;
+  paused: number;
+  attention: number;
+}
+
+const STATUS_OPTIONS: Array<{ value: CollectionStatusFilter; label: string; countKey: keyof CollectionStatusCounts }> = [
+  { value: "all", label: "All", countKey: "all" },
+  { value: "running", label: "Running", countKey: "running" },
+  { value: "paused", label: "Paused", countKey: "paused" },
+  { value: "attention", label: "Needs attention", countKey: "attention" },
 ];
 
 const SORT_OPTIONS: Array<{ value: CollectionSortKey; label: string }> = [
+  { value: "next-run", label: "Next run" },
   { value: "name", label: "Name" },
   { value: "products", label: "Most products" },
-  { value: "next-run", label: "Next run" },
   { value: "last-run", label: "Last run" },
 ];
 
@@ -23,6 +32,7 @@ interface CollectionsFilterBarProps {
   q: string;
   status: CollectionStatusFilter;
   sort: CollectionSortKey;
+  counts: CollectionStatusCounts;
   onQChange: (v: string) => void;
   onStatusChange: (v: CollectionStatusFilter) => void;
   onSortChange: (v: CollectionSortKey) => void;
@@ -32,6 +42,7 @@ export function CollectionsFilterBar({
   q,
   status,
   sort,
+  counts,
   onQChange,
   onStatusChange,
   onSortChange,
@@ -42,7 +53,7 @@ export function CollectionsFilterBar({
         <s-search-field
           label="Search collections"
           labelAccessibilityVisibility="exclusive"
-          placeholder="Search by name"
+          placeholder="Search collections"
           value={q}
           // eslint-disable-next-line @typescript-eslint/no-explicit-any -- currentTarget.value isn't in the typed event map
           onChange={(e: any) => onQChange(e.currentTarget?.value ?? "")}
@@ -57,7 +68,7 @@ export function CollectionsFilterBar({
             className={`shuffly-collections-filter-btn${status === o.value ? " shuffly-collections-filter-btn--active" : ""}`}
             onClick={() => onStatusChange(o.value)}
           >
-            {o.label}
+            {o.label} {counts[o.countKey]}
           </button>
         ))}
       </div>
@@ -68,7 +79,7 @@ export function CollectionsFilterBar({
           labelAccessibilityVisibility="exclusive"
           value={sort}
           // eslint-disable-next-line @typescript-eslint/no-explicit-any -- currentTarget.value isn't in the typed event map
-          onChange={(e: any) => onSortChange((e.currentTarget?.value as CollectionSortKey) ?? "name")}
+          onChange={(e: any) => onSortChange((e.currentTarget?.value as CollectionSortKey) ?? "next-run")}
         >
           {SORT_OPTIONS.map((o) => (
             <s-option key={o.value} value={o.value}>

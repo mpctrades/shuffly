@@ -1,43 +1,64 @@
 import { useState } from "react";
-import type { ActivityItem } from "../lib/activity.server";
+import type { ActivityItem, ActivityKind } from "../lib/activity.server";
 
-const ICON_BG: Record<ActivityItem["iconTone"], string> = {
-  success: "var(--p-color-bg-fill-success-secondary, #cdfee1)",
-  info: "var(--p-color-bg-fill-info-secondary, #e0f0ff)",
-  warning: "var(--p-color-bg-fill-warning-secondary, #ffd6a4)",
-  critical: "var(--p-color-bg-fill-critical-secondary, #fee9e8)",
+/** Dot fill + halo colour per kind — every value here is a Polaris token;
+ * the hex after each is a same-hue fallback only. The halo needs a real
+ * alpha value (Polaris tokens don't expose a translucent variant), so it's
+ * a literal rgba() in the same hue as the dot — flagged here as the one
+ * deliberate exception to "tokens only". */
+const KIND_STYLE: Record<ActivityKind, { dot: string; halo: string; hollow?: boolean }> = {
+  run: { dot: "var(--p-color-bg-fill-warning, #FF4B1F)", halo: "rgba(255, 75, 31, 0.16)" },
+  automatic: { dot: "var(--p-color-icon-info, #1F5199)", halo: "rgba(31, 81, 153, 0.14)" },
+  attention: { dot: "var(--p-color-icon-caution, #946200)", halo: "rgba(148, 98, 0, 0.14)" },
+  failure: { dot: "var(--p-color-icon-critical, #D82C0D)", halo: "rgba(216, 44, 13, 0.14)" },
+  setting: { dot: "var(--p-color-bg-surface, #ffffff)", halo: "rgba(107, 107, 107, 0.1)", hollow: true },
 };
 
 interface ActivityRowProps {
   item: ActivityItem;
   onRestore: (item: ActivityItem) => void;
+  onShowDiff: (item: ActivityItem) => void;
   busy: boolean;
+  /** The day-group's rail colour — solid orange for today, fading through
+   * pale orange to grey for older groups (computed once per day in the
+   * route, passed down so every row in a day shares the exact same line
+   * colour and the segments read as one continuous rail). */
+  railColor: string;
+  /** Suppresses the rail line below this row — the last row in a day group
+   * shouldn't have the line running on past its own dot into empty space. */
+  isLastInGroup: boolean;
+  /** Newly-arrived entry after a poll — flashes a brief highlight instead
+   * of just silently appearing. */
+  justArrived?: boolean;
 }
 
-/** One compact activity row (~56-60px). A grouped burst row (item.children
- * set) gets a chevron that expands, in place, to the individual rows
- * underneath — collapsed by default. */
-export function ActivityRow({ item, onRestore, busy }: ActivityRowProps) {
+/** One activity entry on the rail: a dot, a bold title (+ an orange "N
+ * moved" pill), one meta line (time, facts, an orange text-link action),
+ * and — for a collapsed burst or a day's settings summary — a "Show"
+ * toggle that expands `item.children` in place, indented behind a pale
+ * rail of their own. */
+export function ActivityRow({ item, onRestore, onShowDiff, busy, railColor, isLastInGroup, justArrived }: ActivityRowProps) {
   const [expanded, setExpanded] = useState(false);
-  const hasChildren = !!item.children && item.children.length > 1;
+  const hasChildren = !!item.children && item.children.length > (item.kind === "setting" ? 0 : 1);
 
   return (
     <div>
       <Row
         item={item}
         onRestore={onRestore}
+        onShowDiff={onShowDiff}
         busy={busy}
+        railColor={railColor}
+        showRailBelow={!isLastInGroup || (hasChildren && expanded)}
         expandable={hasChildren}
         expanded={expanded}
         onToggle={() => setExpanded((v) => !v)}
+        justArrived={justArrived}
       />
       {hasChildren && expanded && (
-        <div style={{ paddingLeft: 40 }}>
-          {item.children!.map((child, i) => (
-            <div key={child.id}>
-              <Row item={child} onRestore={onRestore} busy={busy} indented />
-              {i < item.children!.length - 1 && <s-divider />}
-            </div>
+        <div className="shuffly-activity-children">
+          {item.children!.map((child) => (
+            <Row key={child.id} item={child} onRestore={onRestore} onShowDiff={onShowDiff} busy={busy} railColor={railColor} indented />
           ))}
         </div>
       )}
@@ -48,138 +69,111 @@ export function ActivityRow({ item, onRestore, busy }: ActivityRowProps) {
 function Row({
   item,
   onRestore,
+  onShowDiff,
   busy,
+  railColor,
+  showRailBelow,
   expandable,
   expanded,
   onToggle,
   indented,
+  justArrived,
 }: {
   item: ActivityItem;
   onRestore: (item: ActivityItem) => void;
+  onShowDiff: (item: ActivityItem) => void;
   busy: boolean;
+  railColor?: string;
+  showRailBelow?: boolean;
   expandable?: boolean;
   expanded?: boolean;
   onToggle?: () => void;
   indented?: boolean;
+  justArrived?: boolean;
 }) {
-  const isFailure = item.iconTone === "critical";
+  const style = KIND_STYLE[item.kind];
+  const facts = item.meta;
+
+  const rowClassName = ["shuffly-activity-row", justArrived && "shuffly-activity-row--new"].filter(Boolean).join(" ");
 
   return (
-    <div
-      className="shuffly-activity-row"
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 12,
-        padding: indented ? "7px 16px 7px 0" : "11px 16px",
-      }}
-    >
-      <div
-        style={{
-          width: indented ? 20 : 24,
-          height: indented ? 20 : 24,
-          flex: "none",
-          borderRadius: "50%",
-          display: "grid",
-          placeItems: "center",
-          background: ICON_BG[item.iconTone],
-        }}
-      >
-        <s-icon type={item.iconType} tone={item.iconTone} size="small" />
-      </div>
-
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
-          {expandable && (
-            <button
-              type="button"
-              onClick={onToggle}
-              aria-label={expanded ? "Collapse" : "Expand"}
-              aria-expanded={expanded}
-              style={{
-                flex: "none",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                width: 18,
-                height: 18,
-                border: "none",
-                outline: "none",
-                background: "transparent",
-                padding: 0,
-                cursor: "pointer",
-                color: "var(--p-color-icon-secondary, #6b6b6b)",
-                transform: expanded ? "rotate(90deg)" : "none",
-                transition: "transform 120ms ease",
-              }}
-            >
-              <ChevronGlyph />
-            </button>
-          )}
+    <div className={rowClassName}>
+      {!indented && (
+        <div className="shuffly-activity-rail-col" aria-hidden="true">
+          {showRailBelow && <div className="shuffly-activity-rail-line" style={{ background: railColor }} />}
           <span
+            className="shuffly-activity-dot"
             style={{
-              fontWeight: 600,
-              fontSize: 14,
-              color: "var(--p-color-text, #131110)",
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
-              minWidth: 0,
+              background: style.dot,
+              boxShadow: `0 0 0 3px var(--p-color-bg-surface, #ffffff), 0 0 0 9px ${style.halo}`,
+              border: style.hollow ? "1.5px solid var(--p-color-border, #c9c9c9)" : "none",
             }}
-          >
-            {item.title}
-          </span>
-          {isFailure && <s-badge tone="critical">Failed</s-badge>}
+          />
         </div>
-        {item.meta && (
-          <div style={{ fontSize: 12, marginTop: 2 }}>
-            <s-text color="subdued">{item.meta}</s-text>
-          </div>
-        )}
-      </div>
+      )}
 
-      <div style={{ flex: "none", display: "flex", alignItems: "center", gap: 8 }}>
-        {item.restore && (
-          // Hidden until hover/focus via .shuffly-restore-slot in
-          // app.activity.tsx's <style> block — always visible on touch and
-          // narrow screens, since there's no hover there to reveal it.
-          <div className="shuffly-restore-slot">
-            <s-button variant="tertiary" onClick={() => onRestore(item)} {...(busy ? { loading: true } : {})}>
-              Restore
-            </s-button>
-          </div>
+      <div className="shuffly-activity-body" style={indented ? { marginLeft: 30 } : undefined}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          <span className="shuffly-activity-title">{item.title}</span>
+          {item.movedCount != null && <span className="shuffly-activity-pill">{item.movedCount} moved</span>}
+        </div>
+        {/* A child row inside an expanded batch shares its parent's
+           timestamp — showing it again on every child is redundant, so a
+           child with nothing else to say (no facts, no action) renders no
+           meta line at all, matching the mockup's plain "Sale — 7 products
+           moved" single-line children. */}
+        {(!indented || facts || item.restore || item.diff) && (
+        <div className="shuffly-activity-meta">
+          {!indented && <span className="shuffly-activity-time">{item.time}</span>}
+          {facts && (
+            <>
+              {!indented && <span className="shuffly-activity-dotsep"> · </span>}
+              <span>{facts}</span>
+            </>
+          )}
+          {item.restore && (
+            <>
+              <span className="shuffly-activity-dotsep"> · </span>
+              <button type="button" className="shuffly-activity-link" onClick={() => onRestore(item)} disabled={busy}>
+                Restore this order
+              </button>
+            </>
+          )}
+          {item.diff && (
+            <>
+              <span className="shuffly-activity-dotsep"> · </span>
+              <button type="button" className="shuffly-activity-link" onClick={() => onShowDiff(item)}>
+                See what changed
+              </button>
+            </>
+          )}
+          {expandable && (
+            <>
+              <span className="shuffly-activity-dotsep"> · </span>
+              <button
+                type="button"
+                className="shuffly-activity-link"
+                onClick={onToggle}
+                aria-expanded={expanded}
+              >
+                {expanded ? "Hide" : "Show"}
+              </button>
+            </>
+          )}
+        </div>
         )}
-        <span style={{ fontSize: 12, whiteSpace: "nowrap" }}>
-          <s-text color="subdued">{item.time}</s-text>
-        </span>
       </div>
     </div>
   );
 }
 
-function ChevronGlyph() {
+/** Orange text, a small pulsing dot — the newest day group's heading. Older
+ * headings are plain subdued grey text. Pulse respects reduced-motion. */
+export function ActivityDayHeading({ label, isToday }: { label: string; isToday: boolean }) {
   return (
-    <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">
-      <path d="M3 1.5L7 5L3 8.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
-/** Uppercase, letter-spaced day heading above each day's rows — "Today",
- * "Yesterday", then "20 August". */
-export function ActivityDayHeading({ label }: { label: string }) {
-  return (
-    <div
-      style={{
-        padding: "20px 16px 8px",
-        fontSize: 12,
-        fontWeight: 700,
-        letterSpacing: "0.06em",
-        textTransform: "uppercase",
-        color: "var(--p-color-text-secondary, #6b6b6b)",
-      }}
-    >
+    <div className={`shuffly-activity-day-heading${isToday ? " shuffly-activity-day-heading--today" : ""}`}>
       {label}
+      {isToday && <span className="shuffly-activity-pulse-dot" aria-hidden="true" />}
     </div>
   );
 }

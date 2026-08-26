@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useFetcher } from "react-router";
 
 export interface CollectionRowData {
@@ -7,6 +7,11 @@ export interface CollectionRowData {
   title: string;
   status: "RUNNING" | "PAUSED";
   needsAttention: boolean;
+  /** Every product in this collection is out of stock — shuffling has
+   * nothing to do until inventory changes. Drives a left accent bar, a
+   * third line under the name, and a "Pause" shortcut in the overflow
+   * menu instead of a full-width page banner about one collection. */
+  allSoldOut: boolean;
   /** Facts only — no settings, no state. "10 products · 1 sold out". */
   factsLine: string;
   /** Only the settings that are actually on — "Sold-out last", "2 pins" —
@@ -16,8 +21,18 @@ export interface CollectionRowData {
    * component, not by the caller. */
   preview: Array<{ id: string; initial: string; imageUrl: string | null; soldOut: boolean }>;
   scheduleLine: string; // "Daily at 06:00" or "Paused"
-  scheduleSubLine: string; // "Next run in 6h 12m" or "Resume to schedule"
-  lastRun: { moved: number; whenLabel: string; failed: boolean } | null;
+  /** Static fallback sub-line ("Resume to schedule" / "Shuffles only when
+   * you press Shuffle") — empty when RUNNING with a real nextRunAt, since
+   * that case renders a live ticking countdown instead (see CountdownLine
+   * below). */
+  scheduleSubLine: string;
+  /** Raw target instant, RUNNING collections only — this component ticks
+   * its own countdown from it every second, client-side only, no polling. */
+  nextRunAt: Date | null;
+  lastRun: { moved: number; whenLabel: string; failed: boolean; at: Date } | null;
+  /** Last 7 runs, oldest first; null = no run in that slot. Renders as a
+   * tiny bar chart under the last-run figures. */
+  sparkline: Array<{ moved: number } | null>;
 }
 
 interface CollectionRowProps {
@@ -68,6 +83,17 @@ export function CollectionRow({
   const isShuffling = shuffleFetcher.state !== "idle";
   const isMenuBusy = menuActionFetcher.state !== "idle";
 
+  // Optimistic pause/resume: while the fetcher is in flight, read the
+  // status it's actually submitting instead of waiting for the round trip
+  // — formData is only trustworthy while state !== "idle" (it clears back
+  // to nothing the instant the fetcher settles), which is exactly the
+  // window this needs. If the action fails, this fetcher settles without
+  // the real loader data having changed, so the row falls straight back to
+  // t.status on its own — "rollback" for free, no extra state to manage.
+  const optimisticAction = isMenuBusy ? menuActionFetcher.formData?.get("_action") : null;
+  const displayStatus: "RUNNING" | "PAUSED" =
+    optimisticAction === "pause" ? "PAUSED" : optimisticAction === "resume" ? "RUNNING" : t.status;
+
   function shuffleNow() {
     shuffleFetcher.submit({ _action: "shuffle-one", id: t.id }, { method: "post" });
   }
@@ -80,16 +106,18 @@ export function CollectionRow({
     menuActionFetcher.submit({ _action: "remove", id: t.id }, { method: "post" });
   }
 
-  const dotColor = t.needsAttention
-    ? "var(--p-color-icon-warning, #FF4B1F)"
-    : t.status === "RUNNING"
-      ? "var(--p-color-icon-success, #008060)"
-      : "var(--p-color-icon-secondary, #6b6b6b)";
-
   const thumbs = t.preview.slice(0, THUMB_MAX);
 
+  const rowClassName = [
+    "shuffly-row",
+    t.allSoldOut && "shuffly-row--sold-out",
+    selected && "shuffly-row--selected",
+  ]
+    .filter(Boolean)
+    .join(" ");
+
   return (
-    <div className={`shuffly-row${selected ? " shuffly-row--selected" : ""}`}>
+    <div className={rowClassName}>
       {/* The whole row is "clickable" via a plain, absolutely-positioned
          link covering it — not s-clickable wrapping multiple grid cells.
          That wrapper approach (display:grid + subgrid on a shadow-DOM
@@ -120,9 +148,12 @@ export function CollectionRow({
         />
       </div>
 
-      {/* Column 2 — status dot + name + inline settings badges, facts
-         underneath. Exactly two lines — the name truncates before the
-         badges ever wrap to a line of their own. */}
+      {/* Column 2 — name + inline settings badges, facts underneath, and
+         (only for a fully sold-out collection) a third amber line. No
+         status dot: the Schedule column already says "Paused" or "Daily
+         at 06:00", so a dot repeating running/paused was redundant — and
+         removing it gives the name back the space it was truncating
+         into. */}
       <div className="shuffly-row-text">
         {/* title on a plain element, not s-text — a custom element's prop
            set can't be trusted to forward an arbitrary attribute through
@@ -132,10 +163,6 @@ export function CollectionRow({
           title={t.title}
           style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0, flexWrap: "nowrap" }}
         >
-          <span
-            aria-hidden="true"
-            style={{ width: 8, height: 8, flex: "none", borderRadius: "50%", background: dotColor }}
-          />
           <span
             style={{
               flex: "1 1 0%",
@@ -156,6 +183,24 @@ export function CollectionRow({
         <div className="shuffly-row-meta">
           <s-text color="subdued">{t.factsLine}</s-text>
         </div>
+        {t.allSoldOut && (
+          // Amber/caution, not brand orange — "sold out" is an attention
+          // state, and orange stays reserved for the page's four sanctioned
+          // spots (Add-all button, next-run chip, sparkline, selected-row
+          // accent — see app.collections.tsx's CSS comment on this).
+          <div
+            style={{
+              fontSize: 12,
+              fontWeight: 600,
+              color: "var(--p-color-text-caution, #946200)",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+          >
+            Every product is sold out — shuffling changes nothing
+          </div>
+        )}
       </div>
 
       {/* Column 3 — thumbnails, up to 4, real products only — no
@@ -203,14 +248,18 @@ export function CollectionRow({
       <div className="shuffly-row-schedule">
         <span className="shuffly-row-mobile-label">Schedule</span>
         <div>
-          <s-text type="strong">{t.scheduleLine}</s-text>
+          <s-text type="strong">{displayStatus === "PAUSED" ? "Paused" : t.scheduleLine}</s-text>
         </div>
         <div style={{ fontSize: 12 }}>
-          <s-text color="subdued">{t.scheduleSubLine}</s-text>
+          {displayStatus === "RUNNING" && t.nextRunAt ? (
+            <CountdownLine target={t.nextRunAt} />
+          ) : (
+            <s-text color="subdued">{displayStatus === "PAUSED" ? "Resume to schedule" : t.scheduleSubLine}</s-text>
+          )}
         </div>
       </div>
 
-      {/* Column 5 — last run */}
+      {/* Column 5 — last run, with a 7-run sparkline underneath. */}
       <div className="shuffly-row-lastrun">
         <span className="shuffly-row-mobile-label">Last run</span>
         {t.lastRun == null ? (
@@ -225,6 +274,7 @@ export function CollectionRow({
             <div style={{ fontSize: 12 }}>
               <s-text color="subdued">{t.lastRun.whenLabel}</s-text>
             </div>
+            <Sparkline data={t.sparkline} />
           </>
         )}
       </div>
@@ -233,35 +283,116 @@ export function CollectionRow({
          buttons, not s-button: that component renders its own visible
          border/shadow chrome per instance, which is what was showing as a
          bordered panel wrapping these controls — these sit directly on
-         the row. */}
+         the row. Contents depend on status so the row never shows a
+         contradictory pair (a paused collection offering "Shuffle now"
+         right next to "Resume") and never shows more than one filled
+         button: Running gets two secondary buttons (Shuffle now, Pause);
+         Paused gets one primary/filled button (Resume) and nothing else
+         — its one-off shuffle moves into the overflow menu as "Shuffle
+         once", since "now" implies a schedule that isn't running. */}
       <div className="shuffly-row-actions">
         <div className="shuffly-row-quick-buttons">
-          <button type="button" className="shuffly-row-action-btn" onClick={shuffleNow} disabled={isShuffling}>
-            {isShuffling ? "Shuffling…" : "Shuffle now"}
-          </button>
-          <button type="button" className="shuffly-row-action-btn" onClick={togglePause} disabled={isMenuBusy}>
-            {t.status === "RUNNING" ? "Pause" : "Resume"}
-          </button>
+          {displayStatus === "RUNNING" ? (
+            <>
+              <button type="button" className="shuffly-row-action-btn" onClick={shuffleNow} disabled={isShuffling}>
+                {isShuffling ? "Shuffling…" : "Shuffle now"}
+              </button>
+              <button type="button" className="shuffly-row-action-btn" onClick={togglePause} disabled={isMenuBusy}>
+                Pause
+              </button>
+            </>
+          ) : (
+            <button
+              type="button"
+              className="shuffly-row-action-btn shuffly-row-action-btn--primary"
+              onClick={togglePause}
+              disabled={isMenuBusy}
+            >
+              Resume
+            </button>
+          )}
         </div>
         <s-button command="--toggle" commandFor={menuId} variant="tertiary" accessibilityLabel={`Actions for ${t.title}`}>
           ···
         </s-button>
         <s-menu id={menuId} accessibilityLabel={`Actions for ${t.title}`}>
-          {/* Same two actions, mirrored here — below the 820px container
-             breakpoint the standalone buttons above are hidden by CSS, so
-             this is the only way to reach them; above it, it's just a
-             second path to the same action. */}
-          <s-button onClick={shuffleNow} disabled={isShuffling || undefined}>
-            Shuffle now
-          </s-button>
-          <s-button onClick={togglePause} disabled={isMenuBusy || undefined}>
-            {t.status === "RUNNING" ? "Pause" : "Resume"}
-          </s-button>
+          {/* Mirrors the quick buttons above, plus Remove — below the
+             820px container breakpoint the standalone buttons are hidden
+             by CSS, so this is the only way to reach them there; above
+             it, it's a second path to the same actions. */}
+          {displayStatus === "RUNNING" ? (
+            <>
+              <s-button onClick={shuffleNow} disabled={isShuffling || undefined}>
+                Shuffle now
+              </s-button>
+              <s-button onClick={togglePause} disabled={isMenuBusy || undefined}>
+                Pause
+              </s-button>
+            </>
+          ) : (
+            <>
+              <s-button onClick={togglePause} disabled={isMenuBusy || undefined}>
+                Resume
+              </s-button>
+              <s-button onClick={shuffleNow} disabled={isShuffling || undefined}>
+                Shuffle once
+              </s-button>
+            </>
+          )}
           <s-button tone="critical" onClick={removeCollection}>
             Remove from Shuffly
           </s-button>
         </s-menu>
       </div>
+    </div>
+  );
+}
+
+/** Ticks a "Next run in Xh Ym" line every second, purely client-side —
+ * recomputed from the fixed `target` instant against the browser's own
+ * clock, never a network request. */
+function CountdownLine({ target }: { target: Date }) {
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+  const ms = new Date(target).getTime() - nowMs;
+  const label = ms <= 0 ? "any moment" : formatDuration(ms);
+  return <s-text color="subdued">Next run in {label}</s-text>;
+}
+
+function formatDuration(ms: number): string {
+  const totalMinutes = Math.round(ms / 60_000);
+  const days = Math.floor(totalMinutes / 1440);
+  const hours = Math.floor((totalMinutes % 1440) / 60);
+  const minutes = totalMinutes % 60;
+  if (days > 0) return `${days}d ${hours}h`;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  return `${minutes}m`;
+}
+
+/** Seven 4px bars, 2px apart, max 16px tall — decorative only (the moved
+ * count and timestamp above already carry the meaning for screen
+ * readers). Height scales against the largest run in this collection's own
+ * last 7, so one very busy collection's bars don't flatten a quieter one's
+ * — grey and short for "moved nothing" or "no run that day", brand orange
+ * for real activity. */
+function Sparkline({ data }: { data: Array<{ moved: number } | null> }) {
+  const max = Math.max(1, ...data.map((d) => d?.moved ?? 0));
+  return (
+    <div className="shuffly-sparkline" aria-hidden="true">
+      {data.map((d, i) => {
+        const moved = d?.moved ?? 0;
+        const height = moved > 0 ? Math.max(4, Math.round((moved / max) * 16)) : 3;
+        return (
+          <div
+            key={i}
+            className={`shuffly-sparkline-bar${moved > 0 ? "" : " shuffly-sparkline-bar--empty"}`}
+            style={{ height }}
+          />
+        );
+      })}
     </div>
   );
 }

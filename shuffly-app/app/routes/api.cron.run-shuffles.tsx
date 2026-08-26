@@ -12,7 +12,16 @@ import { runDueShuffles } from "../lib/cron.server";
 
 function authorized(request: Request): boolean {
   const secret = process.env.CRON_SECRET;
-  if (!secret) return true; // no secret configured — open (fine for local dev only)
+  if (!secret) {
+    // No secret configured: open in local dev (NODE_ENV isn't "production"),
+    // but closed by default in production — this endpoint would otherwise
+    // let anyone on the internet trigger shuffle runs for every shop, and
+    // "remember to set CRON_SECRET" isn't a safe thing to depend on. If
+    // you're relying on the in-process scheduler (the default for this
+    // app's single-container Dockerfile), this route isn't even needed —
+    // just leave CRON_SECRET unset and it'll stay locked.
+    return process.env.NODE_ENV !== "production";
+  }
   return request.headers.get("authorization") === `Bearer ${secret}`;
 }
 
