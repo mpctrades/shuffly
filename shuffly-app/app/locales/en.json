@@ -1,0 +1,12 @@
+{
+  "help.contactSupport.title": "Contact support",
+  "help.contactSupport.badge": "Replies in 1 business day",
+  "help.contactSupport.body": "Email us about anything — a collection that did not shuffle, a run you want undone, or a feature you need.",
+  "help.contactSupport.listHeading": "Include in your message",
+  "help.contactSupport.listItem1": "Your shop domain",
+  "help.contactSupport.listItem2": "The collection name",
+  "help.contactSupport.listItem3": "What you expected to happen",
+  "help.contactSupport.emailButton": "Email support",
+  "help.contactSupport.copyButton": "Copy shop details",
+  "help.contactSupport.copyToast": "Shop details copied"
+}

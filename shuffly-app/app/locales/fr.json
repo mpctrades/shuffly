@@ -1,0 +1,12 @@
+{
+  "help.contactSupport.title": "Contacter l'assistance",
+  "help.contactSupport.badge": "Réponse sous 1 jour ouvré",
+  "help.contactSupport.body": "Écrivez-nous : une collection qui n'a pas tourné, un lancement à annuler, ou une fonctionnalité dont vous avez besoin.",
+  "help.contactSupport.listHeading": "À inclure dans votre message",
+  "help.contactSupport.listItem1": "Le domaine de votre boutique",
+  "help.contactSupport.listItem2": "Le nom de la collection",
+  "help.contactSupport.listItem3": "Ce que vous attendiez",
+  "help.contactSupport.emailButton": "Envoyer un e-mail",
+  "help.contactSupport.copyButton": "Copier les détails de la boutique",
+  "help.contactSupport.copyToast": "Détails copiés"
+}

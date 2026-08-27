@@ -1,7 +1,14 @@
 import { useState } from "react";
-import { Link } from "react-router";
+import type { LoaderFunctionArgs } from "react-router";
+import { Link, useLoaderData } from "react-router";
 import { useAppBridge } from "@shopify/app-bridge-react";
+import { authenticate } from "../shopify.server";
+import db from "../db.server";
+import { getOrCreateShopSettings } from "../lib/shop-context.server";
+import { planOf } from "../lib/plans";
 import { KeyValueRows } from "../components/KeyValueRows";
+import en from "../locales/en.json";
+import fr from "../locales/fr.json";
 
 interface Question {
   id: string;
@@ -130,13 +137,52 @@ const HOW_IT_WORKS: Array<{
   },
 ];
 
+// The "Contact support" card needs real, current facts about this shop — never
+// hard-coded — so a merchant's "Copy shop details" always reflects reality.
+export const loader = async ({ request }: LoaderFunctionArgs) => {
+  const { admin, session } = await authenticate.admin(request);
+  const shop = session.shop;
+  const settings = await getOrCreateShopSettings(admin, shop);
+
+  const [trackedCount, lastRun] = await Promise.all([
+    db.collectionConfig.count({ where: { shop } }),
+    db.shuffleRun.findFirst({
+      where: { shop },
+      orderBy: { createdAt: "desc" },
+      select: { createdAt: true },
+    }),
+  ]);
+
+  return {
+    shop,
+    planName: planOf(settings.plan).name,
+    trackedCount,
+    lastRunAt: lastRun ? lastRun.createdAt.toISOString() : null,
+    strings: settings.language === "fr" ? fr : en,
+  };
+};
+
 export default function Help() {
+  const { shop, planName, trackedCount, lastRunAt, strings: t } = useLoaderData<typeof loader>();
   const shopify = useAppBridge();
   const [query, setQuery] = useState("");
   const [openId, setOpenId] = useState<string | null>(null);
 
   function contactSupport() {
     shopify.toast.show("Support chat isn't available yet — email us instead");
+  }
+
+  function copyDetails() {
+    const lines = [
+      `Shop: ${shop}`,
+      `Plan: ${planName}`,
+      `Collections tracked: ${trackedCount}`,
+      `Last run: ${lastRunAt ?? "none yet"}`,
+    ];
+    navigator.clipboard
+      .writeText(lines.join("\n"))
+      .then(() => shopify.toast.show(t["help.contactSupport.copyToast"]))
+      .catch(() => shopify.toast.show("Couldn't copy that just now", { isError: true }));
   }
 
   const needle = query.trim().toLowerCase();
@@ -157,9 +203,10 @@ export default function Help() {
       <s-button
         slot="primary-action"
         variant="primary"
-        onClick={contactSupport}
+        href="https://shuffly.mpctrades.com"
+        target="_blank"
       >
-        Contact support
+        Website
       </s-button>
 
       <s-stack direction="block" gap="base">
@@ -346,20 +393,43 @@ export default function Help() {
               </s-stack>
             </s-section>
 
-            <s-section heading="Docs">
-              <s-stack direction="block" gap="small">
-                <s-link
-                  href="https://shuffly.mpctrades.com/docs"
-                  target="_blank"
-                >
-                  shuffly.mpctrades.com/docs
-                </s-link>
-                <s-link
-                  href="https://shuffly.mpctrades.com/whats-new"
-                  target="_blank"
-                >
-                  What&apos;s new
-                </s-link>
+            <s-section>
+              <s-stack direction="block" gap="base">
+                <s-stack direction="inline" gap="base" alignItems="center" justifyContent="space-between">
+                  <s-stack direction="inline" gap="small" alignItems="center">
+                    <s-box background="subdued" borderRadius="base" padding="small-200">
+                      <s-icon type="email" color="base"></s-icon>
+                    </s-box>
+                    <s-heading>{t["help.contactSupport.title"]}</s-heading>
+                  </s-stack>
+                  <s-badge tone="info">{t["help.contactSupport.badge"]}</s-badge>
+                </s-stack>
+
+                <s-text color="subdued">{t["help.contactSupport.body"]}</s-text>
+
+                <s-stack direction="block" gap="small-200">
+                  <s-text type="strong">{t["help.contactSupport.listHeading"]}</s-text>
+                  <s-unordered-list>
+                    <s-list-item>
+                      <s-text color="subdued">{t["help.contactSupport.listItem1"]}</s-text>
+                    </s-list-item>
+                    <s-list-item>
+                      <s-text color="subdued">{t["help.contactSupport.listItem2"]}</s-text>
+                    </s-list-item>
+                    <s-list-item>
+                      <s-text color="subdued">{t["help.contactSupport.listItem3"]}</s-text>
+                    </s-list-item>
+                  </s-unordered-list>
+                </s-stack>
+
+                <s-stack direction="inline" gap="small">
+                  <s-button variant="primary" href="mailto:support@mpctrades.com">
+                    {t["help.contactSupport.emailButton"]}
+                  </s-button>
+                  <s-button onClick={copyDetails}>
+                    {t["help.contactSupport.copyButton"]}
+                  </s-button>
+                </s-stack>
               </s-stack>
             </s-section>
           </s-stack>

@@ -1,0 +1,1504 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Shuffly — Random &amp; rotating collections for Shopify</title>
+<meta name="description" content="Shuffly reorders the products inside your Shopify collections on a schedule, server-side through Shopify's own API. No theme code, no scripts, no speed cost.">
+<link rel="icon" type="image/png" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAYAAADDPmHLAAAS90lEQVR42u2deZBddZXHP+f3u+91estOJBA6ogwIKBYM6ihONY5oAXEZrekZFZdyyoXEZYZAUYgOYRF0BhQUSBAVZBlcWrEMoUWDTBoFBAEVMDFJB5JOQhayp/u9fu/d+zvzx+++7kfMTr/ud1/fX9Wrrup0pW//zvd79nOuMAxH52FYgpFuwsHvvWd6E6bhDUTuTWD+HtwJwHRgMirNCJb0VFwiEaL9qGwF1mFYgeqfwD6BDDwnizbkBn+0nYAzcXIF7pX+Wnllz4zQgZFOIgB935RWaDkLx/uBt6McS2CM/2EFrfianr1LQ2ToK0DoHMILwO8QFiLjFsvC5bsBtANLJ05ewY0eNgC0Azso+PfOOA61nwI+QmCOASBScAqK81hBkMHfJ6m098UpQD1V4jszGAE7CIi1wD1I9D25b13PnrKoOgB0HqasevTcV8/EcjGqnyAwzUQKkUbx/yyASWU6LMfFoAArFisQun6EHxDJtdK1es2esqkKALSdQLoJFSyz2i7EmEuwMonQgWoIYlN2j4SW0AiRgMBApNtx7uvc3/sNgagso2EHwKDwZ814PWJvIWPOoJQKfvSBYAIyAiX3CBqdL/eve+5QQGAOxtHTDqwXftt5GPso1pxB0YVeLUmQCn+0XEYJUFWKLsSaMzD2UZ3Vdp50E2oHVg9CLuaAXv48RDqJdNbMKwjs3ai0UnIRkAq+dmKHgJKLUGklsHfrrJmXSycR85ADgUAOJsTTWW03k7VzKLgIMBXefHpqyygo4GgwlmI0X+7v/dyBQkU5oM0/t20BDcH5FKMSkElvORGnRNZmKIQLpKt3zv58ArNf4Z8z8yoabCr85J0MxahEg52t58y8SroJtZ3goDRAOamg57Z9lKy9i5ILY3ufnuSdkIwJKEYfk67eu/eWMJK9JXn07LaTCMyToFkUkzp7CfYKBAdSJHSnywO9S/dMFpmXOX1LEW0nwModWGmMfywVfpIjBAdYacTKHdpOwNKXRwZDPkC5qNPcdgFZczqhC9OKXV1AwBK6kKw5nea2C6STiI4huUvMfgMos2YcBXYZQjPqa1LpDdaNKVCUfqx7HQvXbojrjc7E7BcfJ5pLyZjWuIKXCr+e9IDiyJhWIvmygNLh5SuDjt+5r56J6DJgXFqyreNSMwygcqJ0rV6j8zCGJe2xPdA5ZEwjEKXCr9uUcUTGNCI6G4Al7cb7AO96VTOZcSuxMh2nLq3jU799BUYMkW7AFI+TRRtyXtDZxneSNdPjZo5U+PV7DJFGZM10tOGsijDQfWDQU0xP/buDoLHMEW2fOY5mlmLl2FT9jyEz4PR5+jjZ0BKdgjATp6TCHyNmwMv61bREpxjUvIXAGPTwukrTk9AZhMAY1LzFIJyW3siY9QdOMygnoJomfsacK6iAHG+AGYMjCOkZK+KPYwGdEQATE6UBRIY+I/LIGo+zxZ+60gBMChAaaz76FwPGgIugVISw5D8jIRARsAFksv5jLDgH6kh8ZUBoDOKhjhoNWOJmpIEcFPLQ0AhHHAVHtsH0mTBpKjS1egGpDo9C0FjoUQi5PtixBTasgY298NJ6GMhDwzgY1xRH1UkGgtja7O0X8cLv3+0v+LUnw9vOgTe9A449EZrHj/wz5XbDC3+FJ5fAo13Q86zXTE2tXhsk0zyI6KyZtfXk1kKx4Fn/xrfBB8+Ht77bq99BlurIXbqIF7RU8CQswRMPws++A0//1muEhkavNZKGgJoCgA1g9w6YOh0+eQmc/ZGhi4+iPRzAkbaZFY6grbCai38Ct33Nm4jxkxIHgtoBgLWwYyv8w7vhwuth2tFDTDc12JjsoiHNsG0zXH8hPHwfTJziwUpS8sK1JPwPfAq+/mMv/CiMfYEaHTw2dshZnDwNrroLPvQF/3cYmwLgkNT+jq3QMQf+87q4Uun895NwbOC1lHMw+yr46FzYuTUxz29G/fJ2boN3dcDnr/FqlTgCSJQhjU1BFMGnL4NZH/NmwdoUAPuN8fN9cNzJcOENnkWj5eANZ+gahV6TveUsyPXXPJhH7+l8MQLmXg+NzXEiJ+HtCGXTlW3w+YoorPkMezB6qn8rfPAzcNLp/qKSYvP3JXgRr/JfWArfvgSeeRRaxsdmLQXAy1VlWISJU+HDX/TMNwlmfhQN2fqfLoA7/senkJsn1LzwRwcAxvpkz/v/FY442l9SgsKmIRMWD09ZC2uWw81fhscfhJYJPlXtkpELCEZFXWay3vNPanm1kvU/uwXuuBb6d3qt5qLECH/kASAGinmYeQK87rTY67cJY32cuFrbAzd9CX6/2LO+ZUIiawEjCwAjUBiAk98MQeblTEoS639xG9x2jTdlZdYnKP07iiZAvNo//o17zCvWOOs1Zv2Lq+HmS+GRLmgaD63JZP3oAUBj+3/0sUMRQRJYL8D9d8H3v+obRCYkm/WjBwDnfN188rTankCvLPtuWgvzvwLdC6GpBVonDjvrI/XWUeobABJrgIwHQa3Kf5D1Ar/+Mdx6BWzdCBOmDDvry69PsIGUV+vXMQAE/0fawDuAtYaAcu+BtbBlAyz4L3joXt/7N35yVVhvDUggPLC5yBuaLUc3WtTpiN5KOgs42NwR9x48dC987t3+6/hJcbQSDivrIwWbEXZGygXLc5zzTB+P7YrA+H+r/1pArbHeWNi+GW6ZB7/+CYxrrCrrbSAs3lLiop48f81HBEZ4ui/kX8iOkWJQrbDeWJ+Ievg+WHAZbFjtBa+uKqwPAqEvVC5flWP++gJWYGpG2FJSlufc4Lq2FAAjxfqd2+DWy+GX9/gS7oQp1WG9QJARlmwtMbcnz5/7I6ZkvKUvOQgENpUcRIqRFAAjw/pHH/Dh3bpVMeu1aqzPh8qVK3PcuL4AwBEZIdQhJ8wg9EVQdJA15aGdFADVYf3uHfC9q2DRnd7BqwLrXRzXBxnhkW2e9U/2RUwJfLAf6l4GkRQilPLGxlQDVIP1Tzzoy7arl3vBV5H1hUi5uifPDesGiCpZr6QdQSPGehfH9f274barfRHHWl/AqSLrH98RMndljt/vjpgcCGYP1qcAGCnWWwtPLfGsX/UXmDA59syGV/hhzPpSpPz383muW1ugqDrI+khJawEjzvqBHNz+Nbj3Vt+HUCXWS8z6p3aGzF2Z53e7QiYHQoORmmV9fQLAxSNk1sIzj8GNl8CKP3sPX6rEeis4Va59Ic/XegsUEsL6OgOAQuSGporvvBY653tAlFmv1WH9s7tC5vbkeWhHyKRAaE0I6+sHAJWs/8sffIvW0id9Dr88t1cF1oNyw5oBrl4zwO7Isz5KEOvrAwDlsm1Ygru/AT+60Qt8kPU6rKwnZv2y3RFze3L8envIxECYECSP9ckGgHM+3rIW/vpHuOkSePZx36iRHVdF1sPNvQNcuWaAnWGyWZ9cAJRZ7yK45wb/KRaGWD+M7diVrF/ZF3FhT577t5XqgvXJA0Dl6NXKZ7yt/9MjnvVNrVVl/a1rC8xbnWdbHbE+WQAos14Vfvhtb+8L+Zj10fCzHs/65/sjLurJs3BrifGBMKmOWJ8MAFSy/vmlnvVPdVeN9ZGCtb5Yc9v6Ape9kGdzSZkas74ehV+7AKgcwuic72P7XF9VRq+03KqYEXpznvX3binRaoXJdcr62gVA5ejVmhWe9U/8ZmjgsiotWoK1cNeLBb7y/AAbSq7uWT86ACgXvsPQx+4V+0r/hvU//y7c/nXo21l11q/POy7uyfGTl0q0jBHWj5IG0KHdAAO5ismwCtavWwU3XQqP/covV6jC6NVgY6YVfrShyJeez7Ou4JgyhljPqLWFG+N37W7ZOFSWFeM/C38Anz/bN21MnOrLucM8hFFux95YUj6xtJ+PL+tne6hMiQs4Y0z2owAAMV79r1/lw7pM1nfifuU8+OYFPqlTHr0axlRuFCsfmxF+urHI25/ezT2bikzKCFkZe6wfRScwlsSKZ/zXRXf6MesdL1Vt9Kps618acHxpeY47NxVpNDLI+rF+Rmc49LnH4Yp/h//7OTS2QOukqg5h/GJTkYtX5Vk14G29KqnwR2c8XH3//aZ1fsNGlYYwyqzfVnB8eUWO2zcWyRphag2yXuJryQgEI9wRPDp5AFUIAsgM/yKlStZ3vVTiop4cK/K1z3qH0mg8CEZ6ZDYYvT79Ktj6QNhVclzWk+c7LxbI1Cjr/2ZrnsKRWQNGcCM8HZT4lrDy6JXNCA9uKXHRqjzPlkevEmDrBf+Mr200EL8WyaTFoEMbwugPlctX+IFLkZePXiUlFj+txaa1gMMZuOzeWuLCVXn+2Dc0cJkk4ZcUJmeEt44PIG52SgFwkAOXX12Z41t7GbhMyrECO0PlXZMyzGyyOKfpePjBjF49uj1kbk+OP8SjV5LQbF7Z/n9sWmbI/qcaYB/CD4RipFyzKs831xaIGBrCSOLGWQP0R3BKs+V9R2TRULGS+gB7jRhNIDy1K+Q/VuZ4bFd54DLZqVwjkHPKxcc0MC4jRKUUAHt39gLh9hcLzFmRw1Z4+EluzAwEtoXKuZMD/u3ILG6U2F/zAJDY8zu5ydJsZXDTXJKPERhwMDUQvnVc09D6XBnLr43bz2VFkfLmyQHfPb6JnZGiCd5tZ2IAF5zy/ROaeE2LHfHMX+L2BFqBsKh84MgsNx3XyPZQcfH3kxbyRcCuUPnO8U2cMy1LWNJR/zuCpNjMsKR85phxZET4Qk8OI9BshFICTEJGoC9SBOGO1zXx4aMaCEtKIOmLIw8JBFFJ+eSMBha+oYXpWcPmkk+c1Ko2iHdCsbmktI0z/PKU5poSfuJWxdoYBP80OcNvT23l09Oz5J2yPY4HAxm9rdtlp9WKfw4FtpWUoipzjmrgt6e2csakDFENCb/23h5+iHV/rPDY9pAb1w+weFvItlDJCowzQqb8ovERSlGr+rz+gFOKClMC4ezJGb44o4HTJwYQqd9jIenbw4e9BwBgeV/EfVtLLN5eYlkuYmtJKbrBpvOqq9EGA1MyhpObDGdNyvDeqRn+rtnGzc86qprpQABwNf96Sw480GmsDMZZGwccqwYcqwccGwqOYpVavgVoNMKrssJrxhle02iZ1mDi5wAXZ6tM7d6uis5qK4EkvjHElTVC+fXDI025WCWpDr0BpPYdLC0FKHkMrUmfijAVTFMFF+qI/kmVmAskIaVIx0AAbEekFVVNsinYmzeenv3oKxEB3W6A9b43mbRTfuyI37+XRmSdQVgev74tBcDY0gCArjAoT6f3MWbPUwHG/Z5QHIJN72OMHMESOoe4xw277bPA6tiFdunt1P1xsaxXs9s+a6R7zQDow1jRFABjBABWFPRh6V4zEOcqzM9RBCUNnsaA+4ciiL13qBpYzP+GMNqIFZtqgbpnvyV0GyjkHgIw2t4eyOJN/ajcGWdPUgDUNwBAuUsWb+rX9vbAcGa3F3jEAsJoINYKaU6gHpU/WEouDzIfgDO7nZErcNqBlV+tWY3jdjLG4NvX0lNfJyJjBPR26Vq9RjuwcgWunAL0rH/fMdNxZhnQUk4WpvdWR64f9GHciSxcuyFeTeBMXDxxdGBk4doXUa5MtUBdst+gXCkL175IB0ZiX08q93fRgWEzQsvMxwjM6ZRclGYIE8/9iIyxhO5J+ta8lWkonbjyNiJTUUJVTkKlm5BIP0Gk+fhfU4cwyeI3QKR5lI9LNyEnoZWrqF7WtDLoED7QuxTnPktgbGoKEq76A2Nx7jPStWZZ2fFjf23h0kmk7QTS1XsXhehqsiYASuldJu6UyJqAQnS1dPXere0E0vm3ZN6nl6/tBNJNqOe2LaAhOJ9iVAIy6b0mRfg2QyG8Rbp6Z5dlySENhnQTaQdWunpnUwoXkDUZlCjtHKrxTh8lImsyFMIF0tU7WzuwdO/bjJv99NUpnTidh5FFvXMouKvIGIsRQVO/oCa9fSNCxlgK7irp6p2j8zCVHv8+R/APtN6ZDox0EumstvMwsgBjWgldCNg0WVQbu7MITIBzu3E6W+7v/V/twB5I+Ie0lXTQJ5g14/WIvYWMOYOSA9UQJAXCqAheI0QCMgZK7hHEfVbuW/uX/dn8wwYAgHZgpdOP5vGetgsQcylWJhEOAsEkeH9D8gQfGIh0O+quYVHv9ULst3UevIk+JGFJJ5HO84s7ZFHvdUScSqTzgX4yNsCIiR3FiLSszDDvk46G7LwNgH4inU/EqbKo9zohlk3noflnh622K5Gm751xHGo/jfAhjGlD4hFep+AXevihExn8fam52Lc9L89olO/M+Hclx1cWurXAD5Hou3Lfup49ZcHh7GF6Je//KDuI/kGOaGGg+Z0o/wz6jyjHEhgztCG84mt69i6N8ky7DArcIbwA/A7lF9i+B2Xh1t1lwR+Mo1c1AAwCYR6GJZhKx0PfM70JHfd6iN4M5jRwJwLTQcaj2oxIJtUElRG8loAcyHaEDaDLgafBPoEMPCeLNuQqHXLOxO2Z1j2c8/+QQPspAPb1uQAAAABJRU5ErkJggg==">
+<style>
+  :root {
+    --ink: #131110;
+    --orange: #FF4B1F;
+    --orange-dark: #D93C15;
+    --paper: #FFFFFF;
+    --grey-50: #FAF9F8;
+    --grey-100: #F1EFED;
+    --grey-200: #E6E3E0;
+    --grey-300: #D9D5D1;
+    --grey-500: #948E88;
+    --grey-600: #6B6560;
+    --radius: 14px;
+    --max: 1120px;
+    font-size: 16px;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, Helvetica, Arial, sans-serif;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  img, svg { display: block; max-width: 100%; }
+  a { color: inherit; }
+  .wrap { max-width: var(--max); margin: 0 auto; padding: 0 24px; }
+  section { padding: 96px 0; }
+  h1, h2, h3, h4 { margin: 0; line-height: 1.15; font-weight: 800; letter-spacing: -0.02em; }
+  h2 { font-size: clamp(28px, 4vw, 40px); }
+  h3 { font-size: 19px; }
+  p { margin: 0; }
+  .eyebrow {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--orange);
+    margin-bottom: 14px;
+  }
+  .eyebrow::before { content: ""; width: 18px; height: 2px; background: var(--orange); border-radius: 2px; }
+  .lede { font-size: 18px; color: var(--grey-600); max-width: 640px; }
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    height: 48px;
+    padding: 0 24px;
+    border-radius: 999px;
+    font-size: 15px;
+    font-weight: 700;
+    text-decoration: none;
+    border: none;
+    cursor: pointer;
+    transition: transform 120ms ease, background-color 120ms ease, border-color 120ms ease;
+  }
+  .btn:hover { transform: translateY(-1px); }
+  .btn-primary { background: var(--orange); color: #fff; }
+  .btn-primary:hover { background: var(--orange-dark); }
+  .btn-ghost { background: transparent; color: var(--ink); border: 1.5px solid var(--grey-300); }
+  .btn-ghost:hover { border-color: var(--ink); }
+  .btn-dark { background: var(--ink); color: #fff; }
+  .btn-dark:hover { background: #000; }
+
+  /* ---------- nav ---------- */
+  header.nav {
+    position: sticky;
+    top: 18px;
+    z-index: 50;
+    background: transparent;
+    padding-bottom: 18px;
+  }
+  header.nav .wrap { max-width: calc(var(--max) + 24px); }
+  .nav-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    height: 64px;
+    background: var(--ink);
+    border-radius: 999px;
+    padding: 8px 8px 8px 22px;
+    box-shadow: 0 12px 30px -8px rgba(19,17,16,0.35), 0 0 0 1px rgba(255,255,255,0.06) inset;
+  }
+  .brand { display: flex; align-items: center; gap: 10px; font-weight: 800; font-size: 16px; letter-spacing: 0.06em; text-transform: uppercase; text-decoration: none; color: #fff; }
+  .brand .dot { color: var(--orange); }
+  .brand-mark { width: 26px; height: 26px; border-radius: 7px; flex: none; display: block; }
+  .nav-links { display: flex; align-items: center; gap: 28px; }
+  .nav-links a { font-size: 14px; font-weight: 600; text-decoration: none; color: rgba(255,255,255,0.68); transition: color 120ms ease; }
+  .nav-links a:hover { color: #fff; }
+  .nav-cta { display: flex; align-items: center; gap: 14px; }
+  .nav-cta .btn-primary { height: 48px; padding: 0 22px; }
+  .nav-toggle { display: none; }
+
+  /* ---------- hero ---------- */
+  .hero { padding: 88px 0 72px; position: relative; overflow: hidden; }
+  .hero-glow {
+    position: absolute; top: -180px; right: -160px; width: 480px; height: 480px; border-radius: 50%;
+    background: radial-gradient(circle, rgba(255,75,31,0.16), transparent 70%); pointer-events: none;
+  }
+  .hero h1 { font-size: clamp(38px, 6vw, 64px); max-width: 780px; }
+  .hero h1 em { font-style: normal; color: var(--orange); }
+  .hero .lede { margin-top: 20px; font-size: 19px; }
+  .hero-tag { margin-top: 10px; font-size: 14px; font-weight: 700; color: var(--ink); }
+  .hero-ctas { display: flex; gap: 14px; margin-top: 34px; flex-wrap: wrap; }
+  .hero-strip { margin-top: 46px; display: flex; gap: 28px; flex-wrap: wrap; font-size: 13px; color: var(--grey-600); }
+  .hero-strip span { display: inline-flex; align-items: center; gap: 7px; }
+  .hero-strip .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--orange); flex: none; }
+
+  /* ---------- section header ---------- */
+  .section-head { max-width: 640px; margin-bottom: 48px; }
+  .section-num { font-size: 13px; font-weight: 700; color: var(--grey-500); letter-spacing: 0.06em; }
+
+  /* ---------- problem cards ---------- */
+  .problem-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; align-items: stretch; }
+  .problem-card {
+    background: var(--grey-50); border: 1px solid var(--grey-200); border-radius: 12px;
+    padding: 20px; display: flex; flex-direction: column; gap: 10px;
+    transition: border-color 150ms ease, transform 150ms ease;
+  }
+  .problem-card:hover { border-color: var(--orange); transform: translateY(-2px); }
+  .problem-card .num { font-size: 12px; font-weight: 700; color: var(--ink); opacity: 0.4; }
+  .problem-icon {
+    width: 34px; height: 34px; border-radius: 9px; background: rgba(255,75,31,0.10); color: var(--orange);
+    display: flex; align-items: center; justify-content: center; flex: none; margin: 2px 0 4px;
+    transition: background-color 150ms ease;
+  }
+  .problem-card:hover .problem-icon { background: rgba(255,75,31,0.16); }
+  .problem-icon svg { width: 18px; height: 18px; }
+  .problem-card .cost-head { font-size: 15px; font-weight: 700; color: var(--orange); }
+  .problem-card .approach { font-size: 13px; font-weight: 600; color: var(--ink); text-decoration: line-through; text-decoration-color: var(--grey-500); text-decoration-thickness: 1.5px; }
+  .problem-card .explain { font-size: 13px; color: var(--grey-600); line-height: 1.5; }
+
+  .fix-kicker {
+    margin-top: 44px; font-size: 12px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--orange);
+  }
+  .insight-line {
+    margin-top: 12px; padding: 28px 30px; border-radius: 12px; background: var(--ink); color: #fff;
+    font-size: 16px; line-height: 1.6;
+  }
+  .insight-line strong { color: var(--orange); }
+
+  @media (max-width: 1100px) {
+    .problem-grid { grid-template-columns: 1fr 1fr; }
+  }
+  @media (max-width: 700px) {
+    .problem-grid { grid-template-columns: 1fr; }
+  }
+
+  /* ---------- how it works ---------- */
+  .hiw-layout { display: grid; grid-template-columns: 1fr 1fr; gap: 64px; align-items: start; }
+  .hiw-steps { position: relative; padding-left: 76px; }
+  /* Centered under the number chips: each chip is 36px wide at left:-56px
+     inside a step (whose own content starts 76px in, from .hiw-steps'
+     padding-left) — chip centre = 76 - 56 + 18 = 38px, so the 2px track
+     sits at 38 - 1 = 37px to line up exactly, not float to one side. */
+  .hiw-rail-track {
+    position: absolute; left: 37px; top: 6px; bottom: 6px; width: 2px;
+    background: var(--grey-200); border-radius: 2px; overflow: hidden;
+  }
+  /* Nested inside .hiw-rail-track (not a sibling) so this width:100% resolves
+     against the 2px track, not the whole steps column. */
+  .hiw-rail-fill {
+    position: absolute; left: 0; top: 0; width: 100%; height: 0%;
+    background: linear-gradient(180deg, var(--orange), #ff7a4d);
+    border-radius: 2px; transition: height 0.45s cubic-bezier(.4,0,.2,1);
+  }
+  .hiw-step {
+    position: relative; display: block; width: 100%; text-align: left;
+    background: none; border: none; padding: 26px 0; margin: 0; cursor: pointer;
+    font: inherit; color: inherit;
+    opacity: 0.34; transition: opacity 0.35s cubic-bezier(.4,0,.2,1);
+  }
+  .hiw-step.on { opacity: 1; }
+  .hiw-step:not(.on):hover { opacity: 0.6; }
+  .hiw-step:not(.on):hover .hiw-chip { border-color: var(--grey-500); color: var(--ink); }
+  .hiw-step:focus-visible { outline: 2px solid var(--orange); outline-offset: 4px; border-radius: 8px; }
+  .hiw-chip {
+    position: absolute; left: -56px; top: 26px; width: 36px; height: 36px; border-radius: 50%;
+    background: var(--grey-50); border: 2px solid var(--grey-200); color: var(--grey-500);
+    display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 14px;
+    z-index: 2;
+    transition: background-color 0.35s cubic-bezier(.4,0,.2,1), border-color 0.35s cubic-bezier(.4,0,.2,1),
+                color 0.35s cubic-bezier(.4,0,.2,1), transform 0.35s cubic-bezier(.4,0,.2,1), box-shadow 0.35s cubic-bezier(.4,0,.2,1);
+  }
+  .hiw-step.on .hiw-chip {
+    background: var(--orange); border-color: var(--orange); color: #fff;
+    transform: scale(1.06); box-shadow: 0 0 0 6px rgba(255,75,31,0.18);
+  }
+  .hiw-step h3 { font-size: 21px; font-weight: 800; margin-bottom: 8px; letter-spacing: -0.01em; }
+  .hiw-step p { color: var(--grey-600); max-width: 460px; }
+  .hiw-step-chips { display: none; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+  .hiw-step.on .hiw-step-chips { display: flex; }
+  .hiw-step-chips span {
+    font-size: 11.5px; font-weight: 700; padding: 5px 11px; border-radius: 999px;
+    background: rgba(255,75,31,0.1); color: var(--orange-dark);
+  }
+
+  .hiw-right { position: relative; }
+  .hiw-stage { position: sticky; top: 96px; height: 440px; }
+  .hiw-panel {
+    position: absolute; inset: 0; background: #fff; border-radius: 18px; border: 1px solid var(--grey-200);
+    box-shadow: 0 24px 48px -24px rgba(19,17,16,0.22); padding: 22px;
+    opacity: 0; transform: translateY(14px) scale(0.985); pointer-events: none;
+    transition: opacity 0.4s ease, transform 0.4s ease;
+    display: flex; flex-direction: column;
+  }
+  .hiw-panel.on { opacity: 1; transform: none; pointer-events: auto; }
+  .hiw-panel-label { font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--grey-500); margin-bottom: 16px; }
+
+  /* Each panel's own direct children (label, rows, tile groups, pills…)
+     reveal with a short stagger once the panel goes active, instead of the
+     whole card just cross-fading as one flat block — this is what makes a
+     panel feel like it's populating rather than just appearing. */
+  .hiw-panel > * { opacity: 0; transform: translateY(8px); transition: opacity 0.35s ease, transform 0.35s ease; }
+  .hiw-panel.on > * { opacity: 1; transform: none; }
+  .hiw-panel.on > *:nth-child(1) { transition-delay: 0.02s; }
+  .hiw-panel.on > *:nth-child(2) { transition-delay: 0.07s; }
+  .hiw-panel.on > *:nth-child(3) { transition-delay: 0.12s; }
+  .hiw-panel.on > *:nth-child(4) { transition-delay: 0.17s; }
+  .hiw-panel.on > *:nth-child(5) { transition-delay: 0.22s; }
+  .hiw-panel.on > *:nth-child(6) { transition-delay: 0.27s; }
+
+  /* panel 1 — collections */
+  .hiw-row { display: flex; align-items: center; gap: 12px; padding: 11px 0; border-bottom: 1px solid var(--grey-100); }
+  .hiw-row:last-child { border-bottom: none; }
+  .hiw-check { width: 18px; height: 18px; border-radius: 5px; border: 2px solid var(--grey-300); flex: none; position: relative; }
+  .hiw-check.on { background: var(--orange); border-color: var(--orange); }
+  .hiw-check.on::after { content: ""; position: absolute; left: 5px; top: 1px; width: 5px; height: 9px; border: solid #fff; border-width: 0 2px 2px 0; transform: rotate(45deg); }
+  .hiw-row-name { font-size: 14px; font-weight: 700; flex: 1; }
+  .hiw-row-count { font-size: 12.5px; color: var(--grey-500); }
+
+  /* panel 2 — rules */
+  .hiw-toggle-row { display: flex; align-items: center; justify-content: space-between; padding: 9px 0; }
+  .hiw-toggle-label { font-size: 13.5px; font-weight: 600; }
+  .hiw-toggle { width: 34px; height: 20px; border-radius: 999px; background: var(--grey-200); position: relative; flex: none; }
+  .hiw-toggle.on { background: var(--orange); }
+  .hiw-toggle::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: left 0.2s ease; }
+  .hiw-toggle.on::after { left: 16px; }
+  .hiw-tiles-mini { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; margin-top: 14px; }
+  .hiw-tile-mini { aspect-ratio: 1; border-radius: 7px; background: var(--grey-100); border: 1px solid var(--grey-200); position: relative; }
+  .hiw-tile-mini.pinned { background: var(--orange); border-color: var(--orange); }
+  .hiw-tile-mini.pinned::after {
+    content: "PIN"; position: absolute; bottom: 3px; left: 0; right: 0; text-align: center;
+    font-size: 7px; font-weight: 800; color: #fff; letter-spacing: 0.04em;
+  }
+
+  /* panel 3 — schedule */
+  .hiw-time-card { background: rgba(255,75,31,0.08); border-radius: 12px; padding: 18px; text-align: center; }
+  .hiw-time { font-size: 40px; font-weight: 800; color: var(--orange); letter-spacing: -0.02em; }
+  .hiw-time-sub { font-size: 12px; color: var(--grey-600); margin-top: 2px; }
+  .hiw-pill-row { display: flex; gap: 8px; margin-top: 16px; flex-wrap: wrap; }
+  .hiw-sched-pill { font-size: 12.5px; font-weight: 700; padding: 7px 13px; border-radius: 999px; border: 1px solid var(--grey-300); color: var(--grey-600); }
+  .hiw-sched-pill.selected { background: var(--ink); border-color: var(--ink); color: #fff; }
+  .hiw-next-run { margin-top: auto; padding-top: 16px; font-size: 12.5px; color: var(--grey-500); }
+  .hiw-next-run strong { color: var(--ink); }
+
+  /* panel 4 — tonight's run */
+  .hiw-tiles-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+  .hiw-tile {
+    aspect-ratio: 1; border-radius: 9px; background: var(--grey-100); border: 1px solid var(--grey-200); position: relative;
+    transition: transform 0.55s cubic-bezier(.34,1.3,.5,1);
+  }
+  .hiw-tile.pin { background: #fff; border: 1.5px solid var(--ink); }
+  .hiw-tile.pin::after {
+    content: "PIN"; position: absolute; top: 5px; left: 5px; font-size: 7px; font-weight: 800;
+    color: var(--ink); letter-spacing: 0.04em;
+  }
+  .hiw-api-pill {
+    margin-top: auto; align-self: flex-start; background: var(--ink); color: #fff; font-size: 12px; font-weight: 700;
+    padding: 9px 14px; border-radius: 999px;
+  }
+
+  /* panel 5 — activity */
+  .hiw-log-row { display: flex; align-items: center; gap: 10px; padding: 11px 0; border-bottom: 1px solid var(--grey-100); }
+  .hiw-log-row:last-child { border-bottom: none; }
+  .hiw-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--grey-300); flex: none; }
+  .hiw-dot.hot { background: var(--orange); }
+  .hiw-log-text { font-size: 13px; font-weight: 600; flex: 1; }
+  .hiw-log-time { font-size: 12px; color: var(--grey-500); }
+  .hiw-undo-btn {
+    margin-top: auto; align-self: flex-start; border: 1.5px solid var(--orange); color: var(--orange-dark);
+    background: none; font-size: 13px; font-weight: 700; padding: 10px 16px; border-radius: 999px;
+  }
+
+  .footnote-strip { margin-top: 20px; display: flex; gap: 10px; flex-wrap: wrap; }
+  .footnote-chip {
+    font-size: 12.5px; font-weight: 700; padding: 8px 14px; border-radius: 999px;
+    background: var(--grey-100); color: var(--ink);
+  }
+
+  @media (max-width: 940px) {
+    .hiw-layout { grid-template-columns: 1fr; gap: 0; }
+    .hiw-stage { position: static; height: auto; margin: 20px 0 8px -76px; }
+    .hiw-panel { position: static; opacity: 0; transform: none; height: 0; overflow: hidden; padding: 0; border: none; box-shadow: none; pointer-events: none; }
+    .hiw-panel.on { opacity: 1; height: auto; padding: 22px; border: 1px solid var(--grey-200); box-shadow: 0 24px 48px -24px rgba(19,17,16,0.22); }
+    h2.hiw-headline { font-size: 34px; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .hiw-step, .hiw-chip, .hiw-panel, .hiw-panel > *, .hiw-rail-fill, .hiw-tile, .hiw-toggle::after { transition: none !important; }
+  }
+
+  /* ---------- differentiators ---------- */
+  #features .section-num { font-size: 11px; font-weight: 800; letter-spacing: 0.09em; text-transform: uppercase; color: var(--orange); }
+  .diff-subhead { margin-top: 12px; font-size: 15px; color: #5f5b58; max-width: 560px; }
+  .diff-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; align-items: stretch; }
+  .diff-card {
+    background: #fff; border: 1px solid #e6e2df; border-radius: 16px; overflow: hidden; padding: 22px;
+    display: flex; flex-direction: column;
+    transition: border-color 0.22s ease, transform 0.22s ease, box-shadow 0.22s ease;
+  }
+  .diff-card:hover {
+    border-color: var(--orange); transform: translateY(-2px); box-shadow: 0 6px 20px rgba(19,17,16,0.07);
+  }
+  .diff-icon {
+    width: 34px; height: 34px; border-radius: 9px; background: rgba(255,75,31,0.10); color: var(--orange);
+    display: flex; align-items: center; justify-content: center; flex: none;
+    transition: background-color 0.22s ease;
+  }
+  .diff-icon svg { width: 18px; height: 18px; }
+  .diff-card:hover .diff-icon { background: rgba(255,75,31,0.16); }
+  .diff-kicker { margin-top: 16px; font-size: 10px; font-weight: 800; letter-spacing: 0.1em; text-transform: uppercase; color: var(--orange); }
+  .diff-card h3 { margin-top: 16px; font-size: 15px; font-weight: 700; color: var(--ink); letter-spacing: -0.01em; }
+  .diff-card .diff-kicker + h3 { margin-top: 6px; }
+  .diff-card p { margin-top: 8px; font-size: 13.5px; line-height: 1.6; color: #5f5b58; }
+  .diff-card.featured { background: var(--ink); border-color: var(--ink); }
+  .diff-card.featured h3 { color: #fff; }
+  .diff-card.featured p { color: rgba(255,255,255,0.72); }
+  .diff-card.featured .diff-icon { background: var(--orange); color: #fff; }
+  .diff-card.featured:hover { border-color: var(--orange); }
+
+  @media (max-width: 1000px) {
+    .diff-grid { grid-template-columns: 1fr 1fr; }
+  }
+  @media (max-width: 640px) {
+    .diff-grid { grid-template-columns: 1fr; }
+  }
+
+  /* ---------- comparison table ---------- */
+  .table-wrap { overflow-x: auto; border: 1px solid var(--grey-200); border-radius: var(--radius); }
+  table.compare { width: 100%; border-collapse: collapse; min-width: 640px; }
+  table.compare th, table.compare td { padding: 14px 18px; text-align: left; font-size: 14px; border-bottom: 1px solid var(--grey-200); }
+  table.compare th { font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--grey-600); background: var(--grey-50); }
+  table.compare th.hl { color: var(--orange-dark); }
+  table.compare td.hl-col, table.compare th.hl { background: #FFF4EF; }
+  table.compare tr:last-child td { border-bottom: none; }
+  .mark-yes { color: var(--orange-dark); font-weight: 800; }
+  .mark-no { color: var(--grey-500); }
+  .mark-mid { color: var(--grey-600); }
+
+  /* ---------- insights spotlight ---------- */
+  .insights-section { background: var(--grey-50); }
+  .insights-layout { display: grid; grid-template-columns: 1fr 1fr; gap: 48px; align-items: center; }
+  .insights-list { display: flex; flex-direction: column; gap: 22px; margin-top: 30px; }
+  .insights-item { display: flex; gap: 14px; }
+  .insights-item .ico {
+    width: 34px; height: 34px; border-radius: 9px; background: var(--ink); flex: none;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .insights-item .ico span { width: 10px; height: 10px; border-radius: 3px; background: var(--orange); }
+  .insights-item h3 { font-size: 15.5px; margin-bottom: 4px; }
+  .insights-item p { color: var(--grey-600); font-size: 14px; }
+
+  .mock { background: var(--paper); border: 1px solid var(--grey-200); border-radius: var(--radius); padding: 18px; }
+  .mock-caption { font-size: 11px; color: var(--grey-500); text-align: center; margin-top: 10px; }
+  .mock-tiles { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+  .mock-tile { border: 1px solid var(--grey-200); border-radius: 10px; padding: 12px; position: relative; overflow: hidden; }
+  .mock-tile .bar { position: absolute; top: 0; left: 0; right: 0; height: 2px; background: var(--ink); opacity: 0.15; }
+  .mock-tile.lead .bar { background: var(--orange); opacity: 1; }
+  .mock-tile .lbl { font-size: 9.5px; font-weight: 700; letter-spacing: 0.05em; color: var(--grey-600); text-transform: uppercase; }
+  .mock-tile .val { font-size: 19px; font-weight: 800; margin-top: 6px; }
+  .mock-tile.lead .val { color: var(--orange); }
+  .mock-tile .dsc { font-size: 10.5px; color: var(--grey-500); margin-top: 2px; }
+  .mock-dist { margin-top: 12px; border: 1px solid var(--grey-200); border-radius: 10px; padding: 14px; }
+  .mock-dist .lbl { font-size: 9.5px; font-weight: 700; letter-spacing: 0.05em; color: var(--grey-600); text-transform: uppercase; margin-bottom: 10px; }
+  .mock-bars { display: flex; align-items: flex-end; gap: 3px; height: 54px; }
+  .mock-bars i { flex: 1; background: linear-gradient(180deg, var(--orange), #ff9166); border-radius: 2px 2px 0 0; }
+  .mock-grid { margin-top: 12px; border: 1px solid var(--grey-200); border-radius: 10px; padding: 14px; }
+  .mock-squares { display: flex; flex-wrap: wrap; gap: 4px; }
+  .mock-squares i { width: 10px; height: 10px; border-radius: 3px; background: rgba(19,17,16,0.15); }
+  .mock-squares i.on { background: var(--orange); }
+
+  /* ---------- pricing ---------- */
+  .toggle-row { display: flex; justify-content: flex-start; margin-bottom: 44px; }
+  .toggle {
+    display: inline-flex; padding: 4px; border: 1px solid var(--grey-300); border-radius: 999px; background: var(--grey-50);
+  }
+  .toggle button {
+    border: none; background: transparent; padding: 9px 20px; border-radius: 999px; font: inherit; font-size: 13.5px;
+    font-weight: 700; color: var(--grey-600); cursor: pointer;
+  }
+  .toggle button.active { background: var(--ink); color: #fff; }
+  .toggle .save { color: var(--orange-dark); }
+  .price-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; align-items: stretch; }
+  .price-card {
+    border: 1px solid var(--grey-200); border-radius: var(--radius); padding: 26px 22px;
+    display: flex; flex-direction: column; position: relative;
+  }
+  .price-card.popular { border-color: var(--orange); box-shadow: 0 0 0 1px var(--orange); }
+  .popular-badge {
+    position: absolute; top: -12px; left: 22px; background: var(--orange); color: #fff; font-size: 11px; font-weight: 800;
+    padding: 5px 11px; border-radius: 999px; letter-spacing: 0.03em;
+  }
+  .price-card h3 { font-size: 16px; }
+  .price-amount { margin-top: 14px; display: flex; align-items: baseline; gap: 4px; }
+  .price-amount .num { font-size: 34px; font-weight: 800; }
+  .price-amount .per { font-size: 13px; color: var(--grey-600); }
+  .price-note { font-size: 12px; color: var(--grey-500); margin-top: 4px; min-height: 16px; }
+  .price-desc { font-size: 13px; color: var(--grey-600); margin-top: 14px; min-height: 36px; }
+  .price-feats { list-style: none; margin: 18px 0 0; padding: 0; display: flex; flex-direction: column; gap: 10px; flex: 1; }
+  .price-feats li { font-size: 13.5px; display: flex; gap: 8px; align-items: flex-start; }
+  .price-feats li::before { content: "✓"; color: var(--orange-dark); font-weight: 800; flex: none; }
+  .price-card .btn { margin-top: 22px; width: 100%; }
+  .price-trust {
+    display: flex; justify-content: flex-start; gap: 20px; flex-wrap: wrap;
+    margin-top: 26px; font-size: 13px; color: var(--grey-600);
+  }
+  .price-trust span { display: inline-flex; align-items: center; gap: 6px; }
+  .price-trust span::before { content: "✓"; color: var(--orange-dark); font-weight: 800; }
+
+  /* ---------- faq ---------- */
+  #faq .section-num { color: var(--orange); font-size: 11px; font-weight: 800; letter-spacing: 0.09em; text-transform: uppercase; }
+
+  .faq-filters { display: flex; gap: 8px; flex-wrap: wrap; margin: 20px 0 24px; }
+  .faq-filter {
+    font: inherit; font-size: 11px; font-weight: 700; padding: 5px 13px; border-radius: 20px;
+    background: #fff; border: 1px solid #e6e2df; color: #5f5b58; cursor: pointer;
+    transition: background-color 150ms ease, color 150ms ease, border-color 150ms ease;
+  }
+  .faq-filter.active { background: var(--ink); border-color: var(--ink); color: #fff; }
+
+  .faq-card { max-width: 820px; background: #fff; border: 1px solid #e6e2df; border-radius: 16px; overflow: hidden; }
+  .faq-item { position: relative; border-bottom: 1px solid #f1eeec; }
+  .faq-item:last-child { border-bottom: none; }
+  .faq-item.hidden { display: none; }
+  .faq-item::before {
+    content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--orange);
+    transform: scaleY(0); transform-origin: top; transition: transform 250ms ease;
+  }
+  .faq-item.open::before { transform: scaleY(1); }
+
+  .faq-q {
+    width: 100%; text-align: left; background: transparent; border: none; padding: 18px 20px; font: inherit;
+    font-size: 14.5px; font-weight: 600; color: var(--ink); cursor: pointer; display: flex; justify-content: space-between;
+    gap: 16px; align-items: center; transition: background-color 180ms ease;
+  }
+  .faq-q:hover { background: var(--grey-50); }
+  .faq-item.open .faq-q { font-weight: 700; }
+
+  .faq-toggle { flex: none; width: 26px; height: 26px; border-radius: 50%; background: #f4f2f1; position: relative; transition: background-color 180ms ease; }
+  .faq-q:hover .faq-toggle { background: #ffe4db; }
+  .faq-toggle::before, .faq-toggle::after {
+    content: ""; position: absolute; top: 50%; left: 50%; background: #5f5b58;
+    transition: background-color 180ms ease, transform 220ms ease;
+  }
+  .faq-toggle::before { width: 12px; height: 1.5px; transform: translate(-50%, -50%); }
+  .faq-toggle::after { width: 1.5px; height: 12px; transform: translate(-50%, -50%); }
+  .faq-q:hover .faq-toggle::before, .faq-q:hover .faq-toggle::after { background: var(--orange); }
+  .faq-item.open .faq-toggle { background: var(--orange); }
+  .faq-item.open .faq-toggle::before, .faq-item.open .faq-toggle::after { background: #fff; }
+  .faq-item.open .faq-toggle::after { transform: translate(-50%, -50%) rotate(90deg); }
+
+  .faq-panel { overflow: hidden; height: 0; transition: height 300ms cubic-bezier(.4,0,.2,1); }
+  .faq-panel p { margin: 0; padding: 0 20px 20px 20px; font-size: 13.5px; line-height: 1.65; color: #5f5b58; max-width: 660px; }
+
+  .faq-closing {
+    max-width: 820px; margin-top: 18px; background: var(--ink); border-radius: 16px; padding: 24px;
+    display: flex; align-items: center; justify-content: space-between; gap: 20px; flex-wrap: wrap;
+  }
+  .faq-closing h3 { color: #fff; font-size: 16px; font-weight: 700; margin: 0; }
+  .faq-closing p { margin: 4px 0 0; color: rgba(255,255,255,0.7); font-size: 13.5px; }
+  .faq-closing .btn-email {
+    flex: none; background: var(--orange); color: #fff; border: none; border-radius: 10px; padding: 11px 20px;
+    font-size: 14px; font-weight: 700; text-decoration: none; display: inline-flex; transition: background-color 150ms ease;
+  }
+  .faq-closing .btn-email:hover { background: #e63f16; }
+
+  @media (max-width: 640px) {
+    .faq-closing { flex-direction: column; align-items: flex-start; }
+    .faq-closing .btn-email { width: 100%; justify-content: center; }
+  }
+
+  /* ---------- contact ---------- */
+  .contact-section { background: var(--ink); color: #fff; }
+  .contact-inner { display: grid; grid-template-columns: 1fr 1.15fr; gap: 56px; align-items: start; }
+  .contact-eyebrow { font-size: 12px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; color: var(--orange); }
+  .contact-inner h2 { margin-top: 12px; color: #fff; }
+  .contact-lede { margin-top: 16px; font-size: 15px; line-height: 1.6; color: rgba(255,255,255,0.6); max-width: 440px; }
+  .contact-checks { list-style: none; margin: 26px 0 0; padding: 0; display: flex; flex-direction: column; gap: 14px; }
+  .contact-checks li { display: flex; gap: 10px; align-items: flex-start; font-size: 14.5px; color: #fff; }
+  .contact-checks li::before { content: "✓"; color: var(--orange); font-weight: 800; flex: none; }
+  .contact-checks a { color: #fff; text-decoration: underline; text-underline-offset: 2px; }
+  .contact-checks a:hover { color: var(--orange); }
+
+  .contact-form { display: grid; grid-template-columns: 1fr 1fr; gap: 18px 16px; }
+  .contact-field { display: flex; flex-direction: column; gap: 8px; }
+  .contact-field.full { grid-column: 1 / -1; }
+  .contact-field label { font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: rgba(255,255,255,0.5); }
+  .contact-field input, .contact-field select, .contact-field textarea {
+    background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.14); border-radius: 10px;
+    padding: 12px 14px; font: inherit; font-size: 14px; color: #fff; outline: none; color-scheme: dark;
+    transition: border-color 150ms ease, background-color 150ms ease;
+  }
+  .contact-field input::placeholder, .contact-field textarea::placeholder { color: rgba(255,255,255,0.35); }
+  .contact-field input:focus, .contact-field select:focus, .contact-field textarea:focus {
+    border-color: var(--orange); background: rgba(255,255,255,0.09);
+  }
+  .contact-field textarea { resize: vertical; min-height: 100px; font-family: inherit; }
+  .contact-submit {
+    grid-column: 1 / -1; margin-top: 4px; width: 100%; height: 52px; border: none; border-radius: 999px;
+    background: var(--orange); color: #fff; font-size: 15px; font-weight: 700; cursor: pointer;
+    transition: background-color 150ms ease;
+  }
+  .contact-submit:hover { background: var(--orange-dark); }
+  .contact-note { grid-column: 1 / -1; margin: 2px 0 0; font-size: 12.5px; color: rgba(255,255,255,0.45); }
+
+  @media (max-width: 640px) {
+    .contact-form { grid-template-columns: 1fr; }
+  }
+
+  /* ---------- footer ---------- */
+  footer { padding: 40px 0; border-top: 1px solid var(--grey-200); }
+  .footer-row { display: flex; justify-content: space-between; align-items: center; gap: 20px; flex-wrap: wrap; }
+  .footer-disclaimer { font-size: 12px; color: var(--grey-500); max-width: 640px; }
+  .footer-links { display: flex; gap: 18px; font-size: 13px; color: var(--grey-600); }
+  .footer-links a { text-decoration: none; }
+  .footer-links a:hover { color: var(--ink); }
+
+  @media (max-width: 900px) {
+    .price-grid { grid-template-columns: 1fr 1fr; }
+    .insights-layout, .contact-inner { grid-template-columns: 1fr; }
+  }
+  @media (max-width: 720px) {
+    .nav-links { display: none; }
+    section { padding: 64px 0; }
+    .price-grid { grid-template-columns: 1fr; }
+    .hero { padding: 56px 0 48px; }
+  }
+</style>
+</head>
+<body>
+
+<header class="nav">
+  <div class="wrap">
+    <div class="nav-row">
+      <a class="brand" href="#top">
+        <img class="brand-mark" src="data:image/png;base64,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" alt="" width="26" height="26">
+        Shuffly<span class="dot">.</span>
+      </a>
+      <nav class="nav-links">
+        <a href="#how-it-works">How it works</a>
+        <a href="#features">Features</a>
+        <a href="#insights">Insights</a>
+        <a href="#pricing">Pricing</a>
+        <a href="#faq">FAQ</a>
+      </nav>
+      <div class="nav-cta">
+        <a class="btn btn-primary" href="#contact">Get in touch <span aria-hidden="true">&rarr;</span></a>
+      </div>
+    </div>
+  </div>
+</header>
+
+<main id="top">
+
+  <!-- HERO -->
+  <section class="hero">
+    <div class="hero-glow" aria-hidden="true"></div>
+    <div class="wrap">
+      <h1>Your collections, <em>fresh every morning.</em></h1>
+      <p class="lede">Shuffly reorders the products inside your Shopify collections — daily, weekly, or on a custom schedule — while pinned products stay put and sold-out items drop to the bottom.</p>
+      <p class="hero-tag">No theme code, no scripts, no speed cost.</p>
+      <div class="hero-ctas">
+        <a class="btn btn-primary" href="#contact">Get early access</a>
+        <a class="btn btn-ghost" href="#how-it-works">See how it works</a>
+      </div>
+      <div class="hero-strip">
+        <span><i class="dot"></i>Works with every theme</span>
+        <span><i class="dot"></i>Nothing added to your storefront</span>
+        <span><i class="dot"></i>Uninstall-safe</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- 01 PROBLEM -->
+  <section id="problem">
+    <div class="wrap">
+      <div class="section-head">
+        <div class="section-num">01 — The problem</div>
+        <h2 style="margin-top:10px; max-width:620px; letter-spacing:-0.03em;">Every current option costs you something</h2>
+      </div>
+      <div class="problem-grid">
+        <div class="problem-card">
+          <div class="num">01</div>
+          <div class="problem-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M17 2l4 4-4 4"/>
+              <path d="M3 11V9a4 4 0 0 1 4-4h14"/>
+              <path d="M7 22l-4-4 4-4"/>
+              <path d="M21 13v2a4 4 0 0 1-4 4H3"/>
+            </svg>
+          </div>
+          <div class="cost-head">A dead catalogue</div>
+          <div class="approach">Leave it on &quot;best-selling&quot;</div>
+          <p class="explain">The same handful of products lead every session, month after month, while the rest of the catalogue never gets a look.</p>
+        </div>
+        <div class="problem-card">
+          <div class="num">02</div>
+          <div class="problem-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="currentColor" stroke="none">
+              <path d="M4 4l7.07 17 2.51-7.39L21 11.07z"/>
+            </svg>
+          </div>
+          <div class="cost-head">Your afternoon</div>
+          <div class="approach">Drag products by hand</div>
+          <p class="explain">Reordering a collection manually works — once. Then it's back to how it was next week, for every collection, forever.</p>
+        </div>
+        <div class="problem-card">
+          <div class="num">03</div>
+          <div class="problem-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 12a9 9 0 1 1-3-6.7"/>
+              <path d="M21 3v6h-6"/>
+            </svg>
+          </div>
+          <div class="cost-head">A fake random order</div>
+          <div class="approach">A Liquid shuffle snippet</div>
+          <p class="explain">Reshuffles what's rendered, not what's stored. Refresh the page and it's different again — and search engines still see the same static order.</p>
+        </div>
+        <div class="problem-card">
+          <div class="num">04</div>
+          <div class="problem-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 2 2 20h20L12 2z"/>
+              <path d="M12 9v5"/>
+              <path d="M12 17h.01"/>
+            </svg>
+          </div>
+          <div class="cost-head">A slower, broken page</div>
+          <div class="approach">JavaScript reordering</div>
+          <p class="explain">Added script weight, visible layout shift as products jump around after load, and it still isn't the real sort order.</p>
+        </div>
+      </div>
+      <div class="fix-kicker">The fix</div>
+      <div class="insight-line">
+        Shopify's own Admin API can rewrite a collection's <strong>real, stored sort order</strong> — the same order your theme, your search bots, and repeat visitors all see. That's exactly what an app can do and a theme cannot.
+      </div>
+    </div>
+  </section>
+
+  <!-- 02 HOW IT WORKS -->
+  <section id="how-it-works" style="background:var(--grey-50);">
+    <div class="wrap">
+      <div class="section-head">
+        <div class="section-num">02 — How it works</div>
+        <h2 class="hiw-headline" style="margin-top:10px;">Five steps, then it runs itself</h2>
+      </div>
+
+      <div class="hiw-layout">
+        <div class="hiw-steps">
+          <div class="hiw-rail-track"><i class="hiw-rail-fill"></i></div>
+
+          <button type="button" class="hiw-step on" data-step="0">
+            <span class="hiw-chip">1</span>
+            <h3>Pick your collections</h3>
+            <p>Turn Shuffly on for one collection or all of them. Bulk-enable means a store with hundreds of collections can be switched on everywhere in under two minutes.</p>
+            <div class="hiw-step-chips">
+              <span>Bulk-enable</span><span>Any catalogue size</span><span>Two minutes</span>
+            </div>
+          </button>
+
+          <button type="button" class="hiw-step" data-step="1">
+            <span class="hiw-chip">2</span>
+            <h3>Set the rules</h3>
+            <p>Pin your first few products so hero items never move, exclude tags that should stay put (gift cards, preorders, and bundles by default), and decide whether sold-out products get pushed to the end.</p>
+            <div class="hiw-step-chips">
+              <span>Pinning</span><span>Tag exclusions</span><span>Sold-out demotion</span>
+            </div>
+          </button>
+
+          <button type="button" class="hiw-step" data-step="2">
+            <span class="hiw-chip">3</span>
+            <h3>Choose a schedule</h3>
+            <p>Daily, twice a day, weekly, or manual-only — in your store's own timezone, at the time you pick.</p>
+            <div class="hiw-step-chips">
+              <span>Daily</span><span>Twice a day</span><span>Weekly</span><span>Manual-only</span>
+            </div>
+          </button>
+
+          <button type="button" class="hiw-step" data-step="3">
+            <span class="hiw-chip">4</span>
+            <h3>Shuffly rewrites the order</h3>
+            <p>Through Shopify's official Admin API — the same mechanism a merchant dragging products by hand would use. Nothing added to your storefront, ever.</p>
+            <div class="hiw-step-chips">
+              <span>Admin API</span><span>Zero theme code</span><span>Zero page weight</span>
+            </div>
+          </button>
+
+          <button type="button" class="hiw-step" data-step="4">
+            <span class="hiw-chip">5</span>
+            <h3>Every run is logged</h3>
+            <p>Last run, next run, how many products moved — and if anything looks wrong, a full undo is one click away.</p>
+            <div class="hiw-step-chips">
+              <span>Full history</span><span>Undo any run</span><span>Last &amp; next run</span>
+            </div>
+          </button>
+        </div>
+
+        <div class="hiw-right">
+          <div class="hiw-stage">
+
+            <div class="hiw-panel on" data-panel="0" aria-hidden="true">
+              <div class="hiw-panel-label">Collections</div>
+              <div class="hiw-row">
+                <span class="hiw-check on"></span>
+                <span class="hiw-row-name">Sale</span>
+                <span class="hiw-row-count">10 products</span>
+              </div>
+              <div class="hiw-row">
+                <span class="hiw-check on"></span>
+                <span class="hiw-row-name">New Arrivals</span>
+                <span class="hiw-row-count">18 products</span>
+              </div>
+              <div class="hiw-row">
+                <span class="hiw-check on"></span>
+                <span class="hiw-row-name">Best Sellers</span>
+                <span class="hiw-row-count">24 products</span>
+              </div>
+              <div class="hiw-row">
+                <span class="hiw-check"></span>
+                <span class="hiw-row-name">Clearance</span>
+                <span class="hiw-row-count">7 products</span>
+              </div>
+            </div>
+
+            <div class="hiw-panel" data-panel="1" aria-hidden="true">
+              <div class="hiw-panel-label">Rules</div>
+              <div class="hiw-toggle-row">
+                <span class="hiw-toggle-label">Pin top products</span>
+                <span class="hiw-toggle on"></span>
+              </div>
+              <div class="hiw-toggle-row">
+                <span class="hiw-toggle-label">Exclude tagged products</span>
+                <span class="hiw-toggle on"></span>
+              </div>
+              <div class="hiw-toggle-row">
+                <span class="hiw-toggle-label">Boost new arrivals</span>
+                <span class="hiw-toggle"></span>
+              </div>
+              <div class="hiw-tiles-mini">
+                <span class="hiw-tile-mini pinned"></span>
+                <span class="hiw-tile-mini pinned"></span>
+                <span class="hiw-tile-mini"></span>
+                <span class="hiw-tile-mini"></span>
+                <span class="hiw-tile-mini"></span>
+                <span class="hiw-tile-mini"></span>
+              </div>
+            </div>
+
+            <div class="hiw-panel" data-panel="2" aria-hidden="true">
+              <div class="hiw-panel-label">Schedule</div>
+              <div class="hiw-time-card">
+                <div class="hiw-time">06:00</div>
+                <div class="hiw-time-sub">America/New_York</div>
+              </div>
+              <div class="hiw-pill-row">
+                <span class="hiw-sched-pill selected">Daily</span>
+                <span class="hiw-sched-pill">Twice daily</span>
+                <span class="hiw-sched-pill">Weekly</span>
+                <span class="hiw-sched-pill">Manual</span>
+              </div>
+              <div class="hiw-next-run">Next run: <strong>tomorrow at 6:00 AM</strong></div>
+            </div>
+
+            <div class="hiw-panel" data-panel="3" aria-hidden="true">
+              <div class="hiw-panel-label">Tonight&rsquo;s run</div>
+              <div class="hiw-tiles-grid">
+                <span class="hiw-tile pin"></span>
+                <span class="hiw-tile pin"></span>
+                <span class="hiw-tile"></span>
+                <span class="hiw-tile"></span>
+                <span class="hiw-tile"></span>
+                <span class="hiw-tile"></span>
+                <span class="hiw-tile"></span>
+                <span class="hiw-tile"></span>
+                <span class="hiw-tile"></span>
+                <span class="hiw-tile"></span>
+                <span class="hiw-tile"></span>
+                <span class="hiw-tile"></span>
+              </div>
+              <div class="hiw-api-pill">Written through the Admin API · 94 products moved</div>
+            </div>
+
+            <div class="hiw-panel" data-panel="4" aria-hidden="true">
+              <div class="hiw-panel-label">Activity</div>
+              <div class="hiw-log-row">
+                <span class="hiw-dot hot"></span>
+                <span class="hiw-log-text">Sold-out reaction — Sale</span>
+                <span class="hiw-log-time">6:41 AM</span>
+              </div>
+              <div class="hiw-log-row">
+                <span class="hiw-dot"></span>
+                <span class="hiw-log-text">Scheduled shuffle — New Arrivals</span>
+                <span class="hiw-log-time">6:00 AM</span>
+              </div>
+              <div class="hiw-log-row">
+                <span class="hiw-dot"></span>
+                <span class="hiw-log-text">Scheduled shuffle — Best Sellers</span>
+                <span class="hiw-log-time">6:00 AM</span>
+              </div>
+              <div class="hiw-log-row">
+                <span class="hiw-dot hot"></span>
+                <span class="hiw-log-text">Manual shuffle — Clearance</span>
+                <span class="hiw-log-time">Yesterday</span>
+              </div>
+              <button type="button" class="hiw-undo-btn" tabindex="-1">Undo any run for 30 days</button>
+            </div>
+
+          </div>
+
+          <div class="footnote-strip">
+            <span class="footnote-chip">Zero lines of theme code</span>
+            <span class="footnote-chip">0 KB added to your page weight</span>
+            <span class="footnote-chip">2 permissions requested: read products, write products</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 03 DIFFERENTIATORS -->
+  <section id="features">
+    <div class="wrap">
+      <div class="section-head">
+        <div class="section-num">03 — What's different</div>
+        <h2 style="margin-top:10px; max-width:620px;">Built to be the boring, reliable option</h2>
+        <p class="diff-subhead">No storefront code, no theme edits, and every run can be undone.</p>
+      </div>
+      <div class="diff-grid">
+        <div class="diff-card">
+          <div class="diff-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M4 8a2 2 0 0 1 2-2h2.17a2 2 0 0 1 3.66 0H14a2 2 0 0 1 2 2v2.17a2 2 0 0 1 0 3.66V16a2 2 0 0 1-2 2h-2.17a2 2 0 0 1-3.66 0H6a2 2 0 0 1-2-2v-2.17a2 2 0 0 1 0-3.66V8z"/>
+            </svg>
+          </div>
+          <h3>Compatibility</h3>
+          <p>Rewrites the real, stored sort order — not the rendered page. Works with any theme, and with both custom and automated collections, as long as the collection is set to manual sort (which Shopify allows for either).</p>
+        </div>
+        <div class="diff-card">
+          <div class="diff-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M13 2 4 14h6l-1 8 9-12h-6l1-8z"/>
+            </svg>
+          </div>
+          <h3>Speed</h3>
+          <p>Nothing runs on your storefront. No script tag, no theme edit — the work happens entirely on Shopify's servers before a shopper ever loads the page.</p>
+        </div>
+        <div class="diff-card">
+          <div class="diff-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 21s-7-6.5-7-11a7 7 0 0 1 14 0c0 4.5-7 11-7 11z"/>
+              <circle cx="12" cy="10" r="2.5"/>
+            </svg>
+          </div>
+          <h3>Control</h3>
+          <p>Pin your first N products so hero items never move. Exclude anything tagged gift-card, preorder, or bundle — or your own custom tags.</p>
+        </div>
+        <div class="diff-card">
+          <div class="diff-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 3l1.5 5.5L19 10l-5.5 1.5L12 17l-1.5-5.5L5 10l5.5-1.5L12 3z"/>
+            </svg>
+          </div>
+          <h3>Freshness</h3>
+          <p>Sold-out products get pushed to the end automatically. Products created in the last 14 days get boosted toward the top instead of starting buried on page twelve.</p>
+        </div>
+        <div class="diff-card featured">
+          <div class="diff-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 3v18M5 21h14M8 7h8M3 13a3 3 0 0 0 6 0l-3-6-3 6zM15 13a3 3 0 0 0 6 0l-3-6-3 6z"/>
+            </svg>
+          </div>
+          <div class="diff-kicker">Why it's worth paying for</div>
+          <h3>Fairness, measured</h3>
+          <p>Insights shows exactly how evenly turns are shared across a collection — not just that it happened, but who's waited longest and how fast a sold-out item actually got demoted.</p>
+        </div>
+        <div class="diff-card">
+          <div class="diff-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7-10-7-10-7z"/>
+              <circle cx="12" cy="12" r="3"/>
+            </svg>
+          </div>
+          <h3>Honesty</h3>
+          <p>Off by default on every collection you haven't explicitly turned on. Every run is logged, visible, and can be undone.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 04 COMPARISON -->
+  <section style="background:var(--grey-50);">
+    <div class="wrap">
+      <div class="section-head">
+        <div class="section-num">04 — Market comparison</div>
+        <h2 style="margin-top:10px;">How the alternatives stack up</h2>
+      </div>
+      <div class="table-wrap">
+        <table class="compare">
+          <thead>
+            <tr>
+              <th>&nbsp;</th>
+              <th class="hl">Shuffly</th>
+              <th>Default sort</th>
+              <th>Liquid / JS hacks</th>
+              <th>Merchandising suites</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Real, stored sort order</td>
+              <td class="hl-col mark-yes">✓</td>
+              <td class="mark-no">–</td>
+              <td class="mark-no">–</td>
+              <td class="mark-yes">✓</td>
+            </tr>
+            <tr>
+              <td>Zero theme code</td>
+              <td class="hl-col mark-yes">✓</td>
+              <td class="mark-yes">✓</td>
+              <td class="mark-no">–</td>
+              <td class="mark-mid">~</td>
+            </tr>
+            <tr>
+              <td>Zero page-weight cost</td>
+              <td class="hl-col mark-yes">✓</td>
+              <td class="mark-yes">✓</td>
+              <td class="mark-no">–</td>
+              <td class="mark-mid">~</td>
+            </tr>
+            <tr>
+              <td>Works with any theme</td>
+              <td class="hl-col mark-yes">✓</td>
+              <td class="mark-yes">✓</td>
+              <td class="mark-mid">~</td>
+              <td class="mark-mid">~</td>
+            </tr>
+            <tr>
+              <td>Pin &amp; tag-exclusion control</td>
+              <td class="hl-col mark-yes">✓</td>
+              <td class="mark-no">–</td>
+              <td class="mark-no">–</td>
+              <td class="mark-yes">✓</td>
+            </tr>
+            <tr>
+              <td>Sold-out auto-demotion</td>
+              <td class="hl-col mark-yes">✓</td>
+              <td class="mark-no">–</td>
+              <td class="mark-no">–</td>
+              <td class="mark-mid">~</td>
+            </tr>
+            <tr>
+              <td>Fairness / rotation insights</td>
+              <td class="hl-col mark-yes">✓</td>
+              <td class="mark-no">–</td>
+              <td class="mark-no">–</td>
+              <td class="mark-no">–</td>
+            </tr>
+            <tr>
+              <td>Full run history + undo</td>
+              <td class="hl-col mark-yes">✓</td>
+              <td class="mark-no">–</td>
+              <td class="mark-no">–</td>
+              <td class="mark-mid">~</td>
+            </tr>
+            <tr>
+              <td>Under $5 / month</td>
+              <td class="hl-col mark-yes">✓</td>
+              <td class="mark-yes">✓</td>
+              <td class="mark-yes">✓</td>
+              <td class="mark-no">–</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- 05 INSIGHTS SPOTLIGHT -->
+  <section id="insights" class="insights-section">
+    <div class="wrap">
+      <div class="insights-layout">
+        <div>
+          <div class="section-num">05 — Insights</div>
+          <h2 style="margin-top:10px;">Know if it's actually working</h2>
+          <p class="lede" style="margin-top:14px;">Every collection Shuffly touches gets measured, not just moved. Insights turns each run into a real answer to "is this fair, and is it working" — no spreadsheet required.</p>
+          <div class="insights-list">
+            <div class="insights-item">
+              <div class="ico"><span></span></div>
+              <div>
+                <h3>Rotation fairness</h3>
+                <p>A single 0–100 score showing how evenly turns are shared across a collection's products, not just whether coverage happened once.</p>
+              </div>
+            </div>
+            <div class="insights-item">
+              <div class="ico"><span></span></div>
+              <div>
+                <h3>Typical &amp; longest wait</h3>
+                <p>The median gap between a product's turns, and exactly which product has been waiting longest for its next one.</p>
+              </div>
+            </div>
+            <div class="insights-item">
+              <div class="ico"><span></span></div>
+              <div>
+                <h3>Sold-out reaction time</h3>
+                <p>How fast a sold-out product actually gets pushed to the end — within 60 seconds on paid plans, up to an hour on Free.</p>
+              </div>
+            </div>
+            <div class="insights-item">
+              <div class="ico"><span></span></div>
+              <div>
+                <h3>Who's had a turn</h3>
+                <p>A per-collection grid showing exactly which products have reached page one, and which are still waiting.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div>
+          <div class="mock">
+            <div class="mock-tiles">
+              <div class="mock-tile lead">
+                <div class="bar"></div>
+                <div class="lbl">Rotation fairness</div>
+                <div class="val">82<span style="font-size:12px;font-weight:600;">/100</span></div>
+                <div class="dsc">Fairly even sharing</div>
+              </div>
+              <div class="mock-tile">
+                <div class="bar"></div>
+                <div class="lbl">Typical wait</div>
+                <div class="val">3.4<span style="font-size:12px;font-weight:600;"> days</span></div>
+                <div class="dsc">between turns</div>
+              </div>
+              <div class="mock-tile">
+                <div class="bar"></div>
+                <div class="lbl">Longest wait</div>
+                <div class="val">11<span style="font-size:12px;font-weight:600;"> days</span></div>
+                <div class="dsc">Utility Cord 4m</div>
+              </div>
+              <div class="mock-tile">
+                <div class="bar"></div>
+                <div class="lbl">Sold-out response</div>
+                <div class="val">41<span style="font-size:12px;font-weight:600;">s</span></div>
+                <div class="dsc">to push to the end</div>
+              </div>
+            </div>
+            <div class="mock-dist">
+              <div class="lbl">How the top spots are shared</div>
+              <div class="mock-bars">
+                <i style="height:100%"></i><i style="height:92%"></i><i style="height:88%"></i><i style="height:80%"></i>
+                <i style="height:74%"></i><i style="height:68%"></i><i style="height:60%"></i><i style="height:52%"></i>
+                <i style="height:44%"></i><i style="height:38%"></i><i style="height:30%"></i><i style="height:22%"></i>
+              </div>
+            </div>
+            <div class="mock-grid">
+              <div class="lbl">Who&rsquo;s had a turn</div>
+              <div class="mock-squares">
+                <i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i>
+                <i class="on"></i><i class="on"></i><i></i><i></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i>
+                <i class="on"></i><i></i><i></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i class="on"></i>
+              </div>
+            </div>
+          </div>
+          <p class="mock-caption">Illustrative example, not live data</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 06 PRICING -->
+  <section id="pricing">
+    <div class="wrap">
+      <div class="section-head">
+        <div class="section-num">06 — Pricing</div>
+        <h2 style="margin-top:10px;">Plans that scale with your catalogue</h2>
+      </div>
+      <div class="toggle-row">
+        <div class="toggle" role="group" aria-label="Billing period">
+          <button type="button" class="active" data-period="monthly">Monthly</button>
+          <button type="button" data-period="annual">Annual <span class="save">— 2 months free</span></button>
+        </div>
+      </div>
+
+      <div class="price-grid">
+        <div class="price-card">
+          <h3>Free</h3>
+          <div class="price-amount"><span class="num">$0</span><span class="per">forever</span></div>
+          <div class="price-note">&nbsp;</div>
+          <p class="price-desc">For trying Shuffly on a few collections, with nothing to lose.</p>
+          <ul class="price-feats">
+            <li>Up to 5 collections</li>
+            <li>Weekly shuffle schedule</li>
+            <li>Manual &ldquo;Shuffle now&rdquo; anytime</li>
+            <li>Sold-out reaction within the hour</li>
+          </ul>
+          <a class="btn btn-ghost" href="#contact">Get early access</a>
+        </div>
+
+        <div class="price-card popular">
+          <span class="popular-badge">Most popular</span>
+          <h3>Starter</h3>
+          <div class="price-amount">
+            <span class="num" data-monthly="$3.99" data-annual="$39.90">$3.99</span>
+            <span class="per" data-monthly="/month" data-annual="/year">/month</span>
+          </div>
+          <div class="price-note" data-monthly="&nbsp;" data-annual="≈ $3.33/month">&nbsp;</div>
+          <p class="price-desc">The everyday plan for stores that want fresh collections daily.</p>
+          <ul class="price-feats">
+            <li>Up to 25 collections</li>
+            <li>Daily schedule, pick the time</li>
+            <li>Pin your best sellers</li>
+            <li>Sold-out reaction within a minute</li>
+            <li>7-day undo history</li>
+          </ul>
+          <a class="btn btn-primary" href="#contact">Get early access</a>
+        </div>
+
+        <div class="price-card">
+          <h3>Pro</h3>
+          <div class="price-amount">
+            <span class="num" data-monthly="$7.99" data-annual="$79.90">$7.99</span>
+            <span class="per" data-monthly="/month" data-annual="/year">/month</span>
+          </div>
+          <div class="price-note" data-monthly="&nbsp;" data-annual="≈ $6.66/month">&nbsp;</div>
+          <p class="price-desc">For larger catalogues that want full control over the schedule.</p>
+          <ul class="price-feats">
+            <li>Unlimited collections</li>
+            <li>Up to twice-daily schedule</li>
+            <li>Everything in Starter</li>
+            <li>30-day undo history</li>
+            <li>Priority support</li>
+          </ul>
+          <a class="btn btn-ghost" href="#contact">Get early access</a>
+        </div>
+      </div>
+      <div class="price-trust">
+        <span>Cancel any time</span>
+        <span>Change plan instantly</span>
+        <span>Billed through Shopify</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- 07 FAQ -->
+  <section id="faq" style="background:var(--grey-50);">
+    <div class="wrap">
+      <div class="section-head">
+        <div class="section-num">07 — FAQ</div>
+        <h2 style="margin-top:10px;">Questions merchants actually ask</h2>
+      </div>
+
+      <div class="faq-filters" role="group" aria-label="Filter questions by topic">
+        <button type="button" class="faq-filter active" data-topic="all">All</button>
+        <button type="button" class="faq-filter" data-topic="how-it-works">How it works</button>
+        <button type="button" class="faq-filter" data-topic="safety">Safety</button>
+        <button type="button" class="faq-filter" data-topic="billing">Billing</button>
+      </div>
+
+      <div class="faq-card">
+
+        <div class="faq-item open" data-topic="how-it-works">
+          <button class="faq-q" id="faq-btn-1" aria-expanded="true" aria-controls="faq-panel-1">
+            <span>What exactly changes?</span><span class="faq-toggle"></span>
+          </button>
+          <div class="faq-panel" id="faq-panel-1" role="region" aria-labelledby="faq-btn-1">
+            <p>Only the order products appear in, inside the collections you turn on. URLs, titles, descriptions, and your theme are untouched.</p>
+          </div>
+        </div>
+
+        <div class="faq-item" data-topic="safety">
+          <button class="faq-q" id="faq-btn-2" aria-expanded="false" aria-controls="faq-panel-2">
+            <span>Will this slow my store down?</span><span class="faq-toggle"></span>
+          </button>
+          <div class="faq-panel" id="faq-panel-2" role="region" aria-labelledby="faq-btn-2">
+            <p>No. Shuffly adds literally nothing to your storefront — no script, no theme edit. The reorder happens on Shopify's servers before a shopper's page ever loads, so your page weight and Core Web Vitals don't change.</p>
+          </div>
+        </div>
+
+        <div class="faq-item" data-topic="how-it-works">
+          <button class="faq-q" id="faq-btn-3" aria-expanded="false" aria-controls="faq-panel-3">
+            <span>Will my best-sellers move?</span><span class="faq-toggle"></span>
+          </button>
+          <div class="faq-panel" id="faq-panel-3" role="region" aria-labelledby="faq-btn-3">
+            <p>Not unless you want them to. Pinning locks your first N products in place, permanently, until you change it.</p>
+          </div>
+        </div>
+
+        <div class="faq-item" data-topic="safety">
+          <button class="faq-q" id="faq-btn-4" aria-expanded="false" aria-controls="faq-panel-4">
+            <span>Does this hurt SEO?</span><span class="faq-toggle"></span>
+          </button>
+          <div class="faq-panel" id="faq-panel-4" role="region" aria-labelledby="faq-btn-4">
+            <p>There's no reason to expect it to. The change is made to the collection's stored sort order, the same way a merchant manually reordering products would — not injected into the page after it loads.</p>
+          </div>
+        </div>
+
+        <div class="faq-item" data-topic="how-it-works">
+          <button class="faq-q" id="faq-btn-5" aria-expanded="false" aria-controls="faq-panel-5">
+            <span>Does this work with automated collections?</span><span class="faq-toggle"></span>
+          </button>
+          <div class="faq-panel" id="faq-panel-5" role="region" aria-labelledby="faq-btn-5">
+            <p>Yes — both custom and automated (rule-based) collections work, as long as the collection's sort order is set to Manual, which Shopify allows for either type. Shuffly flags any collection that isn't ready yet, so you always know before it runs.</p>
+          </div>
+        </div>
+
+        <div class="faq-item" data-topic="safety">
+          <button class="faq-q" id="faq-btn-6" aria-expanded="false" aria-controls="faq-panel-6">
+            <span>What data can Shuffly see?</span><span class="faq-toggle"></span>
+          </button>
+          <div class="faq-panel" id="faq-panel-6" role="region" aria-labelledby="faq-btn-6">
+            <p>Two permissions: read products and write products. No access to orders, customers, discounts, or any financial data.</p>
+          </div>
+        </div>
+
+        <div class="faq-item" data-topic="safety">
+          <button class="faq-q" id="faq-btn-7" aria-expanded="false" aria-controls="faq-panel-7">
+            <span>What happens if I uninstall?</span><span class="faq-toggle"></span>
+          </button>
+          <div class="faq-panel" id="faq-panel-7" role="region" aria-labelledby="faq-btn-7">
+            <p>Every collection is left in whatever order it was last shuffled into — a perfectly normal Shopify manual sort. Nothing reverts, nothing breaks.</p>
+          </div>
+        </div>
+
+        <div class="faq-item" data-topic="how-it-works">
+          <button class="faq-q" id="faq-btn-8" aria-expanded="false" aria-controls="faq-panel-8">
+            <span>Can I undo a run?</span><span class="faq-toggle"></span>
+          </button>
+          <div class="faq-panel" id="faq-panel-8" role="region" aria-labelledby="faq-btn-8">
+            <p>Yes. Every run is logged and can be undone — 1 day of history on Free, 7 days on Starter, 30 days on Pro.</p>
+          </div>
+        </div>
+
+        <div class="faq-item" data-topic="billing">
+          <button class="faq-q" id="faq-btn-9" aria-expanded="false" aria-controls="faq-panel-9">
+            <span>Is Shuffly on the Shopify App Store yet?</span><span class="faq-toggle"></span>
+          </button>
+          <div class="faq-panel" id="faq-panel-9" role="region" aria-labelledby="faq-btn-9">
+            <p>Not yet — it's still in build. We're taking on early-access stores directly while we finish it. ("Shuffly" is a working title.)</p>
+          </div>
+        </div>
+
+      </div>
+
+      <div class="faq-closing">
+        <div>
+          <h3>Still not sure?</h3>
+          <p>Ask us anything before you install. We answer in one business day.</p>
+        </div>
+        <a class="btn-email" href="mailto:team@mapetitecoree.com?subject=Shuffly%20question">Email us</a>
+      </div>
+    </div>
+  </section>
+
+  <!-- CONTACT -->
+  <section id="contact" class="contact-section">
+    <div class="wrap">
+      <div class="contact-inner">
+        <div>
+          <div class="contact-eyebrow">Get in touch</div>
+          <h2>Want it on your store first?</h2>
+          <p class="contact-lede">Tell us roughly how big your catalogue is and what you'd want rotating. We reply to everything, and we'll say so plainly if Shuffly isn't right for you.</p>
+          <ul class="contact-checks">
+            <li>Early access is free while we build</li>
+            <li>No card, no commitment, no sales call</li>
+            <li>Email us directly: <a href="mailto:team@mapetitecoree.com">team@mapetitecoree.com</a></li>
+          </ul>
+        </div>
+
+        <form class="contact-form" id="contact-form">
+          <div class="contact-field">
+            <label for="cf-name">Name</label>
+            <input type="text" id="cf-name" name="name" placeholder="Your name" required>
+          </div>
+          <div class="contact-field">
+            <label for="cf-email">Email</label>
+            <input type="email" id="cf-email" name="email" placeholder="you@store.com" required>
+          </div>
+          <div class="contact-field">
+            <label for="cf-store">Store URL</label>
+            <input type="text" id="cf-store" name="store" placeholder="yourstore.myshopify.com">
+          </div>
+          <div class="contact-field">
+            <label for="cf-topic">What's this about?</label>
+            <select id="cf-topic" name="topic">
+              <option>General question</option>
+              <option>Early access</option>
+              <option>Custom pricing / agency</option>
+              <option>Other</option>
+            </select>
+          </div>
+          <div class="contact-field full">
+            <label for="cf-message">Message</label>
+            <textarea id="cf-message" name="message" placeholder="How many products and collections do you have, and what would you want rotating?" required></textarea>
+          </div>
+          <button type="submit" class="contact-submit">Send message <span aria-hidden="true">&rarr;</span></button>
+          <p class="contact-note">We usually reply within a day.</p>
+        </form>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  <div class="wrap footer-row">
+    <p class="footer-disclaimer">Shuffly is a working title and is not yet available on the Shopify App Store. Not affiliated with or endorsed by Shopify Inc.</p>
+    <div class="footer-links">
+      <a href="#how-it-works">How it works</a>
+      <a href="#pricing">Pricing</a>
+      <a href="#faq">FAQ</a>
+      <a href="mailto:team@mapetitecoree.com">Contact</a>
+    </div>
+  </div>
+</footer>
+
+<script>
+  // FAQ: topic filter + single-open accordion with a real height animation
+  // (never display:none on the panel itself — that's what kills the slide).
+  (function () {
+    var filterBtns = Array.prototype.slice.call(document.querySelectorAll('.faq-filter'));
+    var items = Array.prototype.slice.call(document.querySelectorAll('.faq-item'));
+
+    filterBtns.forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        filterBtns.forEach(function (b) { b.classList.toggle('active', b === btn); });
+        var topic = btn.getAttribute('data-topic');
+        items.forEach(function (item) {
+          var match = topic === 'all' || item.getAttribute('data-topic') === topic;
+          item.classList.toggle('hidden', !match);
+        });
+      });
+    });
+
+    function openItem(item) {
+      var q = item.querySelector('.faq-q');
+      var panel = item.querySelector('.faq-panel');
+      var inner = panel.querySelector('p');
+      item.classList.add('open');
+      q.setAttribute('aria-expanded', 'true');
+      panel.style.height = inner.scrollHeight + 'px';
+    }
+    function closeItem(item) {
+      var q = item.querySelector('.faq-q');
+      var panel = item.querySelector('.faq-panel');
+      item.classList.remove('open');
+      q.setAttribute('aria-expanded', 'false');
+      panel.style.height = '0px';
+    }
+
+    items.forEach(function (item) {
+      var q = item.querySelector('.faq-q');
+      q.addEventListener('click', function () {
+        var wasOpen = item.classList.contains('open');
+        items.forEach(closeItem); // only one open at a time
+        if (!wasOpen) openItem(item);
+      });
+    });
+
+    // "What exactly changes?" is open on load.
+    if (items[0]) openItem(items[0]);
+  })();
+
+  // Pricing period toggle
+  var toggleButtons = document.querySelectorAll('.toggle button');
+  toggleButtons.forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var period = btn.getAttribute('data-period');
+      toggleButtons.forEach(function (b) { b.classList.toggle('active', b === btn); });
+      document.querySelectorAll('[data-monthly]').forEach(function (el) {
+        var val = el.getAttribute(period === 'annual' ? 'data-annual' : 'data-monthly');
+        if (val != null) el.innerHTML = val;
+      });
+    });
+  });
+</script>
+
+<script>
+  // "02 — How it works" click-driven stepper. The active step (and its
+  // matching panel) changes ONLY when the visitor clicks a step — never
+  // from scroll position. Clicking still smooth-scrolls the step into a
+  // comfortable view, but scrolling the page on its own never flips which
+  // step is active.
+  (function () {
+    var stepsWrap = document.querySelector('.hiw-steps');
+    var rightHome = document.querySelector('.hiw-right');
+    var stage = document.querySelector('.hiw-stage');
+    var railFill = document.querySelector('.hiw-rail-fill');
+    var steps = Array.prototype.slice.call(document.querySelectorAll('.hiw-step'));
+    var panels = Array.prototype.slice.call(document.querySelectorAll('.hiw-panel'));
+    if (!stepsWrap || !steps.length || !panels.length) return;
+
+    var total = steps.length;
+    var active = -1;
+    var reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    var isMobile = window.matchMedia('(max-width: 940px)').matches;
+
+    function setActive(i) {
+      if (i === active) return;
+      active = i;
+      steps.forEach(function (s, n) { s.classList.toggle('on', n === i); });
+      panels.forEach(function (p, n) { p.classList.toggle('on', n === i); });
+      if (railFill) railFill.style.height = ((i + 1) / total) * 100 + '%';
+      if (i === 3) animateShuffleTiles();
+      if (isMobile) placeStageForMobile();
+    }
+
+    // Random overshoot on every non-pinned tile — that's what reads as a
+    // shuffle rather than a fade. Skipped entirely under reduced motion.
+    function animateShuffleTiles() {
+      if (reduceMotion) return;
+      var tiles = panels[3].querySelectorAll('.hiw-tile');
+      tiles.forEach(function (tile, idx) {
+        if (idx < 2) return; // the two pinned tiles never move
+        var dy = Math.random() * 22 - 11; // -11..11
+        tile.style.transform = 'translateY(' + dy.toFixed(1) + 'px) scale(.94)';
+        var settle = 260 + Math.random() * 260; // 260..520ms
+        window.setTimeout(function () {
+          tile.style.transform = '';
+        }, settle);
+      });
+    }
+
+    // On mobile, the stage isn't sticky and only the active panel shows —
+    // move the single stage node so it sits directly above its step.
+    function placeStageForMobile() {
+      var stepEl = steps[active];
+      if (!stepEl || !stage) return;
+      stepEl.parentNode.insertBefore(stage, stepEl);
+    }
+
+    window.addEventListener('resize', function () {
+      var wasMobile = isMobile;
+      isMobile = window.matchMedia('(max-width: 940px)').matches;
+      if (wasMobile && !isMobile && rightHome && stage) {
+        rightHome.appendChild(stage); // restore to the sticky-stage position
+      } else if (!wasMobile && isMobile) {
+        placeStageForMobile();
+      }
+    });
+
+    steps.forEach(function (s, n) {
+      s.addEventListener('click', function () {
+        setActive(n);
+        s.scrollIntoView({ block: 'center', behavior: reduceMotion ? 'auto' : 'smooth' });
+      });
+    });
+
+    setActive(0);
+    if (isMobile) placeStageForMobile();
+  })();
+</script>
+
+<script>
+  // This is a static file with no backend to POST to, so "submitting" opens
+  // the visitor's own email client with the message pre-filled instead of
+  // silently failing against a form action that doesn't exist.
+  (function () {
+    var form = document.getElementById('contact-form');
+    if (!form) return;
+    form.addEventListener('submit', function (e) {
+      e.preventDefault();
+      var name = form.name.value.trim();
+      var email = form.email.value.trim();
+      var store = form.store.value.trim();
+      var topic = form.topic.value;
+      var message = form.message.value.trim();
+
+      var subject = 'Shuffly — ' + topic + (store ? ' — ' + store : '');
+      var bodyLines = ['Name: ' + name, 'Email: ' + email];
+      if (store) bodyLines.push('Store: ' + store);
+      bodyLines.push('Topic: ' + topic, '', message);
+
+      window.location.href = 'mailto:team@mapetitecoree.com'
+        + '?subject=' + encodeURIComponent(subject)
+        + '&body=' + encodeURIComponent(bodyLines.join('\n'));
+    });
+  })();
+</script>
+
+</body>
+</html>
