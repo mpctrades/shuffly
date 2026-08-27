@@ -29,37 +29,29 @@ export const ShuffleAllConfirmModal = forwardRef<
           <s-paragraph>Working out what would move…</s-paragraph>
         ) : (
           <>
-            <s-grid gridTemplateColumns="repeat(3, 1fr)" gap="base">
-              <s-box padding="base" borderWidth="base" borderRadius="base">
-                <s-stack direction="block" gap="small-200">
-                  <s-text color="subdued">Products moving</s-text>
-                  <s-heading>{preview.productsMoving}</s-heading>
-                </s-stack>
-              </s-box>
-              <s-box padding="base" borderWidth="base" borderRadius="base">
-                <s-stack direction="block" gap="small-200">
-                  <s-text color="subdued">Sold-out moved down</s-text>
-                  <s-heading>{preview.soldOutMovedDown}</s-heading>
-                </s-stack>
-              </s-box>
-              <s-box padding="base" borderWidth="base" borderRadius="base">
-                <s-stack direction="block" gap="small-200">
-                  <s-text color="subdued">Pins held</s-text>
-                  <s-heading>{preview.pinsHeld}</s-heading>
-                </s-stack>
-              </s-box>
-            </s-grid>
+            <div className="shuffly-preview-tiles">
+              {/* "Products moving" leads — the app-wide convention (Insights'
+                 three tiles) is a 3px top bar, orange on the lead stat, ink
+                 on the rest, rather than the plain grey-bordered boxes this
+                 modal had before. */}
+              <PreviewTile lead label="Products moving" value={preview.productsMoving} />
+              <PreviewTile label="Sold-out moved down" value={preview.soldOutMovedDown} />
+              <PreviewTile label="Pins held" value={preview.pinsHeld} />
+            </div>
             {preview.notReady.length > 0 && (
-              <s-paragraph>
-                {preview.notReady.length} collection
-                {preview.notReady.length === 1 ? "" : "s"} won&apos;t run yet
-                (not on manual sort): {preview.notReady.join(", ")}.
-              </s-paragraph>
+              <div className="shuffly-preview-notready">
+                <span className="shuffly-preview-notready-dot" aria-hidden="true" />
+                <span>
+                  {preview.notReady.length} collection{preview.notReady.length === 1 ? "" : "s"} won&apos;t run yet
+                  (not on manual sort): {preview.notReady.join(", ")}.
+                </span>
+              </div>
             )}
             <s-paragraph>
-              Usually takes about {preview.estimatedSeconds} second
-              {preview.estimatedSeconds === 1 ? "" : "s"}. Every run is saved
-              for 30 days, so any of them can be undone.
+              <s-text color="subdued">
+                Usually takes about {preview.estimatedSeconds} second{preview.estimatedSeconds === 1 ? "" : "s"}.
+                Every run is saved for 30 days, so any of them can be undone.
+              </s-text>
             </s-paragraph>
           </>
         )}
@@ -75,6 +67,66 @@ export const ShuffleAllConfirmModal = forwardRef<
       <s-button slot="secondary-actions" onClick={onCancel}>
         Cancel
       </s-button>
+
+      <style>{`
+        .shuffly-preview-tiles {
+          display: grid;
+          grid-template-columns: repeat(3, 1fr);
+          gap: 12px;
+          margin-bottom: 12px;
+        }
+        .shuffly-preview-tile {
+          position: relative;
+          border: 1px solid var(--p-color-border, #e3e3e3);
+          border-radius: 10px;
+          padding: 12px;
+          overflow: hidden;
+        }
+        .shuffly-preview-tile-bar { position: absolute; top: 0; left: 0; right: 0; height: 3px; }
+        .shuffly-preview-tile-label {
+          font-size: 12px;
+          color: var(--p-color-text-secondary, #6b6b6b);
+        }
+        .shuffly-preview-tile-value {
+          font-size: 22px;
+          font-weight: 800;
+          font-variant-numeric: tabular-nums;
+          margin-top: 2px;
+          color: var(--p-color-text, #131110);
+        }
+        .shuffly-preview-notready {
+          display: flex;
+          align-items: flex-start;
+          gap: 8px;
+          padding: 10px 12px;
+          margin-bottom: 12px;
+          border-radius: 8px;
+          background: var(--p-color-bg-fill-caution-secondary, #FFF4D6);
+          font-size: 13px;
+          color: var(--p-color-text, #131110);
+        }
+        .shuffly-preview-notready-dot {
+          flex: none;
+          width: 6px;
+          height: 6px;
+          margin-top: 6px;
+          border-radius: 50%;
+          background: var(--p-color-icon-caution, #946200);
+        }
+      `}</style>
     </s-modal>
   );
 });
+
+function PreviewTile({ label, value, lead }: { label: string; value: number; lead?: boolean }) {
+  return (
+    <div className="shuffly-preview-tile">
+      <div
+        className="shuffly-preview-tile-bar"
+        style={{ background: lead ? "var(--p-color-bg-fill-warning, #FF4B1F)" : "var(--p-color-bg-fill-inverse, #131110)" }}
+      />
+      <div className="shuffly-preview-tile-label">{label}</div>
+      <div className="shuffly-preview-tile-value">{value}</div>
+    </div>
+  );
+}

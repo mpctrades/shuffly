@@ -441,10 +441,11 @@ export default function Activity() {
           cursor: pointer;
           transition: background-color 120ms ease, color 120ms ease;
         }
-        /* The active tab is one of this page's sanctioned brand-orange
-           spots (see the task's COLOUR DISCIPLINE section). */
+        /* Ink, not orange — matches the same active-tab treatment on
+           Collections, and keeps orange from being the answer to every
+           single "what color is this" question on the page. */
         .shuffly-activity-tab--active {
-          background: var(--p-color-bg-fill-warning, #FF4B1F);
+          background: var(--p-color-bg-fill-inverse, #131110);
           color: #ffffff;
         }
         .shuffly-activity-tab:not(.shuffly-activity-tab--active):hover {
@@ -466,7 +467,11 @@ export default function Activity() {
           align-items: center;
           gap: 6px;
         }
-        .shuffly-activity-day-heading--today { color: var(--p-color-text-warning, #FF4B1F); }
+        /* Just the pulsing dot stays orange as the "this is live" signal —
+           the heading text itself stays the same ink as every other day
+           heading, so "Today" doesn't turn into one more orange thing on
+           the page. */
+        .shuffly-activity-day-heading--today { color: var(--p-color-text, #131110); }
         .shuffly-activity-pulse-dot {
           width: 6px;
           height: 6px;
@@ -523,23 +528,28 @@ export default function Activity() {
         }
         .shuffly-activity-body { flex: 1 1 0%; min-width: 0; padding: 3px 0 14px; }
         .shuffly-activity-title { font-weight: 600; font-size: 14px; color: var(--p-color-text, #131110); }
-        /* The moved-count pill is one of this page's sanctioned orange
-           spots. */
+        /* Green (success), not orange — this pill appears on nearly every
+           run, so it was the single biggest source of "everything is
+           orange" — and "N moved" is a positive outcome, which is exactly
+           what the green token already means everywhere else in the app. */
         .shuffly-activity-pill {
           display: inline-flex;
           align-items: center;
           height: 20px;
           padding: 0 8px;
           border-radius: 999px;
-          background: var(--p-color-bg-fill-warning-secondary, #FFE4D6);
-          color: var(--p-color-text-warning, #d93c15);
+          background: var(--p-color-bg-fill-success-secondary, #E3F5EE);
+          color: var(--p-color-text-success, #008060);
           font-size: 11px;
           font-weight: 700;
         }
         .shuffly-activity-meta { margin-top: 3px; font-size: 12px; color: var(--p-color-text-secondary, #6b6b6b); }
         .shuffly-activity-time { color: var(--p-color-text-secondary, #6b6b6b); }
         .shuffly-activity-dotsep { color: var(--p-color-text-secondary, #6b6b6b); }
-        /* Action links are one of this page's sanctioned orange spots. */
+        /* Blue (the standard link color), not orange — action links repeat
+           on almost every row too, so recoloring these plus the pill above
+           covers most of what was reading as "too much orange", while the
+           rail/dots/hero stat stay orange as the actual brand identity. */
         .shuffly-activity-link {
           border: none;
           outline: none;
@@ -548,10 +558,10 @@ export default function Activity() {
           font: inherit;
           font-size: 12px;
           font-weight: 700;
-          color: var(--p-color-text-warning, #FF4B1F);
+          color: var(--p-color-text-link, #1F5199);
           cursor: pointer;
         }
-        .shuffly-activity-link:hover { color: var(--p-color-text-warning-hover, #d93c15); }
+        .shuffly-activity-link:hover { color: var(--p-color-text-link-hover, #1a4680); }
         .shuffly-activity-link:disabled { opacity: 0.6; cursor: default; }
         .shuffly-activity-link:focus-visible {
           outline: 2px solid var(--p-color-border-warning, #FF4B1F);
@@ -598,28 +608,48 @@ function StatRow({
   const countdown =
     statRow.runningCount === 0 || !statRow.nextRunAtMs ? "Only when you press Shuffle" : formatCountdown(statRow.nextRunAtMs - nowMs);
 
+  const last7Tone: "success" | "critical" = statRow.last7DaysAnyFailed ? "critical" : "success";
+  const last7Colors = STAT_TONE_COLORS[last7Tone];
+
   return (
     <div className="shuffly-activity-stats">
       <div className="shuffly-activity-stat shuffly-activity-stat--lead">
-        <div className="shuffly-activity-stat-label">Next run</div>
-        <div className="shuffly-activity-stat-value shuffly-activity-stat-value--orange">{countdown}</div>
-        <div className="shuffly-activity-stat-detail">
-          {statRow.nextRunAtMs ? formatClock(new Date(statRow.nextRunAtMs)) : "—"} · {statRow.runningCount} collection
-          {statRow.runningCount === 1 ? "" : "s"}
+        <div className="shuffly-activity-stat-chip" style={{ background: STAT_TONE_COLORS.warning.tint }}>
+          <ClockGlyph color={STAT_TONE_COLORS.warning.accent} />
+        </div>
+        <div style={{ minWidth: 0 }}>
+          <div className="shuffly-activity-stat-label">Next run</div>
+          <div className="shuffly-activity-stat-value shuffly-activity-stat-value--orange">{countdown}</div>
+          <div className="shuffly-activity-stat-detail">
+            {statRow.nextRunAtMs ? formatClock(new Date(statRow.nextRunAtMs)) : "—"} · {statRow.runningCount} collection
+            {statRow.runningCount === 1 ? "" : "s"}
+          </div>
         </div>
       </div>
       <div className="shuffly-activity-stat">
-        <div className="shuffly-activity-stat-label">Today</div>
-        <div className="shuffly-activity-stat-value">
-          {summary.runsToday} run{summary.runsToday === 1 ? "" : "s"} · {summary.productsMovedToday} moved
+        <div className="shuffly-activity-stat-chip" style={{ background: STAT_TONE_COLORS.info.tint }}>
+          <CalendarGlyph color={STAT_TONE_COLORS.info.accent} />
         </div>
-        <div className="shuffly-activity-stat-detail">{summary.lastRunAtToday ? `last at ${summary.lastRunAtToday}` : "Nothing yet today"}</div>
+        <div style={{ minWidth: 0 }}>
+          <div className="shuffly-activity-stat-label">Today</div>
+          <div className="shuffly-activity-stat-value">
+            {summary.runsToday} run{summary.runsToday === 1 ? "" : "s"} · {summary.productsMovedToday} moved
+          </div>
+          <div className="shuffly-activity-stat-detail">{summary.lastRunAtToday ? `last at ${summary.lastRunAtToday}` : "Nothing yet today"}</div>
+        </div>
       </div>
       <div className="shuffly-activity-stat">
-        <div className="shuffly-activity-stat-label">Last 7 days</div>
-        <div className="shuffly-activity-stat-value">{statRow.last7DaysMoved} moved</div>
-        <div className="shuffly-activity-stat-detail">
-          {statRow.last7DaysRuns} run{statRow.last7DaysRuns === 1 ? "" : "s"} · {statRow.last7DaysAnyFailed ? "some failed" : "nothing failed"}
+        <div className="shuffly-activity-stat-chip" style={{ background: last7Colors.tint }}>
+          {last7Tone === "critical" ? <AlertGlyph color={last7Colors.accent} /> : <CheckGlyph color={last7Colors.accent} />}
+        </div>
+        <div style={{ minWidth: 0 }}>
+          <div className="shuffly-activity-stat-label">Last 7 days</div>
+          <div className="shuffly-activity-stat-value" style={last7Tone === "critical" ? { color: last7Colors.accent } : undefined}>
+            {statRow.last7DaysMoved} moved
+          </div>
+          <div className="shuffly-activity-stat-detail">
+            {statRow.last7DaysRuns} run{statRow.last7DaysRuns === 1 ? "" : "s"} · {statRow.last7DaysAnyFailed ? "some failed" : "nothing failed"}
+          </div>
         </div>
       </div>
       <style>{`
@@ -630,14 +660,27 @@ function StatRow({
           margin-top: 20px;
         }
         .shuffly-activity-stat {
+          display: flex;
+          align-items: flex-start;
+          gap: 12px;
           border: 1px solid var(--p-color-border, #e3e3e3);
           border-radius: 12px;
           background: var(--p-color-bg-surface, #ffffff);
+          box-shadow: var(--p-shadow-100, 0 1px 2px rgba(23, 24, 24, 0.06));
           padding: 16px;
         }
         .shuffly-activity-stat--lead {
           background: linear-gradient(135deg, var(--p-color-bg-fill-warning-secondary, #FFF1E4), var(--p-color-bg-surface, #ffffff));
           border-left: 3px solid var(--p-color-border-warning, #FF4B1F);
+        }
+        .shuffly-activity-stat-chip {
+          flex: none;
+          width: 32px;
+          height: 32px;
+          border-radius: 8px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
         }
         .shuffly-activity-stat-label {
           font-size: 11px;
@@ -676,6 +719,53 @@ function formatCountdown(ms: number): string {
 
 function formatClock(d: Date): string {
   return `today at ${new Intl.DateTimeFormat("en-US", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(d)}`;
+}
+
+// Every value here is a Polaris token — the hex after each is a same-hue
+// fallback only, never the source of truth.
+const STAT_TONE_COLORS = {
+  warning: { accent: "var(--p-color-icon-warning, #FF4B1F)", tint: "var(--p-color-bg-fill-warning-secondary, #FFF1E4)" },
+  info: { accent: "var(--p-color-icon-info, #1F5199)", tint: "var(--p-color-bg-fill-info-secondary, #EAF2FF)" },
+  success: { accent: "var(--p-color-icon-success, #008060)", tint: "var(--p-color-bg-fill-success-secondary, #E3F5EE)" },
+  critical: { accent: "var(--p-color-icon-critical, #D82C0D)", tint: "var(--p-color-bg-fill-critical-secondary, #FEE9E8)" },
+} as const;
+
+function ClockGlyph({ color }: { color: string }) {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <circle cx="8" cy="8" r="6.25" stroke={color} strokeWidth="1.4" />
+      <path d="M8 4.8V8L10.2 9.4" stroke={color} strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function CalendarGlyph({ color }: { color: string }) {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <rect x="2.5" y="3.2" width="11" height="10.3" rx="1.5" stroke={color} strokeWidth="1.4" />
+      <path d="M2.5 6.3H13.5" stroke={color} strokeWidth="1.4" />
+      <path d="M5.3 2V4.4M10.7 2V4.4" stroke={color} strokeWidth="1.4" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function CheckGlyph({ color }: { color: string }) {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <circle cx="8" cy="8" r="6.25" stroke={color} strokeWidth="1.4" />
+      <path d="M5.3 8.2L7.2 10L10.7 6.2" stroke={color} strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function AlertGlyph({ color }: { color: string }) {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <circle cx="8" cy="8" r="6.25" stroke={color} strokeWidth="1.4" />
+      <path d="M8 5V8.6" stroke={color} strokeWidth="1.4" strokeLinecap="round" />
+      <circle cx="8" cy="10.8" r="0.9" fill={color} />
+    </svg>
+  );
 }
 
 function EmptyActivityState({ hasAnyItems }: { hasAnyItems: boolean }) {

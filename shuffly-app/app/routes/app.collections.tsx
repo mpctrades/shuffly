@@ -471,7 +471,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     });
 
     if (!keepOrder) {
-      await runShuffleForCollection(admin, shop, config, settings.timezone, settings.neverMoveTags, "MANUAL");
+      await runShuffleForCollection(admin, shop, config, settings.timezone, settings.neverMoveTags, "MANUAL", undefined, settings.pageSize);
     }
     return data({ ok: true });
   }
@@ -545,7 +545,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const configs = await db.collectionConfig.findMany({ where: { id: { in: ids }, shop, status: "RUNNING" } });
     let moved = 0;
     for (const config of configs) {
-      const result = await runShuffleForCollection(admin, shop, config, settings.timezone, settings.neverMoveTags, "MANUAL");
+      const result = await runShuffleForCollection(admin, shop, config, settings.timezone, settings.neverMoveTags, "MANUAL", undefined, settings.pageSize);
       if (result.ok) moved += result.movedCount;
     }
     return data({ ok: true, collections: configs.length, moved });
@@ -567,7 +567,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const id = String(formData.get("id"));
     const config = await db.collectionConfig.findFirst({ where: { id, shop } });
     if (!config) return data({ ok: false }, { status: 404 });
-    const result = await runShuffleForCollection(admin, shop, config, settings.timezone, settings.neverMoveTags, "MANUAL");
+    const result = await runShuffleForCollection(admin, shop, config, settings.timezone, settings.neverMoveTags, "MANUAL", undefined, settings.pageSize);
     return data(result);
   }
 
@@ -576,7 +576,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const remaining = await db.collectionConfig.findMany({ where: { shop, status: "RUNNING", id: { notIn: onPageIds } } });
     let moved = 0;
     for (const config of remaining) {
-      const result = await runShuffleForCollection(admin, shop, config, settings.timezone, settings.neverMoveTags, "MANUAL");
+      const result = await runShuffleForCollection(admin, shop, config, settings.timezone, settings.neverMoveTags, "MANUAL", undefined, settings.pageSize);
       if (result.ok) moved += result.movedCount;
     }
     return data({ ok: true, collections: remaining.length, moved });

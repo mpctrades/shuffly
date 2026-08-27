@@ -9,7 +9,7 @@ import {
 } from "./collections.server";
 import { bumpTurnCounts, computeShuffledOrder, type ShuffleProductInput } from "./shuffle-algorithm.server";
 import { computeNextRun, type ScheduleType } from "./schedule.server";
-import { recordPositionSnapshot } from "./insights.server";
+import { recordProductPositions, recordKnownProducts, invalidateInsightsCache } from "./insights.server";
 
 export interface ShuffleRunSummary {
   ok: boolean;
@@ -74,19 +74,24 @@ export async function runShuffleForCollection(
   neverMoveTagsCsv: string,
   trigger: "SCHEDULED" | "MANUAL" | "SOLD_OUT_REACTION" | "RESTOCK_REACTION",
   batchId?: string,
+  pageSize = 24,
 ): Promise<ShuffleRunSummary> {
   const started = Date.now();
   const { sortOrder, products } = await getCollectionProductsInOrder(admin, config.collectionGid);
 
   // Record what customers actually saw today, in this exact order — real
   // observed history for Insights, independent of whether we're able to
-  // write a new order back below.
-  await recordPositionSnapshot(
-    shop,
-    config.id,
-    products.map((p) => ({ id: p.id, title: p.title, isSoldOut: p.tracksInventory && p.totalInventory <= 0 })),
-    timezone,
-  );
+  // write a new order back below. Two tables, two jobs: recordProductPositions
+  // is the range-queryable page-1 history every numeric metric is computed
+  // from; recordKnownProducts is a cheap title cache covering the WHOLE
+  // order (not just page 1), so "Still never seen" can name a product that
+  // has genuinely never once made page 1.
+  const snapshotProducts = products.map((p) => ({ id: p.id, title: p.title, isSoldOut: p.tracksInventory && p.totalInventory <= 0 }));
+  await Promise.all([
+    recordProductPositions(shop, config.id, snapshotProducts, timezone, pageSize),
+    recordKnownProducts(shop, config.id, snapshotProducts, pageSize),
+  ]);
+  invalidateInsightsCache(shop);
 
   if (sortOrder !== "MANUAL") {
     return {

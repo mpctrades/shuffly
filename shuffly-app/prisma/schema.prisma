@@ -47,6 +47,10 @@ model ShopSettings {
   emailMonthlySummary Boolean   @default(true)
   emailMorningRun     Boolean   @default(false)
   onboardedAt         DateTime?
+  pageSize            Int       @default(24) // products per page in the merchant's theme — Shopify's Admin
+                                              // API has no way to read this, so it's a manual setting with
+                                              // 24 (Shopify's common default) as the fallback. Drives every
+                                              // "page 1" Insights metric.
   plan                String    @default("FREE") // FREE | STARTER | PRO | AGENCY
   planUpdatedAt       DateTime?
   activeSubscriptionId String? // gid://shopify/AppSubscription/... — set once billing.check() confirms it
@@ -85,6 +89,7 @@ model CollectionConfig {
   runs ShuffleRun[]
   exposures ProductExposure[]
   snapshots PositionSnapshot[]
+  positions ProductPosition[]
 
   @@unique([shop, collectionGid])
   @@index([shop])
@@ -153,4 +158,29 @@ model PositionSnapshot {
   @@unique([shop, collectionId, dateKey])
   @@index([shop, dateKey])
   @@index([shop, capturedAt])
+}
+
+// One row per product per run, but only for products that actually landed
+// on page 1 (position <= the shop's pageSize) — recording the rest would
+// grow unboundedly for no metric this app needs, since every Insights
+// figure only cares about "did this reach page 1 / the top 20", never a
+// product's exact rank further down. `position` is 1-based, matching the
+// "position <= pageSize" language every metric definition uses. Supersedes
+// ProductExposure/PositionSnapshot's lifetime-only aggregates with real,
+// range-queryable history; those two tables are left in place (existing
+// data, no longer written to) rather than dropped.
+model ProductPosition {
+  id               String   @id @default(cuid())
+  shop             String
+  collectionId     String
+  collection       CollectionConfig @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+  productGid       String
+  position         Int // 1-based
+  availableForSale Boolean
+  dateKey          String // "YYYY-MM-DD" in the shop's own timezone — the heatmap's day bucket
+  recordedAt       DateTime @default(now())
+
+  @@index([shop, collectionId, dateKey])
+  @@index([shop, dateKey])
+  @@index([shop, productGid, dateKey])
 }

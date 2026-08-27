@@ -1,57 +1,45 @@
-import { useEffect } from "react";
+import { Fragment, useEffect } from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
-import {
-  data,
-  useLoaderData,
-  useNavigate,
-  useNavigation,
-  useFetcher,
-  Link,
-} from "react-router";
+import { data, useLoaderData, useNavigate, useNavigation, useFetcher, Link } from "react-router";
 import { useAppBridge } from "@shopify/app-bridge-react";
 import { authenticate } from "../shopify.server";
 import { getOrCreateShopSettings } from "../lib/shop-context.server";
+import { fetchProductThumbnails } from "../lib/collections.server";
 import {
   computeInsights,
   boostProductsForNextRun,
+  invalidateInsightsCache,
   type InsightsData,
-  type InsightsByCollectionRow,
-  type InsightsNeverSeenRow,
   type InsightsRange,
+  type InsightsTile,
+  type InsightsWaitingRow,
 } from "../lib/insights.server";
 
-const VALID_RANGES: InsightsRange[] = ["30d", "90d", "install"];
-const MIN_DAYS_FOR_CONFIDENCE = 7;
-const WEEKDAYS = [
-  "Sunday",
-  "Monday",
-  "Tuesday",
-  "Wednesday",
-  "Thursday",
-  "Friday",
-  "Saturday",
-];
+const VALID_RANGES: InsightsRange[] = ["7d", "30d", "install"];
+const RANGE_LABELS: Record<InsightsRange, string> = { "7d": "7 days", "30d": "30 days", install: "Since install" };
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { admin, session } = await authenticate.admin(request);
   const shop = session.shop;
   const url = new URL(request.url);
   const requested = url.searchParams.get("range");
-  const range: InsightsRange = VALID_RANGES.includes(requested as InsightsRange)
-    ? (requested as InsightsRange)
-    : "30d";
+  const range: InsightsRange = VALID_RANGES.includes(requested as InsightsRange) ? (requested as InsightsRange) : "30d";
 
   const settings = await getOrCreateShopSettings(admin, shop);
 
   try {
-    const insights = await computeInsights(shop, range, settings.createdAt);
-    return { range, insights, error: null as string | null };
-  } catch {
-    return {
-      range,
-      insights: null as InsightsData | null,
-      error: "Couldn't load Insights just now. Try refreshing.",
-    };
+    const insights = await computeInsights(shop, range, settings.timezone, settings.pageSize, settings.createdAt);
+    // A small, bounded (<=5) live lookup for "Waiting longest"'s
+    // thumbnails — the only place on this page that needs a real Shopify
+    // call, and one batched request regardless of how many rows there are.
+    const thumbsByGid = insights.waitingLongest.length
+      ? await fetchProductThumbnails(admin, insights.waitingLongest.map((n) => n.productGid))
+      : new Map<string, { title: string; imageUrl: string | null }>();
+    const waitingLongest = insights.waitingLongest.map((n) => ({ ...n, imageUrl: thumbsByGid.get(n.productGid)?.imageUrl ?? null }));
+    return { range, insights: { ...insights, waitingLongest }, error: null as string | null };
+  } catch (err) {
+    console.error("[app.insights] computeInsights failed:", err);
+    return { range, insights: null as InsightsData | null, error: "Couldn't load Insights just now. Try refreshing." };
   }
 };
 
@@ -61,7 +49,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const formData = await request.formData();
   const actionType = formData.get("_action");
 
-  if (actionType === "boost-never-seen") {
+  if (actionType === "put-these-first") {
     const items = formData
       .getAll("item")
       .map((raw) => {
@@ -70,6 +58,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       })
       .filter((i) => i.productGid && i.collectionId);
     const count = await boostProductsForNextRun(shop, items);
+    invalidateInsightsCache(shop);
     return data({ ok: true, count });
   }
 
@@ -83,18 +72,18 @@ export default function Insights() {
   const shopify = useAppBridge();
   const boostFetcher = useFetcher<{ ok: boolean; count?: number }>();
 
-  const isLoading =
-    navigation.state === "loading" &&
-    navigation.location?.pathname === "/app/insights" &&
-    new URLSearchParams(navigation.location.search).get("range") !== range;
+  const isLoading = navigation.state === "loading" && navigation.location?.pathname === "/app/insights" && new URLSearchParams(navigation.location.search).get("range") !== range;
+  // Highlight the just-clicked pill immediately, before the navigation
+  // commits — the alternative (waiting for the new range's data to land)
+  // makes a click look like it did nothing for a beat, then jump.
+  const pendingRange = isLoading ? (new URLSearchParams(navigation.location!.search).get("range") as InsightsRange | null) : null;
+  const displayRange = pendingRange && VALID_RANGES.includes(pendingRange) ? pendingRange : range;
 
   useEffect(() => {
     if (boostFetcher.state === "idle" && boostFetcher.data) {
       if (boostFetcher.data.ok) {
         const n = boostFetcher.data.count ?? 0;
-        shopify.toast.show(
-          `${n} product${n === 1 ? "" : "s"} will lead ${n === 1 ? "its" : "their"} collection's next run`,
-        );
+        shopify.toast.show(`${n} product${n === 1 ? "" : "s"} will lead ${n === 1 ? "its" : "their"} collection's next run`);
       } else {
         shopify.toast.show("Couldn't do that just now", { isError: true });
       }
@@ -102,569 +91,683 @@ export default function Insights() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- fires only on fetcher settle
   }, [boostFetcher.state, boostFetcher.data]);
 
+  const boosted = boostFetcher.state !== "idle" || (boostFetcher.data?.ok ?? false);
+
   function putTheseFirst() {
-    if (!insights || insights.neverSeen.length === 0) return;
+    if (!insights || insights.waitingLongest.length === 0) return;
+    // Optimistic: the button shows "Boosting…" immediately via the
+    // fetcher's own pending state, then a toast confirms once the real
+    // write (and the loader's revalidation behind it) settles.
     boostFetcher.submit(
-      {
-        _action: "boost-never-seen",
-        item: insights.neverSeen.map(
-          (n) => `${n.productGid}|${n.collectionId}`,
-        ),
-      },
+      { _action: "put-these-first", item: insights.waitingLongest.map((n) => `${n.productGid}|${n.collectionId}`) },
       { method: "post" },
     );
   }
 
-  const showYoungHistoryBanner =
-    !error &&
-    !!insights?.hasHistory &&
-    insights.daysOfHistory < MIN_DAYS_FOR_CONFIDENCE;
-
   return (
     <s-page heading="Insights" inlineSize="large">
-      <s-box slot="secondary-actions" inlineSize="180px">
-        <s-select
-          label="Date range"
-          labelAccessibilityVisibility="exclusive"
-          value={range}
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any -- currentTarget.value isn't in the typed event map
-          onChange={(e: any) =>
-            navigate(`?range=${e.currentTarget?.value ?? "30d"}`)
-          }
-        >
-          <s-option value="30d">Last 30 days</s-option>
-          <s-option value="90d">Last 90 days</s-option>
-          <s-option value="install">Since install</s-option>
-        </s-select>
-      </s-box>
-
-      <s-text color="subdued">
-        How much of your catalogue customers are actually seeing.
-      </s-text>
-
       {error && <s-banner tone="critical">{error}</s-banner>}
 
-      {showYoungHistoryBanner && (
-        <s-banner tone="info">
-          These numbers get more useful after a week of runs.
-        </s-banner>
-      )}
-
-      {isLoading ? (
-        <InsightsSkeleton />
-      ) : error ? null : !insights || !insights.hasHistory ? (
-        <EmptyInsightsState />
-      ) : (
-        <div>
-          <div className="shuffly-stat-grid" style={{ marginBottom: 16 }}>
-            <StatTile
-              tone={coverageTone(insights.page1Pct)}
-              icon="view"
-              label="Products seen on page 1"
-              value={`${insights.page1Pct}%`}
-              sub={<DeltaLine pts={insights.page1DeltaPts} />}
-            />
-            <StatTile
-              tone={soldOutTone(insights.soldOutTop20Mean)}
-              icon="alert-triangle"
-              label="Sold-out sitting near the top"
-              value={String(insights.soldOutTop20Mean)}
-              sub={
-                <SoldOutSub
-                  current={insights.soldOutTop20Mean}
-                  baseline={insights.soldOutTop20Baseline}
-                />
-              }
-            />
-            <StatTile
-              tone="info"
-              icon="arrow-up"
-              label="New to the top 20"
-              value={String(insights.firstTop20Count)}
-              sub={
-                <s-text color="subdued">
-                  {insights.firstTop20Count} product
-                  {insights.firstTop20Count === 1 ? "" : "s"} reached it for the
-                  first time
-                </s-text>
-              }
-            />
+      <div className="shuffly-insights-page">
+        {error ? (
+          <div className="shuffly-insights-rangebar">
+            <RangePicker range={displayRange} onChange={(r) => navigate(`?range=${r}`)} />
           </div>
+        ) : !insights || !insights.hasHistory ? (
+          <>
+            <div className="shuffly-insights-rangebar">
+              <RangePicker range={displayRange} onChange={(r) => navigate(`?range=${r}`)} />
+            </div>
+            <EmptyInsightsState />
+          </>
+        ) : (
+          // Switching ranges never swaps this whole section for a
+          // different skeleton layout — React Router keeps `insights` from
+          // the previous range on screen while the new one loads, so the
+          // strip (and the range picker inside it) stays exactly where it
+          // is; only a soft dim signals a refresh is in flight.
+          <div className={`shuffly-insights-stack${isLoading ? " shuffly-insights-stack--busy" : ""}`} aria-busy={isLoading || undefined}>
+            <SummaryStrip insights={insights} range={displayRange} onRangeChange={(r) => navigate(`?range=${r}`)} />
 
-          <div style={{ marginBottom: 16 }}>
-            <s-section>
-              <ByCollectionCard
-                byCollection={insights.byCollection}
-                suggestion={insights.suggestion}
+            <div className="shuffly-insights-tiles">
+              <Tile lead heading="Rotation fairness" tile={insights.rotationFairness} unit="/100" />
+              <Tile heading="Typical wait" tile={insights.typicalWait} unit=" days" />
+              <Tile
+                heading="Longest wait"
+                tile={insights.longestWait}
+                unit=" days"
+                detailOverride={insights.longestWaitProduct ?? undefined}
               />
-            </s-section>
-          </div>
+              <Tile heading="Sold-out response" tile={insights.soldOutResponse} unit="s" />
+            </div>
 
-          <s-section>
-            <NeverSeenBody
-              neverSeen={insights.neverSeen}
-              onBoost={putTheseFirst}
-              boosting={boostFetcher.state !== "idle"}
-            />
-          </s-section>
-        </div>
-      )}
+            <div className="shuffly-insights-columns">
+              <DistributionCard insights={insights} />
+              <WaitingLongestCard rows={insights.waitingLongest} onBoost={putTheseFirst} boosting={boosted} />
+            </div>
+
+            <WhoHadATurnCard insights={insights} />
+          </div>
+        )}
+      </div>
 
       <s-box paddingBlockEnd="large-500"></s-box>
 
       <style>{`
-        .shuffly-stat-grid {
-          display: grid;
-          grid-template-columns: repeat(3, 1fr);
-          align-items: stretch;
-          gap: 16px;
-          width: 100%;
+        .shuffly-insights-page { max-width: 1040px; margin: 0 auto; }
+        .shuffly-insights-rangebar {
+          display: flex;
+          justify-content: flex-end;
+          margin-bottom: 14px;
         }
-        @media (max-width: 820px) {
-          .shuffly-stat-grid {
-            grid-template-columns: 1fr;
-          }
+        .shuffly-insights-range {
+          display: inline-flex;
+          padding: 3px;
+          border: 1px solid var(--p-color-border, #e3e3e3);
+          border-radius: 999px;
+          background: var(--p-color-bg-surface, #ffffff);
+        }
+        .shuffly-insights-range-btn {
+          border: none;
+          outline: none;
+          background: transparent;
+          border-radius: 999px;
+          padding: 6px 14px;
+          font: inherit;
+          font-size: 13px;
+          font-weight: 600;
+          color: var(--p-color-text-secondary, #6b6b6b);
+          cursor: pointer;
+          transition: background-color 100ms ease, color 100ms ease;
+        }
+        .shuffly-insights-range-btn:hover:not(.shuffly-insights-range-btn--active) {
+          background: var(--p-color-bg-fill-secondary, rgba(19, 17, 16, 0.06));
+          color: var(--p-color-text, #131110);
+        }
+        .shuffly-insights-range-btn--active {
+          background: var(--p-color-bg-fill-warning, #FF4B1F);
+          color: #ffffff;
+        }
+        .shuffly-insights-stack--busy {
+          opacity: 0.55;
+          transition: opacity 120ms ease;
+        }
+        .shuffly-insights-range-btn:focus-visible {
+          outline: 2px solid var(--p-color-border-warning, #FF4B1F);
+          outline-offset: 2px;
+        }
+        .shuffly-insights-stack { display: flex; flex-direction: column; gap: 14px; }
+        .shuffly-insights-tiles {
+          display: grid;
+          grid-template-columns: repeat(4, 1fr);
+          gap: 14px;
+        }
+        .shuffly-insights-columns {
+          display: grid;
+          grid-template-columns: 1.45fr 1fr;
+          gap: 14px;
+          align-items: stretch;
+        }
+        @container shuffly-insights (max-width: 900px) {
+          .shuffly-insights-columns { grid-template-columns: 1fr; }
+        }
+        @container shuffly-insights (max-width: 700px) {
+          .shuffly-insights-tiles { grid-template-columns: 1fr 1fr; }
+        }
+        .shuffly-card {
+          background: var(--p-color-bg-surface, #ffffff);
+          border: 1px solid var(--p-color-border, #e3e3e3);
+          border-radius: 12px;
+          overflow: hidden;
+        }
+        .shuffly-card-header {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          padding: 14px 16px;
+          border-bottom: 1px solid var(--p-color-border, #e3e3e3);
+        }
+        .shuffly-pill {
+          display: inline-flex;
+          align-items: center;
+          height: 18px;
+          padding: 0 7px;
+          border-radius: 999px;
+          font-size: 11px;
+          font-weight: 700;
+          white-space: nowrap;
+          flex: none;
+        }
+        .shuffly-pill--orange {
+          background: var(--p-color-bg-fill-warning-secondary, #FFE4D6);
+          color: var(--p-color-text-warning, #d93c15);
+        }
+        .shuffly-pill--grey {
+          background: var(--p-color-bg-fill-secondary, #F1F1F1);
+          color: var(--p-color-text-secondary, #6b6b6b);
         }
       `}</style>
     </s-page>
   );
 }
 
-// ============================== stat tiles ==============================
+// ============================== range picker ==============================
 
-type Tone = "success" | "warning" | "critical" | "info";
-
-/** Every color a tile can show, sourced from Polaris design tokens — the hex
- * after each token is a same-hue fallback only, never the source of truth. */
-const TONE_TOKENS: Record<Tone, { accent: string; tint: string }> = {
-  success: {
-    accent: "var(--p-color-icon-success, #008060)",
-    tint: "var(--p-color-bg-fill-success-secondary, #E3F5EE)",
-  },
-  warning: {
-    accent: "var(--p-color-icon-warning, #FF4B1F)",
-    tint: "var(--p-color-bg-fill-warning-secondary, #FFF1E4)",
-  },
-  critical: {
-    accent: "var(--p-color-icon-critical, #D72C0D)",
-    tint: "var(--p-color-bg-fill-critical-secondary, #FBEAE5)",
-  },
-  info: {
-    accent: "var(--p-color-icon-info, #1F5199)",
-    tint: "var(--p-color-bg-fill-info-secondary, #EAF2FF)",
-  },
-};
-
-/** ≥60% is healthy, 30–59% needs a look, below that is a real problem. */
-function coverageTone(pct: number): Tone {
-  if (pct >= 60) return "success";
-  if (pct >= 30) return "warning";
-  return "critical";
-}
-
-/** Sold-out-near-the-top is a count where lower is always better — zero is
- * the only "nothing to see here" state. */
-function soldOutTone(count: number): Tone {
-  if (count === 0) return "success";
-  if (count <= 5) return "warning";
-  return "critical";
-}
-
-function StatTile({
-  tone,
-  icon,
-  label,
-  value,
-  sub,
-}: {
-  tone: Tone;
-  icon: "view" | "alert-triangle" | "arrow-up";
-  label: string;
-  value: string;
-  sub: React.ReactNode;
-}) {
-  const tokens = TONE_TOKENS[tone];
+function RangePicker({ range, onChange }: { range: InsightsRange; onChange: (r: InsightsRange) => void }) {
   return (
-    <div
-      style={{
-        position: "relative",
-        display: "flex",
-        flexDirection: "column",
-        minHeight: 148,
-        background: "var(--p-color-bg-surface, #ffffff)",
-        border: "1px solid var(--p-color-border, #e3e3e3)",
-        borderRadius: 12,
-        boxShadow: "var(--p-shadow-100, 0 1px 2px rgba(23, 24, 24, 0.07))",
-        padding: 16,
-        overflow: "hidden",
-      }}
-    >
-      <div
-        style={{
-          position: "absolute",
-          top: 0,
-          left: 0,
-          right: 0,
-          height: 3,
-          background: tokens.accent,
-          borderRadius: "12px 12px 0 0",
-        }}
-      />
-      <div
-        aria-hidden="true"
-        style={{
-          width: 32,
-          height: 32,
-          flex: "0 0 auto",
-          borderRadius: 8,
-          background: tokens.tint,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          marginBottom: 12,
-        }}
-      >
-        <s-icon type={icon} tone={tone}></s-icon>
-      </div>
-      <div
-        style={{
-          fontSize: 12,
-          fontWeight: 500,
-          color: "var(--p-color-text-subdued, #6b7177)",
-          whiteSpace: "nowrap",
-          overflow: "hidden",
-          textOverflow: "ellipsis",
-        }}
-      >
-        {label}
-      </div>
-      <div
-        style={{
-          fontSize: 30,
-          fontWeight: 700,
-          lineHeight: 1.15,
-          letterSpacing: "-0.02em",
-          fontVariantNumeric: "tabular-nums",
-          marginTop: 4,
-        }}
-      >
-        {value}
-      </div>
-      <div style={{ fontSize: 12, marginTop: 6 }}>{sub}</div>
+    <div className="shuffly-insights-range" role="group" aria-label="Date range">
+      {VALID_RANGES.map((r) => (
+        <button key={r} type="button" className={`shuffly-insights-range-btn${range === r ? " shuffly-insights-range-btn--active" : ""}`} onClick={() => onChange(r)}>
+          {RANGE_LABELS[r]}
+        </button>
+      ))}
     </div>
   );
 }
 
-/** Rules: positive -> green pill with an up-arrow, negative -> red pill with
- * a down-arrow, exactly zero -> grey pill and no misleading "▲ 0". The pill
- * always carries the arrow and the words too — color is never the only
- * signal. */
-function DeltaLine({ pts }: { pts: number }) {
-  if (pts === 0) {
-    return (
-      <s-stack direction="inline" gap="small-200" alignItems="center">
-        <s-badge>No change yet</s-badge>
-      </s-stack>
-    );
-  }
-  const isUp = pts > 0;
+// ============================== summary strip ==============================
+
+function SummaryStrip({ insights, range, onRangeChange }: { insights: InsightsData; range: InsightsRange; onRangeChange: (r: InsightsRange) => void }) {
   return (
-    <s-stack direction="inline" gap="small-200" alignItems="center">
-      <s-badge tone={isUp ? "success" : "critical"}>
-        {isUp ? "▲" : "▼"} {Math.abs(pts)} pts
-      </s-badge>
-      <s-text color="subdued">since install</s-text>
-    </s-stack>
-  );
-}
-
-function SoldOutSub({
-  current,
-  baseline,
-}: {
-  current: number;
-  baseline: number | null;
-}) {
-  if (baseline == null) return null;
-  if (current < baseline) {
-    return (
-      <s-text color="subdued">Down from {baseline} a day before install</s-text>
-    );
-  }
-  if (current > baseline) {
-    return (
-      <s-text color="subdued">Up from {baseline} a day before install</s-text>
-    );
-  }
-  // current === baseline: state the number plainly rather than an
-  // unqualified "Same as..." that reads like a rendering bug.
-  return <s-text color="subdued">{baseline} a day before install</s-text>;
-}
-
-// ============================== by collection ==============================
-
-/** "shuffles daily at 06:00" / "shuffles weekly, Monday" / "paused" / etc. —
- * the same schedule vocabulary Collections uses, phrased for a meta line. */
-function scheduleLine(c: InsightsByCollectionRow): string {
-  if (c.status === "PAUSED") return "paused";
-  switch (c.scheduleType) {
-    case "DAILY":
-      return `shuffles daily at ${c.scheduleTime}`;
-    case "TWICE_DAILY":
-      return "shuffles twice daily";
-    case "WEEKLY":
-      return `shuffles weekly, ${WEEKDAYS[c.scheduleWeekday ?? 1]}`;
-    default:
-      return "shuffles only when you press Shuffle";
-  }
-}
-
-function ByCollectionCard({
-  byCollection,
-  suggestion,
-}: {
-  byCollection: InsightsByCollectionRow[];
-  suggestion: InsightsData["suggestion"];
-}) {
-  const trackedCount = byCollection.length;
-  const sorted = [...byCollection].sort((a, b) => b.pct - a.pct);
-
-  return (
-    <>
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-        }}
-      >
-        <s-heading>By collection</s-heading>
-        <s-text color="subdued">
-          {trackedCount} collection{trackedCount === 1 ? "" : "s"}
-        </s-text>
-      </div>
-
-      <div style={{ marginTop: 16 }}>
-        {trackedCount === 0 ? (
-          <s-paragraph color="subdued">
-            Add a collection to start seeing this.
-          </s-paragraph>
-        ) : (
-          <div>
-            {sorted.map((c, i) => (
-              <div
-                key={c.id}
-                style={{ marginBottom: i < sorted.length - 1 ? 20 : 0 }}
-              >
-                <CollectionBarRow collection={c} />
-                {i < sorted.length - 1 && (
-                  <div style={{ marginTop: 20 }}>
-                    <s-divider />
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-
-      <ByCollectionFooter trackedCount={trackedCount} suggestion={suggestion} />
-    </>
-  );
-}
-
-function CollectionBarRow({
-  collection: c,
-}: {
-  collection: InsightsByCollectionRow;
-}) {
-  const tone = coverageTone(c.pct);
-  const meta = `${c.productCount} product${c.productCount === 1 ? "" : "s"} · ${scheduleLine(c)} · ${c.seenCount} seen · ${c.neverSeenCount} never seen`;
-
-  return (
-    <Link
-      to={`/app/collections/${c.id}`}
-      style={{ display: "block", color: "inherit", textDecoration: "none" }}
-    >
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "baseline",
-        }}
-      >
-        <s-text type="strong">{c.title}</s-text>
-        <div style={{ fontVariantNumeric: "tabular-nums" }}>
-          <s-text type="strong">{c.pct}%</s-text>
+    <div className="shuffly-strip">
+      <div className="shuffly-strip-glow" aria-hidden="true" />
+      <div className="shuffly-strip-top">
+        <div className="shuffly-strip-eyebrow">Catalogue reaching page 1</div>
+        <div className="shuffly-strip-range">
+          <RangePicker range={range} onChange={onRangeChange} />
         </div>
       </div>
-      <div
-        style={{
-          marginTop: 6,
-          height: 8,
-          borderRadius: 999,
-          background: "var(--p-color-border, #cdcdcd)",
-          overflow: "hidden",
-        }}
-      >
-        <div
-          style={{
-            height: "100%",
-            width: `${Math.max(0, Math.min(100, c.pct))}%`,
-            borderRadius: 999,
-            background: TONE_TOKENS[tone].accent,
-            transition: "width 300ms ease",
-          }}
-        />
+      <div className="shuffly-strip-headline">
+        <span className="shuffly-strip-number">{insights.coveragePct}%</span>
+        <span className="shuffly-strip-of"> of {insights.totalProducts} products</span>
       </div>
-      <div
-        style={{
-          marginTop: 6,
-          fontSize: 12,
-          color: "var(--p-color-text-subdued, #6b7177)",
-        }}
-      >
-        {meta}
-      </div>
-    </Link>
-  );
-}
-
-function ByCollectionFooter({
-  trackedCount,
-  suggestion,
-}: {
-  trackedCount: number;
-  suggestion: InsightsData["suggestion"];
-}) {
-  if (trackedCount === 1) {
-    return (
-      <FooterStrip>
-        <s-text color="subdued">Compare more collections</s-text>
-        <Link to="/app/collections">
-          <s-button>Add collection</s-button>
-        </Link>
-      </FooterStrip>
-    );
-  }
-
-  if (suggestion) {
-    return (
-      <FooterStrip>
-        <s-text color="subdued">
-          {suggestion.title} only shuffles weekly — switch it to daily to lift
-          this.
-        </s-text>
-        <Link to={`/app/collections/${suggestion.collectionId}`}>
-          <s-button>Change it</s-button>
-        </Link>
-      </FooterStrip>
-    );
-  }
-
-  // Nothing useful to say — no filler footer.
-  return null;
-}
-
-function FooterStrip({ children }: { children: React.ReactNode }) {
-  return (
-    <div
-      style={{
-        marginTop: 16,
-        paddingTop: 16,
-        borderTop: "1px solid var(--p-color-border, #e3e3e3)",
-        display: "flex",
-        justifyContent: "space-between",
-        alignItems: "center",
-        gap: 12,
-      }}
-    >
-      {children}
-    </div>
-  );
-}
-
-// ============================== still never seen ==============================
-
-function NeverSeenBody({
-  neverSeen,
-  onBoost,
-  boosting,
-}: {
-  neverSeen: InsightsNeverSeenRow[];
-  onBoost: () => void;
-  boosting: boolean;
-}) {
-  const isEmpty = neverSeen.length === 0;
-
-  return (
-    <>
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-        }}
-      >
-        <s-heading>Still never seen</s-heading>
-        {!isEmpty && (
-          <s-badge>
-            {neverSeen.length} product{neverSeen.length === 1 ? "" : "s"}
-          </s-badge>
-        )}
-      </div>
-
-      {isEmpty ? (
-        <div
-          style={{
-            display: "flex",
-            flexDirection: "column",
-            alignItems: "center",
-            textAlign: "center",
-            paddingTop: 24,
-            paddingBottom: 8,
-          }}
-        >
-          <s-icon type="check-circle" tone="success"></s-icon>
-          <div style={{ marginTop: 8 }}>
-            <s-heading>Everything has been seen</s-heading>
+      <p className="shuffly-strip-explain">
+        {insights.coverageSeenCount} of your products showed up on page 1 of a collection at least once {insights.rangeSentence}.
+      </p>
+      {insights.heroShowComparison ? (
+        <div className="shuffly-strip-bars">
+          <div className="shuffly-strip-bar-row">
+            <span className="shuffly-strip-bar-label">Before Shuffly</span>
+            <span className="shuffly-strip-bar-value">{insights.heroBeforePct}%</span>
           </div>
-          <div style={{ marginTop: 4 }}>
-            <s-text color="subdued">
-              Every product in your tracked collections reached page 1 in this
-              range.
-            </s-text>
+          <div className="shuffly-strip-track">
+            <div className="shuffly-strip-fill shuffly-strip-fill--before" style={{ width: `${insights.heroBeforePct}%` }} />
+          </div>
+          <div className="shuffly-strip-bar-row" style={{ marginTop: 10 }}>
+            <span className="shuffly-strip-bar-label">Now</span>
+            <span className="shuffly-strip-bar-value">{insights.coveragePct}%</span>
+          </div>
+          <div className="shuffly-strip-track">
+            <div className="shuffly-strip-fill shuffly-strip-fill--now" style={{ width: `${insights.coveragePct}%` }} />
           </div>
         </div>
       ) : (
+        <p className="shuffly-strip-note">{insights.heroNote}</p>
+      )}
+      <style>{`
+        .shuffly-strip {
+          position: relative;
+          overflow: hidden;
+          border-radius: 12px;
+          background: var(--p-color-bg-fill-inverse, #131110);
+          padding: 16px 20px 20px;
+        }
+        .shuffly-strip-glow {
+          position: absolute;
+          top: -60px;
+          right: -40px;
+          width: 260px;
+          height: 260px;
+          border-radius: 50%;
+          background: radial-gradient(circle, rgba(255, 75, 31, 0.35), transparent 70%);
+          pointer-events: none;
+        }
+        .shuffly-strip-top {
+          position: relative;
+          display: flex;
+          justify-content: space-between;
+          align-items: flex-start;
+          gap: 12px;
+          flex-wrap: wrap;
+        }
+        .shuffly-strip-eyebrow {
+          font-size: 11px;
+          font-weight: 700;
+          letter-spacing: 0.06em;
+          text-transform: uppercase;
+          color: rgba(255, 255, 255, 0.6);
+        }
+        .shuffly-strip-range .shuffly-insights-range {
+          border-color: rgba(255, 255, 255, 0.18);
+          background: rgba(255, 255, 255, 0.07);
+        }
+        .shuffly-strip-range .shuffly-insights-range-btn {
+          color: rgba(255, 255, 255, 0.78);
+        }
+        .shuffly-strip-range .shuffly-insights-range-btn:hover:not(.shuffly-insights-range-btn--active) {
+          background: rgba(255, 255, 255, 0.12);
+          color: #ffffff;
+        }
+        .shuffly-strip-range .shuffly-insights-range-btn--active {
+          color: #ffffff;
+        }
+        .shuffly-strip-headline { position: relative; margin-top: 4px; line-height: 1; }
+        .shuffly-strip-number { font-size: 40px; font-weight: 800; color: var(--p-color-text-warning, #FF4B1F); }
+        .shuffly-strip-of { font-size: 18px; font-weight: 600; color: #ffffff; margin-left: 4px; }
+        .shuffly-strip-explain {
+          position: relative;
+          margin: 8px 0 0;
+          max-width: 460px;
+          font-size: 13px;
+          line-height: 1.5;
+          color: rgba(255, 255, 255, 0.65);
+        }
+        .shuffly-strip-note {
+          position: relative;
+          margin: 14px 0 0;
+          font-size: 13px;
+          color: rgba(255, 255, 255, 0.5);
+        }
+        .shuffly-strip-bars { position: relative; margin-top: 16px; }
+        .shuffly-strip-bar-row { display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 4px; }
+        .shuffly-strip-bar-label { color: rgba(255, 255, 255, 0.5); }
+        .shuffly-strip-bar-value { color: #ffffff; font-weight: 700; }
+        .shuffly-strip-track { height: 8px; border-radius: 999px; background: rgba(255, 255, 255, 0.12); overflow: hidden; }
+        .shuffly-strip-fill { height: 100%; border-radius: 999px; }
+        .shuffly-strip-fill--before { background: rgba(255, 255, 255, 0.4); }
+        .shuffly-strip-fill--now { background: linear-gradient(90deg, var(--p-color-bg-fill-warning, #FF4B1F), #ff9166); }
+      `}</style>
+    </div>
+  );
+}
+
+// ============================== tiles ==============================
+
+/** Every tile is the same shape: 11px uppercase label, then the value
+ * pushed to the bottom with margin-top:auto so all four values share one
+ * baseline regardless of how many description lines sit above or below,
+ * then one description line. Never lets a tile reflow to a different
+ * number of lines. */
+function Tile({
+  heading,
+  tile,
+  unit,
+  lead,
+  detailOverride,
+}: {
+  heading: string;
+  tile: InsightsTile;
+  unit: string;
+  lead?: boolean;
+  detailOverride?: string;
+}) {
+  const detail = tile.noData ? tile.detail : (detailOverride ?? tile.detail);
+  return (
+    <div className="shuffly-insights-tile">
+      <div className="shuffly-insights-tile-bar" style={lead ? { background: "var(--p-color-bg-fill-warning, #FF4B1F)" } : { background: "var(--p-color-bg-fill-inverse, #131110)", opacity: 0.12 }} />
+      <div className="shuffly-insights-tile-label">{heading.toUpperCase()}</div>
+      <div className={`shuffly-insights-tile-value${lead && !tile.noData ? " shuffly-insights-tile-value--orange" : ""}`}>
+        {tile.noData ? "—" : (
+          <>
+            {tile.value}
+            <span className="shuffly-insights-tile-unit">{unit}</span>
+          </>
+        )}
+      </div>
+      <div className="shuffly-insights-tile-detail">{detail}</div>
+      <style>{`
+        .shuffly-insights-tile {
+          position: relative;
+          display: flex;
+          flex-direction: column;
+          min-height: 96px;
+          background: var(--p-color-bg-surface, #ffffff);
+          border: 1px solid var(--p-color-border, #e3e3e3);
+          border-radius: 12px;
+          padding: 14px;
+          overflow: hidden;
+        }
+        .shuffly-insights-tile-bar { position: absolute; top: 0; left: 0; right: 0; height: 2px; }
+        .shuffly-insights-tile-label {
+          font-size: 11px;
+          font-weight: 700;
+          letter-spacing: 0.06em;
+          color: var(--p-color-text-secondary, #6b6b6b);
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+        .shuffly-insights-tile-value {
+          margin-top: auto;
+          padding-top: 6px;
+          font-size: 24px;
+          font-weight: 800;
+          font-variant-numeric: tabular-nums;
+          color: var(--p-color-text, #131110);
+          line-height: 1.1;
+        }
+        .shuffly-insights-tile-value--orange { color: var(--p-color-text-warning, #FF4B1F); }
+        .shuffly-insights-tile-unit { font-size: 14px; font-weight: 600; margin-left: 2px; }
+        .shuffly-insights-tile-detail {
+          margin-top: 4px;
+          font-size: 12px;
+          color: var(--p-color-text-secondary, #6b6b6b);
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+      `}</style>
+    </div>
+  );
+}
+
+// ============================== distribution ==============================
+
+function DistributionCard({ insights }: { insights: InsightsData }) {
+  const bars = insights.distributionBars;
+  const max = Math.max(1, insights.distributionMax);
+  const avgRatio = insights.distributionAvg / max;
+
+  return (
+    <div className="shuffly-card">
+      <div className="shuffly-card-header">
+        <s-text type="strong">How the top spots are shared</s-text>
+        <s-text color="subdued">
+          {insights.totalProducts} products · {insights.rangeLabel}
+        </s-text>
+      </div>
+      <div style={{ padding: 16 }}>
+        <div className="shuffly-dist-chart" role="img" aria-label={insights.distributionAriaLabel}>
+          <div className="shuffly-dist-avgline" style={{ bottom: `${Math.min(100, avgRatio * 100)}%` }}>
+            <span className="shuffly-dist-avglabel">avg {Math.round(insights.distributionAvg * 10) / 10}</span>
+          </div>
+          {bars.map((b, i) => (
+            <div
+              key={i}
+              className={`shuffly-dist-bar${b.belowHalfAvg ? " shuffly-dist-bar--dim" : ""}`}
+              style={{ height: `${Math.max(2, (b.turns / max) * 100)}%` }}
+              title={`${Math.round(b.turns)} turns`}
+            />
+          ))}
+        </div>
+        <div className="shuffly-dist-axis">
+          <span>Most turns</span>
+          <span>Fewest turns</span>
+        </div>
+        {insights.distributionBucketed && (
+          <div className="shuffly-dist-bucketnote">
+            <s-text color="subdued">Bucketed into {bars.length} bars for readability.</s-text>
+          </div>
+        )}
+        <s-divider />
+        <p className="shuffly-dist-caption">{insights.distributionCaption}</p>
+      </div>
+      <style>{`
+        .shuffly-dist-chart {
+          position: relative;
+          display: flex;
+          align-items: flex-end;
+          gap: 3px;
+          height: 104px;
+        }
+        .shuffly-dist-bar {
+          flex: 1;
+          min-width: 2px;
+          background: linear-gradient(180deg, var(--p-color-bg-fill-warning, #FF4B1F), #ff9166);
+          border-radius: 2px 2px 0 0;
+          cursor: default;
+        }
+        .shuffly-dist-bar--dim { background: var(--p-color-bg-fill-inverse, #131110); }
+        .shuffly-dist-avgline {
+          position: absolute;
+          left: 0;
+          right: 0;
+          border-top: 1px dashed var(--p-color-border, #b7b7b7);
+        }
+        .shuffly-dist-avglabel {
+          position: absolute;
+          right: 0;
+          top: -16px;
+          font-size: 11px;
+          color: var(--p-color-text-secondary, #6b6b6b);
+          background: var(--p-color-bg-surface, #ffffff);
+          padding-left: 4px;
+        }
+        .shuffly-dist-axis {
+          display: flex;
+          justify-content: space-between;
+          margin-top: 8px;
+          font-size: 11px;
+          color: var(--p-color-text-secondary, #6b6b6b);
+        }
+        .shuffly-dist-bucketnote { margin-top: 6px; }
+        .shuffly-dist-caption { margin: 12px 0 0; font-size: 13px; line-height: 1.5; color: var(--p-color-text, #131110); }
+      `}</style>
+    </div>
+  );
+}
+
+// ============================== waiting longest ==============================
+
+function WaitingLongestCard({
+  rows,
+  onBoost,
+  boosting,
+}: {
+  rows: Array<InsightsWaitingRow & { imageUrl: string | null }>;
+  onBoost: () => void;
+  boosting: boolean;
+}) {
+  return (
+    <div className="shuffly-card shuffly-waiting-card">
+      <div className="shuffly-card-header">
+        <s-text type="strong">Waiting longest</s-text>
+        <s-text color="subdued">
+          {rows.length} product{rows.length === 1 ? "" : "s"}
+        </s-text>
+      </div>
+      {rows.length === 0 ? (
+        <div style={{ padding: 16 }}>
+          <s-text color="subdued">Nothing is waiting — every product has had a recent turn.</s-text>
+        </div>
+      ) : (
         <>
-          <div style={{ marginTop: 12 }}>
-            {neverSeen.map((n, i) => (
-              <div
-                key={n.productGid}
-                style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  gap: 12,
-                  marginBottom: i < neverSeen.length - 1 ? 14 : 0,
-                }}
-              >
-                <s-text>{n.title}</s-text>
-                <s-text color="subdued">{n.label}</s-text>
+          <div style={{ flex: "1 1 auto" }}>
+            {rows.map((r) => (
+              <div key={r.productGid} className="shuffly-waiting-row">
+                {r.imageUrl ? (
+                  <img src={r.imageUrl} alt="" width={32} height={32} style={{ borderRadius: 6, objectFit: "cover", flex: "none" }} />
+                ) : (
+                  <div style={{ width: 32, height: 32, borderRadius: 6, background: "var(--p-color-bg-fill-secondary, #e3dbd3)", flex: "none" }} />
+                )}
+                <div style={{ flex: "1 1 0%", minWidth: 0 }}>
+                  <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    <s-text type="strong">{r.title}</s-text>
+                  </div>
+                  <div style={{ fontSize: 12 }}>
+                    <s-text color="subdued">{r.collectionTitle}</s-text>
+                  </div>
+                </div>
+                <span className={`shuffly-pill ${r.urgent ? "shuffly-pill--orange" : "shuffly-pill--grey"}`}>{r.label}</span>
               </div>
             ))}
           </div>
-          <div style={{ marginTop: 16 }}>
-            <s-button
-              onClick={onBoost}
-              {...(boosting ? { loading: true } : {})}
-            >
-              Put these first tomorrow
-            </s-button>
+          <div className="shuffly-card-footer">
+            <s-text color="subdued">Give them the next turn</s-text>
+            <button type="button" className="shuffly-put-first-btn" onClick={onBoost} disabled={boosting}>
+              {boosting ? "Boosting…" : "Put these first"}
+            </button>
           </div>
         </>
       )}
-    </>
+      <style>{`
+        .shuffly-waiting-card { display: flex; flex-direction: column; }
+        .shuffly-waiting-row {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          padding: 10px 16px;
+          border-bottom: 1px solid var(--p-color-border, #e3e3e3);
+        }
+        .shuffly-card-footer {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          gap: 12px;
+          padding: 14px 16px;
+        }
+        .shuffly-put-first-btn {
+          flex: none;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          height: 32px;
+          padding: 0 16px;
+          border: none;
+          outline: none;
+          border-radius: 8px;
+          background: var(--p-color-bg-fill-warning, #FF4B1F);
+          color: #ffffff;
+          font: inherit;
+          font-size: 13px;
+          font-weight: 600;
+          cursor: pointer;
+        }
+        .shuffly-put-first-btn:hover:not(:disabled) { background: var(--p-color-bg-fill-warning-hover, #d93c15); }
+        .shuffly-put-first-btn:disabled { opacity: 0.6; cursor: default; }
+        .shuffly-put-first-btn:focus-visible {
+          outline: 2px solid var(--p-color-border-warning, #FF4B1F);
+          outline-offset: 2px;
+        }
+      `}</style>
+    </div>
+  );
+}
+
+// ============================== who's had a turn ==============================
+
+function WhoHadATurnCard({ insights }: { insights: InsightsData }) {
+  const totalSeen = insights.byCollectionTurns.reduce((sum, c) => sum + c.seenCount, 0);
+  const totalProducts = insights.byCollectionTurns.reduce((sum, c) => sum + c.productCount, 0);
+  // The "Not yet" swatch only means something if an ink square is actually
+  // on screen somewhere below it — otherwise it's explaining a colour
+  // nobody can see.
+  const hasAnyNotYet = insights.byCollectionTurns.some((c) => c.squares.some((sq) => !sq.hadTurn));
+
+  return (
+    <div className="shuffly-card">
+      <div className="shuffly-card-header">
+        <s-text type="strong">Who&apos;s had a turn</s-text>
+        <s-text color="subdued">
+          {totalSeen} of {totalProducts} products
+        </s-text>
+      </div>
+      <div>
+        {insights.byCollectionTurns.map((c, i) => {
+          const atFull = c.productCount > 0 && c.seenCount === c.productCount;
+          // Cadence first (it's the more specific fact), "sold out" always
+          // shown when true, "last turn" as the fallback that always has a
+          // value — never an empty-feeling "not enough data" pill.
+          const pillText = c.soldOut ? "sold out" : (c.avgGapLabel ?? c.lastTurnLabel);
+          return (
+            // The divider is a SIBLING of the row, not a child of it — the
+            // row's flex layout depends on having exactly its three real
+            // columns (label, squares, pill) and nothing else.
+            <Fragment key={c.id}>
+              <div className="shuffly-turn-row">
+                <div className="shuffly-turn-label" title={c.title}>
+                  <div className="shuffly-turn-title">{c.title}</div>
+                  <div className="shuffly-turn-stat">
+                    {atFull && (
+                      <svg width="10" height="10" viewBox="0 0 16 16" fill="none" aria-hidden="true" className="shuffly-turn-check">
+                        <path d="M3 8.5L6.5 12L13 4.5" stroke="var(--p-color-icon-warning, #FF4B1F)" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
+                      </svg>
+                    )}
+                    <span className="shuffly-turn-stat-num">{c.seenCount}</span> of {c.productCount}
+                    {c.avgGapLabel ? ` · ${c.avgGapLabel}` : ""}
+                  </div>
+                </div>
+                <div className="shuffly-turn-squares">
+                  {c.squares.map((sq) => (
+                    <span
+                      key={sq.productGid}
+                      className={`shuffly-turn-square${sq.hadTurn ? " shuffly-turn-square--turn" : ""}`}
+                      title={sq.tooltip}
+                      aria-label={sq.tooltip}
+                    />
+                  ))}
+                  {c.moreCount > 0 && <span className="shuffly-turn-more">+{c.moreCount} more</span>}
+                </div>
+                <span className="shuffly-pill shuffly-pill--grey">{pillText}</span>
+              </div>
+              {i < insights.byCollectionTurns.length - 1 && <s-divider />}
+            </Fragment>
+          );
+        })}
+      </div>
+      <div className="shuffly-insights-legend">
+        <span className="shuffly-legend-item">
+          <span className="shuffly-legend-swatch shuffly-legend-swatch--turn" />
+          Reached page 1
+        </span>
+        {hasAnyNotYet && (
+          <span className="shuffly-legend-item">
+            <span className="shuffly-legend-swatch shuffly-legend-swatch--empty" />
+            Not yet
+          </span>
+        )}
+      </div>
+      <style>{`
+        .shuffly-turn-row {
+          padding: 12px 16px;
+          display: grid;
+          grid-template-columns: 250px 1fr auto;
+          align-items: center;
+          gap: 28px;
+        }
+        .shuffly-turn-label { min-width: 0; }
+        .shuffly-turn-title {
+          font-size: 13px;
+          font-weight: 600;
+          color: var(--p-color-text, #131110);
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+        .shuffly-turn-stat {
+          margin-top: 3px;
+          font-size: 12px;
+          color: var(--p-color-text-secondary, #6b6b6b);
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+        .shuffly-turn-check { vertical-align: -1px; margin-right: 6px; }
+        .shuffly-turn-stat-num { color: var(--p-color-text-warning, #FF4B1F); font-weight: 700; }
+        .shuffly-turn-squares { min-width: 0; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 5px; align-content: center; }
+        .shuffly-turn-square {
+          width: 11px;
+          height: 11px;
+          border-radius: 3px;
+          background: rgba(19, 17, 16, 0.15);
+          cursor: default;
+        }
+        .shuffly-turn-square--turn { background: var(--p-color-bg-fill-warning, #FF4B1F); }
+        .shuffly-turn-more { font-size: 11px; color: var(--p-color-text-secondary, #6b6b6b); align-self: center; margin-left: 2px; }
+        .shuffly-insights-legend {
+          display: flex;
+          gap: 20px;
+          padding: 12px 16px;
+          border-top: 1px solid var(--p-color-border, #e3e3e3);
+          font-size: 12px;
+          color: var(--p-color-text-secondary, #6b6b6b);
+        }
+        .shuffly-legend-item { display: inline-flex; align-items: center; gap: 6px; }
+        .shuffly-legend-swatch { width: 10px; height: 10px; border-radius: 3px; flex: none; }
+        .shuffly-legend-swatch--turn { background: var(--p-color-bg-fill-warning, #FF4B1F); }
+        .shuffly-legend-swatch--empty { background: rgba(19, 17, 16, 0.15); }
+      `}</style>
+    </div>
   );
 }
 
@@ -677,9 +780,7 @@ function EmptyInsightsState() {
         <s-stack direction="block" gap="small" alignItems="center">
           <s-icon type="chart-histogram-growth" color="subdued"></s-icon>
           <s-heading>Nothing to measure yet</s-heading>
-          <s-text color="subdued">
-            Shuffly needs a few days of runs before these numbers mean anything.
-          </s-text>
+          <s-text color="subdued">Shuffly needs a few days of runs before these numbers mean anything.</s-text>
           <div style={{ marginTop: 4 }}>
             <Link to="/app/collections">
               <s-button variant="primary">Go to Collections</s-button>
@@ -691,49 +792,3 @@ function EmptyInsightsState() {
   );
 }
 
-function Bar({ width }: { width: number }) {
-  return (
-    <div
-      style={{
-        width,
-        height: 12,
-        borderRadius: 4,
-        background: "var(--p-color-bg-surface-tertiary, #e3e3e3)",
-      }}
-    />
-  );
-}
-
-function InsightsSkeleton() {
-  return (
-    <>
-      <div className="shuffly-stat-grid" style={{ marginBottom: 16 }}>
-        {[0, 1, 2].map((i) => (
-          <s-box key={i} padding="base" borderWidth="base" borderRadius="base">
-            <s-stack direction="block" gap="small">
-              <Bar width={140} />
-              <Bar width={70} />
-              <Bar width={100} />
-            </s-stack>
-          </s-box>
-        ))}
-      </div>
-      <s-section heading="By collection">
-        <s-stack direction="block" gap="large">
-          {[0, 1, 2, 3].map((i) => (
-            <s-stack key={i} direction="block" gap="small-200">
-              <Bar width={160} />
-              <div
-                style={{
-                  height: 10,
-                  borderRadius: 999,
-                  background: "var(--p-color-bg-surface-tertiary, #ebebeb)",
-                }}
-              />
-            </s-stack>
-          ))}
-        </s-stack>
-      </s-section>
-    </>
-  );
-}

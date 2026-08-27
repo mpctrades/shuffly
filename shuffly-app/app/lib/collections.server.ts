@@ -293,6 +293,36 @@ export async function getCollectionGidsContainingProduct(
   return nodes.map((n: { id: string }) => n.id);
 }
 
+/** One batched lookup for a small, bounded set of product ids — the
+ * Insights "Still never seen" list (capped at 10) needs a thumbnail per
+ * row, and that's the only place in the app that needs a product image by
+ * id rather than by collection. */
+export async function fetchProductThumbnails(
+  admin: AdminApiContext,
+  productGids: string[],
+): Promise<Map<string, { title: string; imageUrl: string | null }>> {
+  const out = new Map<string, { title: string; imageUrl: string | null }>();
+  if (productGids.length === 0) return out;
+  const res = await admin.graphql(
+    `#graphql
+    query ProductThumbnails($ids: [ID!]!) {
+      nodes(ids: $ids) {
+        ... on Product {
+          id
+          title
+          featuredMedia { preview { image { url } } }
+        }
+      }
+    }`,
+    { variables: { ids: productGids } },
+  );
+  const json = await res.json();
+  for (const node of json.data?.nodes ?? []) {
+    if (node?.id) out.set(node.id, { title: node.title, imageUrl: node.featuredMedia?.preview?.image?.url ?? null });
+  }
+  return out;
+}
+
 /**
  * Switches a collection to manual sort. Shopify seeds the manual order from
  * whatever the collection was displaying under its previous sort a moment

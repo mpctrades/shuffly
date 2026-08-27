@@ -72,6 +72,7 @@ export async function runDueShuffles(): Promise<CronSweepResult> {
           settings.neverMoveTags,
           "SCHEDULED",
           batchId,
+          settings.pageSize,
         );
         if (summary.ok) result.ran++;
         else result.failed++;

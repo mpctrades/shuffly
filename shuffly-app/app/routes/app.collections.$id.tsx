@@ -90,7 +90,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
   }
 
   if (actionType === "shuffle-now") {
-    const result = await runShuffleForCollection(admin, shop, config, settings.timezone, settings.neverMoveTags, "MANUAL");
+    const result = await runShuffleForCollection(admin, shop, config, settings.timezone, settings.neverMoveTags, "MANUAL", undefined, settings.pageSize);
     return data(result);
   }
 
