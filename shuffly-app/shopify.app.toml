@@ -35,7 +35,7 @@ api_version = "2026-10"
   topics = [ "products/update" ]
 
 [auth]
-redirect_urls = [ "https://dev.shuffly.mpctrades.com/api/auth" ]
+redirect_urls = [ "https://dev.shuffly.mpctrades.com/auth/callback" ]
 
 [build]
 automatically_update_urls_on_dev = true
