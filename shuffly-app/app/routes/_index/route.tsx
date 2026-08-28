@@ -35,12 +35,9 @@ export default function App() {
           Your collections, fresh every morning.
         </h1>
         <p className={styles.text}>
-          Shuffly automatically re-orders the products inside your Shopify
-          collections on a schedule you set — so the same handful of items
-          don&apos;t sit at the top forever, sold-out products get pushed out of
-          the way, and new arrivals get their turn. No theme changes, no
-          scripts, nothing for customers to notice except a catalogue that
-          always feels current.
+          Shuffly re-orders your Shopify collections on a schedule. Sold-out
+          products drop to the end, new arrivals get their turn — no theme
+          changes, no scripts, nothing customers notice.
         </p>
 
         {showForm && (
@@ -73,10 +70,7 @@ export default function App() {
               </svg>
             </div>
             <strong>Shuffle on a schedule.</strong>
-            <p>
-              Daily, twice daily, or weekly — pick the quiet hour and Shuffly
-              re-orders every collection you&apos;ve added automatically.
-            </p>
+            <p>Daily, twice daily, or weekly — fully automatic.</p>
           </li>
           <li>
             <div className={styles.icon} aria-hidden="true">
@@ -86,10 +80,7 @@ export default function App() {
               </svg>
             </div>
             <strong>Pin what shouldn&apos;t move.</strong>
-            <p>
-              Keep your best sellers or featured picks locked at the top while
-              everything else rotates underneath.
-            </p>
+            <p>Lock your best sellers at the top while the rest rotates.</p>
           </li>
           <li>
             <div className={styles.icon} aria-hidden="true">
@@ -98,10 +89,7 @@ export default function App() {
               </svg>
             </div>
             <strong>Reacts to sold-out stock in real time.</strong>
-            <p>
-              A product selling out gets pushed to the end within a minute —
-              no need to wait for the next scheduled run.
-            </p>
+            <p>Sold-out products drop to the end within a minute.</p>
           </li>
         </ul>
 
