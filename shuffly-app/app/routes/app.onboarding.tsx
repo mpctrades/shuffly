@@ -172,16 +172,18 @@ export default function Onboarding() {
               ))}
             </s-stack>
           )}
-          <s-button
-            variant="primary"
-            onClick={() => {
-              setStep(2);
-              runPreview();
-            }}
-            disabled={selected.length === 0 || undefined}
-          >
-            Next
-          </s-button>
+          <div className="shuffly-onboard-actions">
+            <s-button
+              variant="primary"
+              onClick={() => {
+                setStep(2);
+                runPreview();
+              }}
+              disabled={selected.length === 0 || undefined}
+            >
+              Next
+            </s-button>
+          </div>
         </s-section>
       )}
 
@@ -280,6 +282,9 @@ export default function Onboarding() {
       <style>{`
         .shuffly-onboard-topbar {
           padding: 20px 0 28px;
+        }
+        .shuffly-onboard-actions {
+          margin-top: 20px;
         }
         .shuffly-onboard-eyebrow {
           font-size: 11px;
