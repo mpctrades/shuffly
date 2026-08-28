@@ -140,7 +140,15 @@ export default function Onboarding() {
         </s-button>
       </Form>
 
-      <s-paragraph>Your collections, fresh every morning. A couple of questions, then try it before anything changes.</s-paragraph>
+      <div className="shuffly-onboard-head">
+        <div className="shuffly-onboard-eyebrow">Getting started</div>
+        <s-paragraph>Your collections, fresh every morning. A couple of questions, then try it before anything changes.</s-paragraph>
+        <div className="shuffly-onboard-steps" aria-hidden="true">
+          <span className={`shuffly-onboard-dot${step >= 1 ? " on" : ""}`} />
+          <span className={`shuffly-onboard-dot${step >= 2 ? " on" : ""}`} />
+          <span className={`shuffly-onboard-dot${step >= 3 ? " on" : ""}`} />
+        </div>
+      </div>
 
       {step === 1 && (
         <s-section heading="1. Which collections should stay fresh?">
@@ -151,12 +159,14 @@ export default function Onboarding() {
           ) : (
             <s-stack direction="block" gap="small">
               {candidates.map((c) => (
-                <label key={c.id} style={{ display: "flex", gap: 8, alignItems: "center", padding: "8px 0" }}>
-                  <input type="checkbox" checked={selected.includes(c.id)} onChange={() => toggle(c.id)} />
-                  <span>
-                    <strong>{c.title}</strong> — {c.productsCount} products
-                  </span>
-                </label>
+                <div key={c.id} className="shuffly-onboard-row">
+                  <s-checkbox
+                    label={c.title}
+                    details={`${c.productsCount} product${c.productsCount === 1 ? "" : "s"}`}
+                    checked={selected.includes(c.id)}
+                    onChange={() => toggle(c.id)}
+                  />
+                </div>
               ))}
             </s-stack>
           )}
@@ -178,29 +188,28 @@ export default function Onboarding() {
           <s-paragraph>Press Shuffle and watch. This is a real preview — nothing is saved to your store yet.</s-paragraph>
           <s-grid gridTemplateColumns="1fr 2fr" gap="base">
             <s-stack direction="block" gap="base">
-              <label>
-                Pin the first
-                <input
-                  type="number"
-                  min={0}
-                  max={10}
-                  value={pins}
-                  onChange={(e) => setPins(Number(e.target.value))}
-                  style={{ marginLeft: 8, width: 60 }}
-                />
-              </label>
-              <label style={{ display: "flex", gap: 8 }}>
-                <input type="checkbox" checked={pushSoldOutToEnd} onChange={(e) => setPushSoldOutToEnd(e.target.checked)} />
-                Sold-out to the end
-              </label>
-              <label style={{ display: "flex", gap: 8 }}>
-                <input type="checkbox" checked={boostNewArrivals} onChange={(e) => setBoostNewArrivals(e.target.checked)} />
-                Boost new arrivals
-              </label>
-              <label style={{ display: "flex", gap: 8 }}>
-                <input type="checkbox" checked={giveEveryoneATurn} onChange={(e) => setGiveEveryoneATurn(e.target.checked)} />
-                Give everything a turn
-              </label>
+              <s-number-field
+                label="Pin the first"
+                value={String(pins)}
+                min={0}
+                max={10}
+                onChange={(e) => setPins(Number(e.currentTarget.value))}
+              />
+              <s-checkbox
+                label="Sold-out to the end"
+                checked={pushSoldOutToEnd}
+                onChange={(e) => setPushSoldOutToEnd(e.currentTarget.checked)}
+              />
+              <s-checkbox
+                label="Boost new arrivals"
+                checked={boostNewArrivals}
+                onChange={(e) => setBoostNewArrivals(e.currentTarget.checked)}
+              />
+              <s-checkbox
+                label="Give everything a turn"
+                checked={giveEveryoneATurn}
+                onChange={(e) => setGiveEveryoneATurn(e.currentTarget.checked)}
+              />
               <s-button variant="primary" onClick={runPreview} {...(previewFetcher.state !== "idle" ? { loading: true } : {})}>
                 Shuffle now
               </s-button>
@@ -265,6 +274,42 @@ export default function Onboarding() {
           </s-stack>
         </s-section>
       )}
+
+      <style>{`
+        .shuffly-onboard-eyebrow {
+          font-size: 11px;
+          font-weight: 800;
+          letter-spacing: 0.08em;
+          text-transform: uppercase;
+          color: #FF4B1F;
+          margin-bottom: 6px;
+        }
+        .shuffly-onboard-steps {
+          display: flex;
+          gap: 6px;
+          margin-top: 16px;
+        }
+        .shuffly-onboard-dot {
+          width: 28px;
+          height: 4px;
+          border-radius: 999px;
+          background: rgba(19, 17, 16, 0.12);
+          transition: background-color 150ms ease;
+        }
+        .shuffly-onboard-dot.on {
+          background: #FF4B1F;
+        }
+        .shuffly-onboard-row {
+          border: 1px solid rgba(19, 17, 16, 0.08);
+          border-radius: 10px;
+          padding: 2px 12px;
+          transition: border-color 120ms ease, background-color 120ms ease;
+        }
+        .shuffly-onboard-row:hover {
+          border-color: rgba(255, 75, 31, 0.4);
+          background: rgba(255, 75, 31, 0.03);
+        }
+      `}</style>
     </s-page>
   );
 }
