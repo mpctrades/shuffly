@@ -36,15 +36,18 @@ const PRICING_ROW: Array<"FREE" | "STARTER" | "PRO"> = ["FREE", "STARTER", "PRO"
 
 // Real, honest differentiators pulled from PLANS in lib/plans.ts — no
 // feature is claimed here that the plan doesn't actually have.
+// The collection-limit bullet is derived from PLANS[planId].maxCollections
+// (not a second hardcoded number) so this copy can't drift out of sync with
+// the actual enforced cap the way it just did.
 const FEATURE_BULLETS: Record<"FREE" | "STARTER" | "PRO", string[]> = {
   FREE: [
-    "Up to 5 collections",
+    `Up to ${PLANS.FREE.maxCollections} collections`,
     "Weekly shuffle schedule",
     "Manual “Shuffle now” anytime",
     "Sold-out reaction within the hour",
   ],
   STARTER: [
-    "Up to 25 collections",
+    `Up to ${PLANS.STARTER.maxCollections} collections`,
     "Daily schedule, pick the time",
     "Pin your best sellers",
     "Sold-out reaction within a minute",
