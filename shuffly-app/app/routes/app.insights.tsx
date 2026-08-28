@@ -594,9 +594,9 @@ function WaitingLongestCard({
           </div>
           <div className="shuffly-card-footer">
             <s-text color="subdued">Give them the next turn</s-text>
-            <button type="button" className="shuffly-put-first-btn" onClick={onBoost} disabled={boosting}>
-              {boosting ? "Boosting…" : "Put these first"}
-            </button>
+            <s-button variant="tertiary" onClick={onBoost} {...(boosting ? { loading: true } : {})}>
+              Put these first
+            </s-button>
           </div>
         </>
       )}

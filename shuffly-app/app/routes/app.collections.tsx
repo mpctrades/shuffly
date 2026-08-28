@@ -1,16 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
-import { data, useLoaderData, useFetcher, useFetchers, useRevalidator, Link } from "react-router";
+import { data, useLoaderData, useFetcher, useFetchers, useNavigation, useRevalidator, Link } from "react-router";
 import { useAppBridge } from "@shopify/app-bridge-react";
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { getOrCreateShopSettings } from "../lib/shop-context.server";
 import {
+  getTotalCollectionsCount,
   hydrateTrackedCollections,
   listAllCollections,
   setCollectionManualSort,
   sortOrderLabel,
-  type ShopifyCollectionSummary,
 } from "../lib/collections.server";
 import { runShuffleForCollection } from "../lib/shuffle-engine.server";
 import { previewShuffleAll } from "../lib/shuffle-preview.server";
@@ -56,22 +56,35 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const now = new Date();
 
   const settings = await getOrCreateShopSettings(admin, shop);
+  const tracked = await db.collectionConfig.findMany({ where: { shop }, orderBy: { createdAt: "asc" } });
+  const trackedIds = tracked.map((t) => t.id);
+  const trackedGidsForHydration = tracked.map((t) => t.collectionGid);
 
-  const [tracked, allShopCollections] = await Promise.all([
-    db.collectionConfig.findMany({ where: { shop }, orderBy: { createdAt: "asc" } }),
-    // One full-catalogue fetch (batched, paginated internally, not one call
-    // per collection) covers store-wide totals, every tracked collection's
-    // live sort order/product count, AND every untracked collection's name/
-    // sort order for the "Not shuffled yet" card below.
-    listAllCollections(admin).catch((err) => {
+  const [hydratedTracked, untrackedResult, totalStoreCollections] = await Promise.all([
+    // Every tracked collection's live sort order/product count/thumbnails,
+    // fetched by exact id — bounded by how many collections are tracked,
+    // never by how many exist in the store (unlike a full-catalogue scan).
+    trackedGidsForHydration.length
+      ? hydrateTrackedCollections(admin, trackedGidsForHydration).catch((err) => {
+          console.error("[app.collections] hydrateTrackedCollections failed:", err);
+          return null;
+        })
+      : Promise.resolve(new Map()),
+    // Capped (see listAllCollections) — a store with hundreds of untracked
+    // collections doesn't get them all fetched/rendered on every page view;
+    // "Add collections" (with search) is the way to reach the rest.
+    listAllCollections(admin, { limit: 200 }).catch((err) => {
       console.error("[app.collections] listAllCollections failed:", err);
       return null;
     }),
+    // Cheap aggregate count, just for the "X of Y collections" stat — no
+    // need to fetch every collection's full record just to count them.
+    getTotalCollectionsCount(admin).catch(() => null),
   ]);
 
-  const hydrationFailed = allShopCollections == null;
-  const liveByGid = new Map<string, ShopifyCollectionSummary>((allShopCollections ?? []).map((c) => [c.id, c]));
-  const trackedIds = tracked.map((t) => t.id);
+  const hydrationFailed = hydratedTracked == null;
+  const liveByGid = hydratedTracked ?? new Map();
+  const untrackedFetchFailed = untrackedResult == null;
 
   const [latestRuns, recentRuns, lastScheduledRun] = await Promise.all([
     trackedIds.length
@@ -181,16 +194,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   ];
 
   // ---- rows (all tracked — filtering/sorting/paging happens client-side) ----
-  const allGids = tracked.map((t) => t.collectionGid);
+  // Thumbnails come from the same hydratedTracked fetch used for
+  // sortOrder/productsCount above — no second round trip needed.
   const previewByGid = new Map<string, CollectionRowData["preview"]>();
-  if (!hydrationFailed && allGids.length) {
-    try {
-      const hydrated = await hydrateTrackedCollections(admin, allGids);
-      for (const [gid, h] of hydrated) previewByGid.set(gid, h.preview);
-    } catch (err) {
-      console.error("[app.collections] thumbnail hydration failed:", err);
-    }
-  }
+  for (const [gid, h] of liveByGid) previewByGid.set(gid, h.preview);
 
   // A settings badge only carries information if it distinguishes a
   // collection from the others — "Sold-out last" on every single tracked
@@ -260,10 +267,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     };
   });
 
-  // ---- "Not shuffled yet" card: every untracked collection ----
-  const untrackedCollections: UntrackedCollectionItem[] = hydrationFailed
+  // ---- "Not shuffled yet" card: untracked collections, capped (see
+  // listAllCollections) — untrackedMore signals there are more than shown. ----
+  const untrackedCollections: UntrackedCollectionItem[] = untrackedFetchFailed
     ? []
-    : (allShopCollections ?? [])
+    : (untrackedResult?.collections ?? [])
         .filter((c) => !trackedGidSet.has(c.id))
         .map((c) => ({
           gid: c.id,
@@ -272,16 +280,18 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           sortOrder: c.sortOrder,
           sortOrderLabel: sortOrderLabel(c.sortOrder),
         }));
+  const untrackedMore = !untrackedFetchFailed && (untrackedResult?.hasMore ?? false);
 
   const plan = planOf(settings.plan);
 
   return {
     rows,
     trackedTotal: tracked.length,
-    totalStoreCollections: hydrationFailed ? null : (allShopCollections?.length ?? null),
+    totalStoreCollections,
     hydrationFailed,
     attentionLines,
     untrackedCollections,
+    untrackedMore,
     runningCount,
     pausedCount,
     nextRunAtMs: soonestNextRunMs ?? null,
@@ -603,6 +613,7 @@ export default function Collections() {
     hydrationFailed,
     attentionLines,
     untrackedCollections,
+    untrackedMore,
     runningCount,
     nextRunAtMs,
     nextRunLabel,
@@ -613,6 +624,8 @@ export default function Collections() {
     planLimit,
   } = useLoaderData<typeof loader>();
   const revalidator = useRevalidator();
+  const navigation = useNavigation();
+  const isLoading = navigation.state === "loading" && navigation.location?.pathname === "/app/collections";
   const shopify = useAppBridge();
   const allFetchers = useFetchers();
 
@@ -702,6 +715,10 @@ export default function Collections() {
   function openAddModal() {
     setAwaitingAddModal(true);
     picker.load("/app/collections/picker");
+  }
+
+  function searchAddModal(query: string) {
+    picker.load(`/app/collections/picker?q=${encodeURIComponent(query)}`);
   }
 
   useEffect(() => {
@@ -982,31 +999,36 @@ export default function Collections() {
             </div>
 
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <button type="button" className="shuffly-bulk-btn shuffly-bulk-btn--primary" onClick={() => runBulk("bulk-shuffle")} disabled={bulkBusy}>
-                {pendingBulkAction === "bulk-shuffle" ? "Shuffling…" : "Shuffle now"}
-              </button>
+              <s-button variant="primary" onClick={() => runBulk("bulk-shuffle")} {...(bulkBusy ? { loading: pendingBulkAction === "bulk-shuffle" || undefined, disabled: true } : {})}>
+                Shuffle now
+              </s-button>
 
               {selectionHasRunning && (
-                <button type="button" className="shuffly-bulk-btn shuffly-bulk-btn--secondary" onClick={() => runBulk("bulk-pause")} disabled={bulkBusy}>
-                  {pendingBulkAction === "bulk-pause" ? "Pausing…" : "Pause"}
-                </button>
+                <s-button onClick={() => runBulk("bulk-pause")} {...(bulkBusy ? { loading: pendingBulkAction === "bulk-pause" || undefined, disabled: true } : {})}>
+                  Pause
+                </s-button>
               )}
               {selectionHasPaused && (
-                <button type="button" className="shuffly-bulk-btn shuffly-bulk-btn--secondary" onClick={() => runBulk("bulk-resume")} disabled={bulkBusy}>
-                  {pendingBulkAction === "bulk-resume" ? "Resuming…" : "Resume"}
-                </button>
+                <s-button onClick={() => runBulk("bulk-resume")} {...(bulkBusy ? { loading: pendingBulkAction === "bulk-resume" || undefined, disabled: true } : {})}>
+                  Resume
+                </s-button>
               )}
 
               <span className="shuffly-bulk-divider" aria-hidden="true" />
 
-              <button type="button" className="shuffly-bulk-btn shuffly-bulk-btn--critical" onClick={() => bulkRemoveModalRef.current?.showOverlay()} disabled={bulkBusy}>
-                {pendingBulkAction === "bulk-remove" ? "Removing…" : "Remove from Shuffly"}
-              </button>
+              <s-button tone="critical" onClick={() => bulkRemoveModalRef.current?.showOverlay()} {...(bulkBusy ? { loading: pendingBulkAction === "bulk-remove" || undefined, disabled: true } : {})}>
+                Remove from Shuffly
+              </s-button>
             </div>
           </div>
         )}
 
-        {pageRows.length === 0 && trackedTotal === 0 ? (
+        {isLoading ? (
+          <div className="shuffly-collections-grid-container">
+            <CollectionsHeaderRow />
+            <CollectionsSkeletonRows count={Math.min(PAGE_SIZE, Math.max(trackedTotal, 3))} />
+          </div>
+        ) : pageRows.length === 0 && trackedTotal === 0 ? (
           <EmptyCollectionsState onAdd={openAddModal} />
         ) : pageRows.length === 0 ? (
           <s-box padding="large-500">
@@ -1060,7 +1082,13 @@ export default function Collections() {
       </s-section>
 
       {untrackedCollections.length > 0 && (
-        <NotShuffledYetCard items={untrackedCollections} onAddAll={addAllUntracked} addingAll={untrackedFetcher.state !== "idle"} />
+        <NotShuffledYetCard
+          items={untrackedCollections}
+          hasMore={untrackedMore}
+          onAddAll={addAllUntracked}
+          addingAll={untrackedFetcher.state !== "idle"}
+          onFindMore={openAddModal}
+        />
       )}
 
       {planLimit != null && (
@@ -1074,7 +1102,13 @@ export default function Collections() {
         </div>
       )}
 
-      <AddCollectionsModal ref={addModalRef} picker={picker} onSubmit={submitAddCollections} onCancel={() => closeModal(addModalRef.current)} />
+      <AddCollectionsModal
+        ref={addModalRef}
+        picker={picker}
+        onSubmit={submitAddCollections}
+        onCancel={() => closeModal(addModalRef.current)}
+        onSearch={searchAddModal}
+      />
 
       <ShuffleAllConfirmModal ref={shuffleAllModalRef} onConfirm={confirmShuffleAll} onCancel={() => closeModal(shuffleAllModalRef.current)} />
 
@@ -1748,9 +1782,9 @@ function AttentionLineRow({
     <div className="shuffly-attention-line">
       <span className="shuffly-attention-dot" aria-hidden="true" />
       <span className="shuffly-attention-message">{line.message}</span>
-      <button type="button" className="shuffly-attention-action" onClick={onAction} disabled={busy}>
-        {busy ? "Pausing…" : line.actionLabel}
-      </button>
+      <s-button variant="tertiary" onClick={onAction} {...(busy ? { loading: true } : {})}>
+        {line.actionLabel}
+      </s-button>
     </div>
   );
 }
@@ -1829,6 +1863,35 @@ function CollectionsHeaderRow() {
   );
 }
 
+// Reuses the real row's own grid class/columns (see .shuffly-row) instead of
+// guessing pixel dimensions, so the skeleton can't drift out of sync with
+// the row it's standing in for — the exact CLS risk this is meant to avoid.
+function CollectionsSkeletonRows({ count }: { count: number }) {
+  const bar = (width: number | string, height = 12) => (
+    <div style={{ width, height, borderRadius: 4, background: "var(--p-color-bg-surface-tertiary, #e3e3e3)" }} />
+  );
+  return (
+    <>
+      {Array.from({ length: count }, (_, i) => (
+        <div key={i}>
+          <div className="shuffly-row" aria-hidden="true">
+            <div className="shuffly-row-select">{bar(18, 18)}</div>
+            <div className="shuffly-row-text" style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              {bar("60%", 14)}
+              {bar("35%", 11)}
+            </div>
+            <div className="shuffly-thumbs">{bar(96, 32)}</div>
+            <div className="shuffly-row-schedule">{bar(80)}</div>
+            <div className="shuffly-row-lastrun">{bar(70)}</div>
+            <div className="shuffly-row-actions">{bar(150, 28)}</div>
+          </div>
+          {i < count - 1 && <s-divider />}
+        </div>
+      ))}
+    </>
+  );
+}
+
 function EmptyCollectionsState({ onAdd }: { onAdd: () => void }) {
   return (
     <s-box padding="large-500">
@@ -1858,12 +1921,16 @@ function XGlyph() {
 
 function NotShuffledYetCard({
   items,
+  hasMore,
   onAddAll,
   addingAll,
+  onFindMore,
 }: {
   items: UntrackedCollectionItem[];
+  hasMore: boolean;
   onAddAll: () => void;
   addingAll: boolean;
+  onFindMore: () => void;
 }) {
   return (
     <div className="shuffly-untracked-card">
@@ -1872,13 +1939,23 @@ function NotShuffledYetCard({
           <s-text type="strong">Not shuffled yet</s-text>
           <s-badge tone="neutral">{items.length} collection{items.length === 1 ? "" : "s"}</s-badge>
         </div>
-        <button type="button" className="shuffly-add-all-btn" onClick={onAddAll} disabled={addingAll}>
-          {addingAll ? "Adding…" : `Add all ${items.length}`}
-        </button>
+        <s-button onClick={onAddAll} {...(addingAll ? { loading: true } : {})}>
+          Add all {items.length}
+        </s-button>
       </div>
       {items.map((item) => (
         <UntrackedRow key={item.gid} item={item} />
       ))}
+      {hasMore && (
+        <div style={{ padding: "10px 12px" }}>
+          <s-text color="subdued">
+            More collections aren&apos;t shuffled yet than shown here.{" "}
+          </s-text>
+          <s-button variant="tertiary" onClick={onFindMore}>
+            Search for one
+          </s-button>
+        </div>
+      )}
     </div>
   );
 }
@@ -1930,9 +2007,11 @@ function UntrackedRow({ item }: { item: UntrackedCollectionItem }) {
           <s-badge tone="neutral">Needs Manual sort</s-badge>
         </span>
       )}
-      <button type="button" className="shuffly-row-action-btn" onClick={onClick} disabled={busy} style={{ flex: "none" }}>
-        {busy ? "Adding…" : needsManual ? "Switch & add" : "Add"}
-      </button>
+      <span style={{ flex: "none" }}>
+        <s-button variant="tertiary" onClick={onClick} {...(busy ? { loading: true } : {})}>
+          {needsManual ? "Switch & add" : "Add"}
+        </s-button>
+      </span>
     </div>
   );
 }

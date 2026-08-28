@@ -46,16 +46,39 @@ export async function getTotalCollectionsCount(admin: AdminApiContext): Promise<
   return json.data?.collectionsCount?.count ?? 0;
 }
 
+export interface ListCollectionsOptions {
+  /** Free-text title search, passed through to Shopify's own collection
+   * search syntax — lets the "Add collections" picker narrow a large
+   * catalogue instead of listing every collection in the store. */
+  search?: string;
+  /** Hard cap on how many collections this ever returns. Without one, a
+   * store with hundreds/thousands of collections turns this into an
+   * unbounded fetch (and, downstream, an unbounded render) — see
+   * `hasMore` for when the cap was hit. */
+  limit?: number;
+}
+
+/**
+ * Paginates Shopify's collections connection up to `limit` (default 100),
+ * optionally filtered by title. Returns `hasMore: true` when the store has
+ * more matching collections than `limit` — callers should surface that
+ * ("refine your search") rather than silently truncating without saying so.
+ */
 export async function listAllCollections(
   admin: AdminApiContext,
-): Promise<ShopifyCollectionSummary[]> {
+  { search, limit = 100 }: ListCollectionsOptions = {},
+): Promise<{ collections: ShopifyCollectionSummary[]; hasMore: boolean }> {
   const out: ShopifyCollectionSummary[] = [];
   let after: string | null = null;
+  let hasMore = false;
+  const query = search?.trim() ? `title:*${search.trim().replace(/["*\\]/g, "")}*` : undefined;
   for (;;) {
+    const remaining = limit - out.length;
+    if (remaining <= 0) break;
     const res: Response = await admin.graphql(
       `#graphql
-      query ShopCollections($first: Int!, $after: String) {
-        collections(first: $first, after: $after, sortKey: TITLE) {
+      query ShopCollections($first: Int!, $after: String, $query: String) {
+        collections(first: $first, after: $after, sortKey: TITLE, query: $query) {
           edges {
             cursor
             node { id title handle sortOrder productsCount { count } }
@@ -63,7 +86,7 @@ export async function listAllCollections(
           pageInfo { hasNextPage }
         }
       }`,
-      { variables: { first: 100, after } },
+      { variables: { first: Math.min(100, remaining), after, query } },
     );
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- raw GraphQL JSON, no generated types for this ad-hoc query
     const json: any = await res.json();
@@ -78,13 +101,18 @@ export async function listAllCollections(
         productsCount: edge.node.productsCount?.count ?? 0,
       });
     }
-    if (json.data?.collections?.pageInfo?.hasNextPage && edges.length) {
+    const pageHasNext = Boolean(json.data?.collections?.pageInfo?.hasNextPage);
+    if (pageHasNext && out.length >= limit) {
+      hasMore = true;
+      break;
+    }
+    if (pageHasNext && edges.length) {
       after = edges[edges.length - 1].cursor;
     } else {
       break;
     }
   }
-  return out;
+  return { collections: out, hasMore };
 }
 
 export interface ProductPreviewTile {
@@ -218,6 +246,55 @@ export async function fetchSortOrders(
     }
   }
   return out;
+}
+
+/**
+ * Cheap version of getCollectionProductsInOrder for pages that only ever
+ * render a fixed-size preview (the collection Workspace's "Order" card,
+ * currently 16 tiles) — one request for `previewSize` products plus
+ * Shopify's own aggregate `productsCount`, instead of paginating the whole
+ * collection just to report `products.length`. Keeps the loader from
+ * blocking first paint on a collection with thousands of products; the real
+ * shuffle (runShuffleForCollection) fetches its own full, ordered list
+ * independently of this.
+ */
+export async function getCollectionPreviewAndCount(
+  admin: AdminApiContext,
+  collectionGid: string,
+  previewSize = 16,
+): Promise<{ sortOrder: string; totalCount: number; preview: ShopifyProductSummary[] }> {
+  const res = await admin.graphql(
+    `#graphql
+    query CollectionPreview($id: ID!, $first: Int!) {
+      collection(id: $id) {
+        id
+        sortOrder
+        productsCount { count }
+        products(first: $first, sortKey: COLLECTION_DEFAULT) {
+          nodes { id title createdAt totalInventory tracksInventory tags }
+        }
+      }
+    }`,
+    { variables: { id: collectionGid, first: previewSize } },
+  );
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- raw GraphQL JSON, no generated types for this ad-hoc query
+  const json: any = await res.json();
+  const collection = json.data?.collection;
+  if (!collection) return { sortOrder: "MANUAL", totalCount: 0, preview: [] };
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- raw GraphQL JSON, no generated types for this ad-hoc query
+  const nodes: any[] = collection.products?.nodes ?? [];
+  return {
+    sortOrder: collection.sortOrder,
+    totalCount: collection.productsCount?.count ?? nodes.length,
+    preview: nodes.map((n) => ({
+      id: n.id,
+      title: n.title,
+      createdAt: n.createdAt,
+      totalInventory: n.totalInventory,
+      tracksInventory: n.tracksInventory,
+      tags: n.tags ?? [],
+    })),
+  };
 }
 
 export async function getCollectionProductsInOrder(

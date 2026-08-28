@@ -15,12 +15,16 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const tracked = await db.collectionConfig.findMany({ where: { shop }, select: { collectionGid: true } });
   const trackedGids = new Set(tracked.map((t) => t.collectionGid));
 
-  const all = await listAllCollections(admin);
+  // Capped (see listAllCollections) — a fresh install on a store with a huge
+  // catalogue still gets a fast, bounded first screen instead of listing
+  // every collection in the shop. This is a one-time wizard step, not a
+  // searchable picker, so a cap alone (no search field) is enough here.
+  const { collections: all, hasMore } = await listAllCollections(admin, { limit: 100 });
   const candidates = all
     .filter((c) => c.sortOrder === "MANUAL" && !trackedGids.has(c.id))
     .map((c) => ({ id: c.id, title: c.title, productsCount: c.productsCount }));
 
-  return { candidates, timezone: settings.timezone };
+  return { candidates, hasMore, timezone: settings.timezone };
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -100,7 +104,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 };
 
 export default function Onboarding() {
-  const { candidates } = useLoaderData<typeof loader>();
+  const { candidates, hasMore } = useLoaderData<typeof loader>();
   const [step, setStep] = useState(1);
   const [selected, setSelected] = useState<string[]>(candidates.slice(0, 3).map((c) => c.id));
   const [pins, setPins] = useState(2);
@@ -160,6 +164,11 @@ export default function Onboarding() {
             </s-paragraph>
           ) : (
             <s-stack direction="block" gap="small">
+              {hasMore && (
+                <s-banner tone="info">
+                  Showing the first {candidates.length}. You can add more from Collections after setup.
+                </s-banner>
+              )}
               {candidates.map((c) => (
                 <div key={c.id} className="shuffly-onboard-row">
                   <s-checkbox

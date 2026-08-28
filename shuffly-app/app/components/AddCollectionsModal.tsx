@@ -5,6 +5,8 @@ import { ModalErrorBoundary } from "./ModalErrorBoundary";
 export interface AddCollectionsPickerData {
   addable: Array<{ id: string; title: string; productsCount: number }>;
   nonManualCount: number;
+  hasMore?: boolean;
+  query?: string;
   plan: { name: string; maxCollections: number | null };
   firstTrackedTitle: string | null;
   trackedCount: number;
@@ -17,23 +19,58 @@ interface AddCollectionsModalProps {
   };
   onSubmit: (formData: FormData) => void;
   onCancel: () => void;
+  /** Re-runs the picker loader with a title search — the list is capped
+   * server-side (see listAllCollections), so this is how a store with more
+   * collections than the cap narrows down to the one it wants. */
+  onSearch: (query: string) => void;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- showOverlay/hideOverlay aren't on the typed public props
 export const AddCollectionsModal = forwardRef<any, AddCollectionsModalProps>(
-  function AddCollectionsModal({ picker, onSubmit, onCancel }, ref) {
+  function AddCollectionsModal({ picker, onSubmit, onCancel, onSearch }, ref) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- ref is always a useRef object at every call site in this app
     useModalDismissWorkaround(ref as { current: any }, onCancel);
 
     const data = picker.data;
     const formRef = useRef<HTMLFormElement>(null);
     const [selected, setSelected] = useState<Set<string>>(new Set());
+    const [searchTerm, setSearchTerm] = useState("");
+    const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    // Distinguishes "the modal was just (re)opened" from "a search
+    // keystroke reloaded the same open modal" — both land here as a new
+    // `data` reference from the same fetcher, but only the former should
+    // wipe selections; the latter should keep whichever selected ids are
+    // still in the filtered results.
+    const searchReloadRef = useRef(false);
 
-    // A fresh picker load (every time the modal is opened) should start with
-    // nothing selected, not whatever was checked last time.
     useEffect(() => {
+      if (searchReloadRef.current) {
+        searchReloadRef.current = false;
+        if (data) {
+          setSelected((prev) => new Set([...prev].filter((id) => data.addable.some((c) => c.id === id))));
+        }
+        return;
+      }
+      // A fresh picker load (every time the modal is opened) should start
+      // with nothing selected, not whatever was checked last time.
       setSelected(new Set());
+      setSearchTerm("");
     }, [data]);
+
+    useEffect(() => {
+      return () => {
+        if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
+      };
+    }, []);
+
+    function onSearchInput(value: string) {
+      setSearchTerm(value);
+      if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
+      searchDebounceRef.current = setTimeout(() => {
+        searchReloadRef.current = true;
+        onSearch(value);
+      }, 300);
+    }
 
     function toggle(id: string, checked: boolean) {
       setSelected((prev) => {
@@ -120,6 +157,22 @@ export const AddCollectionsModal = forwardRef<any, AddCollectionsModalProps>(
                       Nothing — I&apos;ll set it up myself
                     </s-option>
                   </s-select>
+                )}
+
+                <s-search-field
+                  label="Search collections"
+                  labelAccessibilityVisibility="exclusive"
+                  placeholder="Search by collection name"
+                  value={searchTerm}
+                  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- currentTarget.value isn't in the typed event map
+                  onInput={(e: any) => onSearchInput(e.currentTarget?.value ?? "")}
+                />
+
+                {data.hasMore && (
+                  <s-banner tone="info">
+                    Showing the first {data.addable.length + data.nonManualCount} matching collections. Search by
+                    name to find a specific one.
+                  </s-banner>
                 )}
 
                 {data.addable.length > 0 && (

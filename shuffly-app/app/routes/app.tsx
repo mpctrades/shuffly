@@ -1,9 +1,10 @@
 import type { HeadersFunction, LoaderFunctionArgs } from "react-router";
-import { Outlet, useLoaderData, useRouteError } from "react-router";
+import { Outlet, useLoaderData, useRouteError, useRouteLoaderData } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { AppProvider } from "@shopify/shopify-app-react-router/react";
 
 import { authenticate } from "../shopify.server";
+import type { loader as rootLoader } from "../root";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   await authenticate.admin(request);
@@ -32,8 +33,18 @@ export default function App() {
 }
 
 // Shopify needs React Router to catch some thrown responses, so that their headers are included in the response.
+// Wrapped in AppProvider so a thrown response (e.g. a reauth redirect) still
+// renders with Polaris styling and the App Bridge script, instead of the
+// bare, unstyled HTML the library's boundary.error() returns on its own.
+// apiKey comes from the root loader, not this route's own — this route's
+// loader (which calls authenticate.admin) may be the very thing that threw.
 export function ErrorBoundary() {
-  return boundary.error(useRouteError());
+  const rootData = useRouteLoaderData<typeof rootLoader>("root");
+  return (
+    <AppProvider embedded apiKey={rootData?.apiKey ?? ""}>
+      {boundary.error(useRouteError())}
+    </AppProvider>
+  );
 }
 
 export const headers: HeadersFunction = (headersArgs) => {
