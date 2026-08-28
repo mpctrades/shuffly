@@ -133,20 +133,22 @@ export default function Onboarding() {
 
   return (
     <s-page heading="Get started">
-      <Form method="post" style={{ display: "inline" }}>
-        <input type="hidden" name="_action" value="skip" />
-        <s-button type="submit" variant="tertiary">
-          Skip
-        </s-button>
-      </Form>
+      <div className="shuffly-onboard-topbar">
+        <Form method="post" style={{ display: "inline" }}>
+          <input type="hidden" name="_action" value="skip" />
+          <s-button type="submit" variant="secondary">
+            Skip
+          </s-button>
+        </Form>
 
-      <div className="shuffly-onboard-head">
-        <div className="shuffly-onboard-eyebrow">Getting started</div>
-        <s-paragraph>Your collections, fresh every morning. A couple of questions, then try it before anything changes.</s-paragraph>
-        <div className="shuffly-onboard-steps" aria-hidden="true">
-          <span className={`shuffly-onboard-dot${step >= 1 ? " on" : ""}`} />
-          <span className={`shuffly-onboard-dot${step >= 2 ? " on" : ""}`} />
-          <span className={`shuffly-onboard-dot${step >= 3 ? " on" : ""}`} />
+        <div className="shuffly-onboard-head">
+          <div className="shuffly-onboard-eyebrow">Getting started</div>
+          <s-paragraph>Your collections, fresh every morning. A couple of questions, then try it before anything changes.</s-paragraph>
+          <div className="shuffly-onboard-steps" aria-hidden="true">
+            <span className={`shuffly-onboard-dot${step >= 1 ? " on" : ""}`} />
+            <span className={`shuffly-onboard-dot${step >= 2 ? " on" : ""}`} />
+            <span className={`shuffly-onboard-dot${step >= 3 ? " on" : ""}`} />
+          </div>
         </div>
       </div>
 
@@ -276,6 +278,9 @@ export default function Onboarding() {
       )}
 
       <style>{`
+        .shuffly-onboard-topbar {
+          padding: 20px 0 28px;
+        }
         .shuffly-onboard-eyebrow {
           font-size: 11px;
           font-weight: 800;
