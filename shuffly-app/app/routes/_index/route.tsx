@@ -69,8 +69,9 @@ export default function App() {
                 <path d="M12 7v5l3.5 2" />
               </svg>
             </div>
-            <strong>Shuffle on a schedule.</strong>
+            <strong>Shuffle on a schedule</strong>
             <p>Daily, twice daily, or weekly — fully automatic.</p>
+            <div className={styles.spacer} />
           </li>
           <li>
             <div className={styles.icon} aria-hidden="true">
@@ -79,8 +80,9 @@ export default function App() {
                 <circle cx="12" cy="10" r="2.5" />
               </svg>
             </div>
-            <strong>Pin what shouldn&apos;t move.</strong>
+            <strong>Pin what shouldn&apos;t move</strong>
             <p>Lock your best sellers at the top while the rest rotates.</p>
+            <div className={styles.spacer} />
           </li>
           <li>
             <div className={styles.icon} aria-hidden="true">
@@ -88,8 +90,9 @@ export default function App() {
                 <path d="M13 2 4 14h6l-1 8 9-12h-6l1-8z" />
               </svg>
             </div>
-            <strong>Reacts to sold-out stock in real time.</strong>
+            <strong>Reacts to sold-out stock in real time</strong>
             <p>Sold-out products drop to the end within a minute.</p>
+            <div className={styles.spacer} />
           </li>
         </ul>
 
