@@ -20,7 +20,7 @@ export interface PlanDefinition {
   allowedSchedules: Array<"DAILY" | "TWICE_DAILY" | "WEEKLY" | "MANUAL">;
   undoRetentionDays: number;
   insights: boolean;
-  soldOutReactionSeconds: number; // how fast the sold-out webhook reaction runs
+  canPin: boolean;
 }
 
 export const PLANS: Record<PlanId, PlanDefinition> = {
@@ -32,7 +32,7 @@ export const PLANS: Record<PlanId, PlanDefinition> = {
     allowedSchedules: ["WEEKLY", "MANUAL"],
     undoRetentionDays: 1,
     insights: true,
-    soldOutReactionSeconds: 3600,
+    canPin: false,
   },
   STARTER: {
     id: "STARTER",
@@ -42,7 +42,7 @@ export const PLANS: Record<PlanId, PlanDefinition> = {
     allowedSchedules: ["DAILY", "WEEKLY", "MANUAL"],
     undoRetentionDays: 7,
     insights: true,
-    soldOutReactionSeconds: 60,
+    canPin: true,
   },
   PRO: {
     id: "PRO",
@@ -52,7 +52,7 @@ export const PLANS: Record<PlanId, PlanDefinition> = {
     allowedSchedules: ["DAILY", "TWICE_DAILY", "WEEKLY", "MANUAL"],
     undoRetentionDays: 30,
     insights: true,
-    soldOutReactionSeconds: 60,
+    canPin: true,
   },
   AGENCY: {
     id: "AGENCY",
@@ -62,12 +62,28 @@ export const PLANS: Record<PlanId, PlanDefinition> = {
     allowedSchedules: ["DAILY", "TWICE_DAILY", "WEEKLY", "MANUAL"],
     undoRetentionDays: 30,
     insights: true,
-    soldOutReactionSeconds: 60,
+    canPin: true,
   },
 };
 
 export function planOf(planId: string | null | undefined): PlanDefinition {
   return PLANS[(planId as PlanId) ?? "FREE"] ?? PLANS.FREE;
+}
+
+export function defaultScheduleForPlan(
+  planId: string | null | undefined,
+): PlanDefinition["allowedSchedules"][number] {
+  const plan = planOf(planId);
+  if (plan.allowedSchedules.includes("DAILY")) return "DAILY";
+  if (plan.allowedSchedules.includes("WEEKLY")) return "WEEKLY";
+  return "MANUAL";
+}
+
+export function undoRetentionCutoff(
+  planId: string | null | undefined,
+  now = new Date(),
+): Date {
+  return new Date(now.getTime() - planOf(planId).undoRetentionDays * 86_400_000);
 }
 
 /** "2 months free" — the annual line item charges 10x the monthly price for

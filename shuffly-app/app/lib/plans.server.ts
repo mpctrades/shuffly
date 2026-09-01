@@ -4,7 +4,8 @@
 // module can't be imported by client code. Re-exported below so existing
 // `from "../lib/plans.server"` imports (loaders/actions) keep working.
 import db from "../db.server";
-import { planOf, type PlanId } from "./plans";
+import { defaultScheduleForPlan, planOf, undoRetentionCutoff, type PlanId } from "./plans";
+import { computeNextRun } from "./schedule.server";
 
 export * from "./plans";
 
@@ -44,4 +45,73 @@ export async function enforcePlanCollectionCap(
     ),
   ]);
   return toPause.map((c) => c.title);
+}
+
+/** Bring persisted collection settings back inside the active plan after a
+ * downgrade. New writes are validated in their route actions; this handles
+ * settings that were valid on the old plan. */
+export async function enforcePlanEntitlements(shop: string, planId: PlanId): Promise<void> {
+  const plan = planOf(planId);
+  const fallbackSchedule = defaultScheduleForPlan(planId);
+  const [disallowed, settings] = await Promise.all([
+    db.collectionConfig.findMany({
+      where: { shop, scheduleType: { notIn: plan.allowedSchedules } },
+      select: { id: true },
+    }),
+    db.shopSettings.findUnique({ where: { shop } }),
+  ]);
+  const scheduleTime = settings?.defaultRunTime ?? "06:00";
+  const scheduleWeekday = fallbackSchedule === "WEEKLY" ? 1 : null;
+  const nextRunAt = settings
+    ? computeNextRun(
+        new Date(),
+        settings.timezone,
+        fallbackSchedule,
+        scheduleTime,
+        scheduleWeekday,
+      )
+    : null;
+
+  await db.$transaction([
+    ...(disallowed.length > 0
+      ? [
+          db.collectionConfig.updateMany({
+            where: { id: { in: disallowed.map(({ id }) => id) } },
+            data: {
+              scheduleType: fallbackSchedule,
+              scheduleTime,
+              scheduleWeekday,
+              nextRunAt,
+            },
+          }),
+        ]
+      : []),
+    ...(!plan.canPin
+      ? [
+          db.collectionConfig.updateMany({
+            where: { shop, pins: { gt: 0 } },
+            data: { pins: 0 },
+          }),
+        ]
+      : []),
+  ]);
+}
+
+/** Remove reversible order snapshots after the active plan's retention
+ * window. The run record remains available as activity history. */
+export async function pruneExpiredUndoSnapshots(
+  shop: string,
+  planId: PlanId,
+  now = new Date(),
+): Promise<number> {
+  const result = await db.shuffleRun.updateMany({
+    where: {
+      shop,
+      trigger: { in: ["SCHEDULED", "MANUAL"] },
+      createdAt: { lt: undoRetentionCutoff(planId, now) },
+      previousOrder: { not: null },
+    },
+    data: { previousOrder: null },
+  });
+  return result.count;
 }

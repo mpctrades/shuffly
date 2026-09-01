@@ -12,7 +12,11 @@ import {
   annualMonthlyEquivalent,
   type PlanId,
 } from "../lib/plans";
-import { enforcePlanCollectionCap } from "../lib/plans.server";
+import {
+  enforcePlanCollectionCap,
+  enforcePlanEntitlements,
+  pruneExpiredUndoSnapshots,
+} from "../lib/plans.server";
 import {
   reconcilePlanFromSubscriptions,
   previewDowngradeImpact,
@@ -33,6 +37,7 @@ import { KeyValueRows } from "../components/KeyValueRows";
 // on this page.
 const PLAN_ORDER: PlanId[] = ["FREE", "STARTER", "PRO", "AGENCY"];
 const PRICING_ROW: Array<"FREE" | "STARTER" | "PRO"> = ["FREE", "STARTER", "PRO"];
+const PUBLIC_PAID_PLAN_IDS: PlanId[] = ["STARTER", "PRO"];
 
 // Real, honest differentiators pulled from PLANS in lib/plans.ts — no
 // feature is claimed here that the plan doesn't actually have.
@@ -44,13 +49,13 @@ const FEATURE_BULLETS: Record<"FREE" | "STARTER" | "PRO", string[]> = {
     `Up to ${PLANS.FREE.maxCollections} collections`,
     "Weekly shuffle schedule",
     "Manual “Shuffle now” anytime",
-    "Sold-out reaction within the hour",
+    "Automatic sold-out handling",
   ],
   STARTER: [
     `Up to ${PLANS.STARTER.maxCollections} collections`,
     "Daily schedule, pick the time",
     "Pin your best sellers",
-    "Sold-out reaction within a minute",
+    "Automatic sold-out handling",
     "7-day undo history",
   ],
   PRO: [
@@ -137,6 +142,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     planId = reconciled.planId;
     subscriptionId = reconciled.subscriptionId;
     billingSummary = reconciled.billing;
+    await enforcePlanCollectionCap(shop, planId);
+    await enforcePlanEntitlements(shop, planId);
+    await pruneExpiredUndoSnapshots(shop, planId);
   } catch (err) {
     // Fall back to whatever we last knew — better than a blank page.
     console.error("[app.plan] billing.check failed:", err);
@@ -183,6 +191,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   if (actionType === "preview-downgrade") {
     try {
       const targetPlanId = String(formData.get("targetPlanId")) as PlanId;
+      if (!(targetPlanId in PLANS)) {
+        return data({ ok: false, error: "Choose a valid plan." }, { status: 400 });
+      }
       const target = planOf(targetPlanId);
       const settings = await db.shopSettings.findUnique({ where: { shop } });
       const current = planOf(settings?.plan);
@@ -207,8 +218,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   if (actionType === "subscribe") {
     const planId = String(formData.get("planId")) as PlanId;
     const billingCycle = String(formData.get("billingCycle") ?? "monthly") as BillingCycle;
-    if (planId === "FREE") {
-      return data({ ok: false, error: "Free has nothing to subscribe to." }, { status: 400 });
+    if (!PUBLIC_PAID_PLAN_IDS.includes(planId) || !["monthly", "annual"].includes(billingCycle)) {
+      return data({ ok: false, error: "Choose an available paid plan and billing cycle." }, { status: 400 });
     }
     const billingKey = (
       billingCycle === "annual" ? `${planId}_ANNUAL` : planId
@@ -226,20 +237,35 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   if (actionType === "downgrade") {
     try {
       const targetPlanId = String(formData.get("targetPlanId")) as PlanId;
+      const billingCycle = String(formData.get("billingCycle") ?? "monthly") as BillingCycle;
+      if (
+        !(targetPlanId in PLANS) ||
+        (targetPlanId !== "FREE" && !PUBLIC_PAID_PLAN_IDS.includes(targetPlanId)) ||
+        !["monthly", "annual"].includes(billingCycle)
+      ) {
+        return data({ ok: false, error: "Choose a valid plan and billing cycle." }, { status: 400 });
+      }
+
+      if (targetPlanId !== "FREE") {
+        const billingKey = (
+          billingCycle === "annual" ? `${targetPlanId}_ANNUAL` : targetPlanId
+        ) as "STARTER" | "STARTER_ANNUAL" | "PRO" | "PRO_ANNUAL" | "AGENCY" | "AGENCY_ANNUAL";
+        const url = new URL(request.url);
+        return billing.request({
+          plan: billingKey,
+          isTest,
+          returnUrl: `${url.origin}/app/plan`,
+        });
+      }
+
       const settings = await db.shopSettings.findUnique({ where: { shop } });
 
       if (settings?.activeSubscriptionId) {
-        try {
-          await billing.cancel({
-            subscriptionId: settings.activeSubscriptionId,
-            isTest,
-            prorate: true,
-          });
-        } catch (err) {
-          // Already cancelled/expired on Shopify's side is fine — we still
-          // want our own record to land on the target plan below.
-          console.error("[app.plan] billing.cancel failed:", err);
-        }
+        await billing.cancel({
+          subscriptionId: settings.activeSubscriptionId,
+          isTest,
+          prorate: true,
+        });
       }
 
       await db.shopSettings.update({
@@ -247,6 +273,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         data: { plan: targetPlanId, activeSubscriptionId: null, planUpdatedAt: new Date() },
       });
       const pausedTitles = await enforcePlanCollectionCap(shop, targetPlanId);
+      await enforcePlanEntitlements(shop, targetPlanId);
+      await pruneExpiredUndoSnapshots(shop, targetPlanId);
       return data({ ok: true, pausedTitles });
     } catch (err) {
       console.error("[app.plan] downgrade failed:", err);
@@ -334,7 +362,7 @@ export default function Plan() {
     if (!downgradeTarget) return;
     closeModal(modalRef.current);
     downgradeFetcher.submit(
-      { _action: "downgrade", targetPlanId: downgradeTarget },
+      { _action: "downgrade", targetPlanId: downgradeTarget, billingCycle },
       { method: "post" },
     );
   }

@@ -7,11 +7,13 @@ import { getOrCreateShopSettings } from "../lib/shop-context.server";
 import { listAllCollections, getCollectionProductsInOrder } from "../lib/collections.server";
 import { computeShuffledOrder, type ShuffleProductInput } from "../lib/shuffle-algorithm.server";
 import { computeNextRun } from "../lib/schedule.server";
+import { defaultScheduleForPlan, planOf } from "../lib/plans.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { admin, session } = await authenticate.admin(request);
   const shop = session.shop;
   const settings = await getOrCreateShopSettings(admin, shop);
+  const plan = planOf(settings.plan);
   const tracked = await db.collectionConfig.findMany({ where: { shop }, select: { collectionGid: true } });
   const trackedGids = new Set(tracked.map((t) => t.collectionGid));
 
@@ -24,7 +26,19 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     .filter((c) => c.sortOrder === "MANUAL" && !trackedGids.has(c.id))
     .map((c) => ({ id: c.id, title: c.title, productsCount: c.productsCount }));
 
-  return { candidates, hasMore, timezone: settings.timezone };
+  const room =
+    plan.maxCollections === Infinity
+      ? candidates.length
+      : Math.max(0, plan.maxCollections - tracked.length);
+
+  return {
+    candidates,
+    hasMore,
+    timezone: settings.timezone,
+    maxSelectable: Math.min(room, candidates.length),
+    canPin: plan.canPin,
+    defaultSchedule: defaultScheduleForPlan(plan.id),
+  };
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -34,8 +48,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const actionType = formData.get("_action");
 
   if (actionType === "preview") {
+    const settings = await getOrCreateShopSettings(admin, shop);
+    const plan = planOf(settings.plan);
     const collectionGid = String(formData.get("collectionGid"));
-    const pins = Math.max(0, Number(formData.get("pins") ?? 2));
+    const pins = plan.canPin ? Math.max(0, Number(formData.get("pins") ?? 2)) : 0;
     const pushSoldOutToEnd = formData.get("pushSoldOutToEnd") === "true";
     const boostNewArrivals = formData.get("boostNewArrivals") === "true";
     const giveEveryoneATurn = formData.get("giveEveryoneATurn") === "true";
@@ -77,14 +93,50 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   if (actionType === "activate") {
     const settings = await getOrCreateShopSettings(admin, shop);
-    const ids = formData.getAll("collectionGid").map(String);
-    const titles = formData.getAll("collectionTitle").map(String);
-    for (let i = 0; i < ids.length; i++) {
-      const nextRunAt = computeNextRun(new Date(), settings.timezone, "DAILY", settings.defaultRunTime, null);
+    const plan = planOf(settings.plan);
+    const existingCount = await db.collectionConfig.count({ where: { shop } });
+    const room =
+      plan.maxCollections === Infinity
+        ? Number.MAX_SAFE_INTEGER
+        : Math.max(0, plan.maxCollections - existingCount);
+    const requested = new Set(formData.getAll("collectionGid").map(String));
+    const { collections } = await listAllCollections(admin, { limit: 100 });
+    const allowed = collections
+      .filter((collection) => collection.sortOrder === "MANUAL" && requested.has(collection.id))
+      .slice(0, room);
+    const scheduleType = defaultScheduleForPlan(plan.id);
+    const scheduleWeekday = scheduleType === "WEEKLY" ? 1 : null;
+    const pins = plan.canPin
+      ? Math.max(0, Math.min(10, Number(formData.get("pins") ?? 0)))
+      : 0;
+    const pushSoldOutToEnd = formData.get("pushSoldOutToEnd") === "true";
+    const boostNewArrivals = formData.get("boostNewArrivals") === "true";
+    const giveEveryoneATurn = formData.get("giveEveryoneATurn") === "true";
+
+    for (const collection of allowed) {
+      const nextRunAt = computeNextRun(
+        new Date(),
+        settings.timezone,
+        scheduleType,
+        settings.defaultRunTime,
+        scheduleWeekday,
+      );
       await db.collectionConfig.upsert({
-        where: { shop_collectionGid: { shop, collectionGid: ids[i] } },
+        where: { shop_collectionGid: { shop, collectionGid: collection.id } },
         update: {},
-        create: { shop, collectionGid: ids[i], title: titles[i] ?? "Collection", scheduleTime: settings.defaultRunTime, nextRunAt },
+        create: {
+          shop,
+          collectionGid: collection.id,
+          title: collection.title,
+          pins,
+          pushSoldOutToEnd,
+          boostNewArrivals,
+          giveEveryoneATurn,
+          scheduleType,
+          scheduleTime: settings.defaultRunTime,
+          scheduleWeekday,
+          nextRunAt,
+        },
       });
     }
     await db.shopSettings.update({ where: { shop }, data: { onboardedAt: new Date() } });
@@ -104,10 +156,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 };
 
 export default function Onboarding() {
-  const { candidates, hasMore } = useLoaderData<typeof loader>();
+  const { candidates, hasMore, maxSelectable, canPin, defaultSchedule } = useLoaderData<typeof loader>();
   const [step, setStep] = useState(1);
-  const [selected, setSelected] = useState<string[]>(candidates.slice(0, 3).map((c) => c.id));
-  const [pins, setPins] = useState(2);
+  const [selected, setSelected] = useState<string[]>(candidates.slice(0, Math.min(3, maxSelectable)).map((c) => c.id));
+  const [pins, setPins] = useState(canPin ? 2 : 0);
   const [pushSoldOutToEnd, setPushSoldOutToEnd] = useState(true);
   const [boostNewArrivals, setBoostNewArrivals] = useState(true);
   const [giveEveryoneATurn, setGiveEveryoneATurn] = useState(true);
@@ -117,7 +169,10 @@ export default function Onboarding() {
   const previewCollection = selectedCollections[0];
 
   function toggle(id: string) {
-    setSelected((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+    setSelected((prev) => {
+      if (prev.includes(id)) return prev.filter((x) => x !== id);
+      return prev.length < maxSelectable ? [...prev, id] : prev;
+    });
   }
 
   function runPreview() {
@@ -147,7 +202,7 @@ export default function Onboarding() {
 
         <div className="shuffly-onboard-head">
           <div className="shuffly-onboard-eyebrow">Getting started</div>
-          <s-paragraph>Your collections, fresh every morning. A couple of questions, then try it before anything changes.</s-paragraph>
+          <s-paragraph>Keep your collections fresh automatically. A couple of questions, then try it before anything changes.</s-paragraph>
           <div className="shuffly-onboard-steps" aria-hidden="true">
             <span className={`shuffly-onboard-dot${step >= 1 ? " on" : ""}`} />
             <span className={`shuffly-onboard-dot${step >= 2 ? " on" : ""}`} />
@@ -169,12 +224,18 @@ export default function Onboarding() {
                   Showing the first {candidates.length}. You can add more from Collections after setup.
                 </s-banner>
               )}
+              {selected.length >= maxSelectable && maxSelectable < candidates.length && (
+                <s-banner tone="info">
+                  Your current plan can track {maxSelectable} more collection{maxSelectable === 1 ? "" : "s"}.
+                </s-banner>
+              )}
               {candidates.map((c) => (
                 <div key={c.id} className="shuffly-onboard-row">
                   <s-checkbox
                     label={c.title}
                     details={`${c.productsCount} product${c.productsCount === 1 ? "" : "s"}`}
                     checked={selected.includes(c.id)}
+                    disabled={!selected.includes(c.id) && selected.length >= maxSelectable ? true : undefined}
                     onChange={() => toggle(c.id)}
                   />
                 </div>
@@ -201,13 +262,17 @@ export default function Onboarding() {
           <s-paragraph>Press Shuffle and watch. This is a real preview — nothing is saved to your store yet.</s-paragraph>
           <s-grid gridTemplateColumns="1fr 2fr" gap="base">
             <s-stack direction="block" gap="base">
-              <s-number-field
-                label="Pin the first"
-                value={String(pins)}
-                min={0}
-                max={10}
-                onChange={(e) => setPins(Number(e.currentTarget.value))}
-              />
+              {canPin ? (
+                <s-number-field
+                  label="Pin the first"
+                  value={String(pins)}
+                  min={0}
+                  max={10}
+                  onChange={(e) => setPins(Number(e.currentTarget.value))}
+                />
+              ) : (
+                <s-paragraph>Pinning is available on Starter and Pro.</s-paragraph>
+              )}
               <s-checkbox
                 label="Sold-out to the end"
                 checked={pushSoldOutToEnd}
@@ -262,7 +327,7 @@ export default function Onboarding() {
         <s-section heading="3. Ready">
           <s-paragraph>
             Shuffly will start shuffling {selectedCollections.length} collection
-            {selectedCollections.length === 1 ? "" : "s"} tomorrow morning, then every day after that.
+            {selectedCollections.length === 1 ? "" : "s"} on the {defaultSchedule === "WEEKLY" ? "weekly" : "daily"} schedule.
           </s-paragraph>
           <s-banner tone="success" heading="Nothing touches your theme">
             <s-paragraph>
@@ -274,10 +339,13 @@ export default function Onboarding() {
             <s-button onClick={() => setStep(2)}>Back</s-button>
             <Form method="post">
               <input type="hidden" name="_action" value="activate" />
+              <input type="hidden" name="pins" value={String(pins)} />
+              <input type="hidden" name="pushSoldOutToEnd" value={String(pushSoldOutToEnd)} />
+              <input type="hidden" name="boostNewArrivals" value={String(boostNewArrivals)} />
+              <input type="hidden" name="giveEveryoneATurn" value={String(giveEveryoneATurn)} />
               {selectedCollections.map((c) => (
                 <span key={c.id}>
                   <input type="hidden" name="collectionGid" value={c.id} />
-                  <input type="hidden" name="collectionTitle" value={c.title} />
                 </span>
               ))}
               <s-button type="submit" variant="primary">

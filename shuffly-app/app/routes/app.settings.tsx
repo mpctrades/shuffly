@@ -6,10 +6,7 @@ import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { getOrCreateShopSettings } from "../lib/shop-context.server";
 import { KeyValueRows } from "../components/KeyValueRows";
-import {
-  getShopTimezone,
-  getShopContactEmail,
-} from "../lib/collections.server";
+import { getShopTimezone } from "../lib/collections.server";
 import { timezoneOffsetLabel } from "../lib/schedule.server";
 
 const SAVE_BAR_ID = "settings-save-bar";
@@ -71,23 +68,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       "Couldn't confirm your shop's timezone from Shopify just now — showing the last known value.";
   }
 
-  // Prefer the actual logged-in staff member's email (only ever present for
-  // an online session); fall back to the shop's own contact address rather
-  // than guessing at "the store owner".
-  let notifyEmail: string | null =
-    session.onlineAccessInfo?.associated_user?.email ?? null;
-  if (!notifyEmail) {
-    try {
-      notifyEmail = await getShopContactEmail(admin);
-    } catch {
-      notifyEmail = null;
-    }
-  }
-
   return {
     settings: { ...settings, timezone },
     timezoneLabel: `${timezone} (${timezoneOffsetLabel(timezone)})`,
-    notifyEmail,
     error,
   };
 };
@@ -99,21 +82,13 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const formData = await request.formData();
 
   const defaultRunTime = String(formData.get("defaultRunTime") ?? "06:00");
-  const language = String(formData.get("language") ?? "en");
   const neverMoveTags = String(formData.get("neverMoveTags") ?? "");
-  const emailOnFailure = formData.get("emailOnFailure") === "true";
-  const emailMonthlySummary = formData.get("emailMonthlySummary") === "true";
-  const emailMorningRun = formData.get("emailMorningRun") === "true";
 
   await db.shopSettings.update({
     where: { shop },
     data: {
       defaultRunTime,
-      language,
       neverMoveTags,
-      emailOnFailure,
-      emailMonthlySummary,
-      emailMorningRun,
     },
   });
 
@@ -121,7 +96,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 };
 
 export default function Settings() {
-  const { settings, timezoneLabel, notifyEmail, error } =
+  const { settings, timezoneLabel, error } =
     useLoaderData<typeof loader>();
   const navigation = useNavigation();
   const shopify = useAppBridge();
@@ -132,16 +107,8 @@ export default function Settings() {
   const busy = fetcher.state !== "idle";
 
   const [defaultRunTime, setDefaultRunTime] = useState(settings.defaultRunTime);
-  const [language, setLanguage] = useState(settings.language);
   const [tags, setTags] = useState<string[]>(() =>
     parseTags(settings.neverMoveTags),
-  );
-  const [emailOnFailure, setEmailOnFailure] = useState(settings.emailOnFailure);
-  const [emailMonthlySummary, setEmailMonthlySummary] = useState(
-    settings.emailMonthlySummary,
-  );
-  const [emailMorningRun, setEmailMorningRun] = useState(
-    settings.emailMorningRun,
   );
   const [addingTag, setAddingTag] = useState(false);
   const [newTag, setNewTag] = useState("");
@@ -169,11 +136,7 @@ export default function Settings() {
 
   function handleDiscard() {
     setDefaultRunTime(settings.defaultRunTime);
-    setLanguage(settings.language);
     setTags(parseTags(settings.neverMoveTags));
-    setEmailOnFailure(settings.emailOnFailure);
-    setEmailMonthlySummary(settings.emailMonthlySummary);
-    setEmailMorningRun(settings.emailMorningRun);
     setAddingTag(false);
     setNewTag("");
     setDirty(false);
@@ -184,11 +147,7 @@ export default function Settings() {
     fetcher.submit(
       {
         defaultRunTime,
-        language,
         neverMoveTags: tags.join(","),
-        emailOnFailure: String(emailOnFailure),
-        emailMonthlySummary: String(emailMonthlySummary),
-        emailMorningRun: String(emailMorningRun),
       },
       { method: "post" },
     );
@@ -202,11 +161,6 @@ export default function Settings() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- fires only on fetcher settle
   }, [fetcher.state, fetcher.data]);
-
-  function setLanguageAndMark(lang: string) {
-    setLanguage(lang);
-    markDirty();
-  }
 
   function addTag() {
     const t = newTag.trim();
@@ -262,30 +216,13 @@ export default function Settings() {
                 <s-text-field
                   label="Default run time"
                   value={defaultRunTime}
-                  details="Your quietest hour, from your own orders."
+                  details="Choose when automatic shuffles should run."
                   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- currentTarget.value isn't in the typed event map
                   onInput={(e: any) => {
                     setDefaultRunTime(e.currentTarget?.value ?? "");
                     markDirty();
                   }}
                 />
-                {/* The only language control on the page now — a header
-                    toggle used to exist alongside this and could disagree
-                    with it (FR selected up top, English rendered below).
-                    This select is the real setting: it's what gets saved,
-                    and it's the only thing that should ever claim a
-                    language is selected. */}
-                <s-select
-                  label="Language"
-                  value={language}
-                  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- currentTarget.value isn't in the typed event map
-                  onChange={(e: any) =>
-                    setLanguageAndMark(e.currentTarget?.value ?? "en")
-                  }
-                >
-                  <s-option value="en">English</s-option>
-                  <s-option value="fr">Français</s-option>
-                </s-select>
               </s-stack>
             </SettingsCard>
 
@@ -347,53 +284,6 @@ export default function Settings() {
               </s-stack>
             </SettingsCard>
 
-            <SettingsCard icon="email" tone="info" title="Email me">
-              <s-stack direction="block" gap="small">
-                <s-switch
-                  label="If a run fails"
-                  checked={emailOnFailure}
-                  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- currentTarget.checked isn't in the typed event map
-                  onChange={(e: any) => {
-                    setEmailOnFailure(Boolean(e.currentTarget?.checked));
-                    markDirty();
-                  }}
-                />
-                <s-switch
-                  label="A monthly summary"
-                  checked={emailMonthlySummary}
-                  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- currentTarget.checked isn't in the typed event map
-                  onChange={(e: any) => {
-                    setEmailMonthlySummary(Boolean(e.currentTarget?.checked));
-                    markDirty();
-                  }}
-                />
-                <s-switch
-                  label="Every morning after the run"
-                  checked={emailMorningRun}
-                  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- currentTarget.checked isn't in the typed event map
-                  onChange={(e: any) => {
-                    setEmailMorningRun(Boolean(e.currentTarget?.checked));
-                    markDirty();
-                  }}
-                />
-              </s-stack>
-              <CardFooterStrip>
-                <div
-                  style={{
-                    display: "flex",
-                    justifyContent: "space-between",
-                    alignItems: "center",
-                    width: "100%",
-                    gap: 12,
-                  }}
-                >
-                  <s-text color="subdued">Sent to</s-text>
-                  <div style={{ fontWeight: 500 }}>
-                    {notifyEmail ?? "No notification email on file yet"}
-                  </div>
-                </div>
-              </CardFooterStrip>
-            </SettingsCard>
           </s-stack>
 
           <s-stack direction="block" gap="base">
@@ -410,6 +300,10 @@ export default function Settings() {
                   },
                   {
                     label: "Change collection order",
+                    value: <AccessValue text="Yes" tone="neutral" />,
+                  },
+                  {
+                    label: "Read inventory status",
                     value: <AccessValue text="Yes" tone="neutral" />,
                   },
                   {
@@ -470,17 +364,7 @@ export default function Settings() {
                 rows={[
                   {
                     label: "Judge.me Reviews",
-                    value: (
-                      <s-button
-                        onClick={() =>
-                          shopify.toast.show(
-                            "Judge.me integration isn't available yet",
-                          )
-                        }
-                      >
-                        Connect
-                      </s-button>
-                    ),
+                    value: <AccessValue text="No conflict" tone="success" />,
                   },
                   // Shopify's own Flow and Search & Discovery are covered by
                   // a real compatibility statement, not live detection —
@@ -492,7 +376,7 @@ export default function Settings() {
                   // true, hide it instead of shipping a guess.
                   {
                     label: "Shopify Flow",
-                    value: <AccessValue text="Connected" tone="success" />,
+                    value: <AccessValue text="No conflict" tone="success" />,
                   },
                   {
                     label: "Search & Discovery",
@@ -511,7 +395,7 @@ export default function Settings() {
             <SettingsCard icon="info" tone="neutral" title="If you uninstall">
               <s-paragraph>
                 Your collections keep the order they have. Nothing to clean up.
-                Shuffly&apos;s data is deleted within 48 hours.
+                Shopify sends the deletion request 48 hours after uninstall; Shuffly deletes its stored shop data when it arrives.
               </s-paragraph>
             </SettingsCard>
           </s-stack>
@@ -527,11 +411,8 @@ export default function Settings() {
   );
 }
 
-/** The grey strip along the bottom of a card. Doesn't force its own text
- * styling — most callers just want plain subdued copy (wrap the string in
- * `<s-text color="subdued">` yourself), but the email strip needs a label
- * and a value styled differently from each other, so this stays a plain
- * container. */
+/** The grey strip along the bottom of a card. Callers provide their own
+ * text styling so the container stays reusable. */
 function CardFooterStrip({ children }: { children: React.ReactNode }) {
   return (
     <>

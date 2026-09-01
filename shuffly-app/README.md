@@ -16,11 +16,11 @@ local dev data.
 - **Workspace** (per collection) — pin count, sold-out/new-arrival/fairness toggles, schedule (daily / twice daily / weekly / manual-only), live product order, Shuffle now, Undo, and a run history.
 - **Activity** — a shop-wide feed of every run, with Restore.
 - **Insights** *(Pro plan)* — an estimate of how much of the catalogue has actually rotated into a featured position, derived from Shuffly's own run history (not storefront analytics — Shuffly adds no script to the storefront).
-- **Settings** — timezone (read from Shopify), default run time, language, "never move products tagged …", email preferences, and the access/performance/uninstall disclosures the App Store listing needs merchants to see.
+- **Settings** — timezone (read from Shopify), default run time, "never move products tagged …", and accurate access/performance/uninstall disclosures.
 - **Plan** — Free / Starter / Pro / Agency, wired to the real Shopify Billing API (subscribe, cancel, test mode outside production).
 - **Onboarding** — pick collections, try a real (unsaved) shuffle preview, turn it on.
 - **Automatic scheduling** — an in-process poller (`app/lib/scheduler.server.ts`) runs due shuffles every minute; for multi-replica/serverless deployments, point an external cron at `POST /api/cron/run-shuffles` instead (protect it with a `CRON_SECRET` env var) and set `DISABLE_IN_PROCESS_SCHEDULER=1`.
-- **Sold-out reaction** — `inventory_levels/update` (with `products/update` as a fallback) pushes a product to the end of every collection that wants that, within moments of it selling out, without waiting for the next scheduled run.
+- **Sold-out reaction** — `inventory_levels/update` (with `products/update` as a fallback) pushes a product to the end after Shopify reports the inventory change, without waiting for the next scheduled run.
 - **Compliance webhooks** — `customers/data_request`, `customers/redact`, `shop/redact` (the last one cascade-deletes all of that shop's Shuffly data — see Settings' "If you uninstall" promise).
 - **Only the scopes it uses** — `read_products`, `write_products`, `read_inventory`. No customer, order, or theme access.
 
@@ -48,8 +48,8 @@ The dev database is a local SQLite file (`prisma/dev.sqlite`). Run `npx prisma s
 
 A few things are intentionally left for you, since they're business decisions or need a real store to produce:
 
-- [x] **Confirm the name.** Web research (2026-08-25): no confirmed USPTO trademark, no Shopify App Store collision, but `shuffly.com` belongs to an active, US-expanding company ("Shuffly Shuffleboards") and a few small indie "shuffle" tools share the name — `.app`/`.io` look open. Medium risk, not a hard blocker; get a real trademark search before spending real marketing money on it, and consider grabbing `shuffly.app`/`.io` now. This was web research, not a formal clearance search.
-- [ ] **Privacy policy** — `app/routes/privacy.tsx` is a real starting draft (accurate to what the app actually does/stores), but has two `[fill in]` placeholders and should get a legal read before you publish it.
+- [ ] **Confirm the name.** Web research (2026-09-01) found no exact Shopify App Store listing named Shuffly, but the closely named and functionally similar “Shuffler: Sort & Shuffle” is live, and `shuffly.com` belongs to another business. Shopify and trademark clearance are still required before submission.
+- [ ] **Privacy policy** — `app/routes/privacy.tsx` now matches the app's scopes and stored data, but still needs a legal review plus the operator's address, infrastructure/subprocessor details, international-transfer basis, and exact log-retention period.
 - [ ] **Support email** — referenced in the privacy policy and Settings; wire up a real inbox.
 - [ ] **Screenshots + demo store** for the listing — a large catalogue with a couple of sold-out items sitting high, one collection already shuffled, makes the point in one screenshot.
 - [ ] **GraphQL codegen** — `npm run graphql-codegen` (config already in `.graphqlrc.ts`) will give the ad-hoc queries in `collections.server.ts` full generated types instead of the couple of `any` escape hatches currently there.

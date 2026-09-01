@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { PLANS, annualMonthlyEquivalent, annualPrice, planOf } from "./plans";
+import {
+  PLANS,
+  annualMonthlyEquivalent,
+  annualPrice,
+  defaultScheduleForPlan,
+  planOf,
+  undoRetentionCutoff,
+} from "./plans";
 
 describe("planOf", () => {
   it("resolves a known plan id", () => {
@@ -41,6 +48,20 @@ describe("annualMonthlyEquivalent", () => {
 
   it("is 0 for the Free plan", () => {
     expect(annualMonthlyEquivalent(0)).toBe(0);
+  });
+});
+
+describe("plan entitlements", () => {
+  it("chooses a useful automatic default included in each plan", () => {
+    expect(defaultScheduleForPlan("FREE")).toBe("WEEKLY");
+    expect(defaultScheduleForPlan("STARTER")).toBe("DAILY");
+    expect(defaultScheduleForPlan("PRO")).toBe("DAILY");
+  });
+
+  it("calculates the undo cutoff from the active plan", () => {
+    const now = new Date("2026-09-01T12:00:00.000Z");
+    expect(undoRetentionCutoff("FREE", now).toISOString()).toBe("2026-08-31T12:00:00.000Z");
+    expect(undoRetentionCutoff("STARTER", now).toISOString()).toBe("2026-08-25T12:00:00.000Z");
   });
 });
 

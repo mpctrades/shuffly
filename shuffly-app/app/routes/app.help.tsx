@@ -169,7 +169,7 @@ export default function Help() {
   const [openId, setOpenId] = useState<string | null>(null);
 
   function contactSupport() {
-    shopify.toast.show("Support chat isn't available yet — email us instead");
+    window.location.href = "mailto:support@mpctrades.com?subject=Shuffly%20support";
   }
 
   function copyDetails() {
@@ -359,11 +359,11 @@ export default function Help() {
                       flex: "none",
                     }}
                   />
-                  <s-text color="subdued">All systems normal</s-text>
+                  <s-text color="subdued">Support by email</s-text>
                 </div>
                 <KeyValueRows
                   rows={[
-                    { label: "First reply", value: "Under 4 hours" },
+                    { label: "Contact method", value: "Email" },
                     { label: "Languages", value: "English, Français" },
                   ]}
                 />

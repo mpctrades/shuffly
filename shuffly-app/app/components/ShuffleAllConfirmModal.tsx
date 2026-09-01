@@ -5,6 +5,7 @@ import { useModalDismissWorkaround } from "../lib/polaris-modal";
 import { ModalErrorBoundary } from "./ModalErrorBoundary";
 
 interface ShuffleAllConfirmModalProps {
+  undoRetentionDays: number;
   onConfirm: () => void;
   onCancel: () => void;
 }
@@ -13,7 +14,7 @@ export const ShuffleAllConfirmModal = forwardRef<
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- showOverlay/hideOverlay aren't on the typed public props
   any,
   ShuffleAllConfirmModalProps
->(function ShuffleAllConfirmModal({ onConfirm, onCancel }, ref) {
+>(function ShuffleAllConfirmModal({ undoRetentionDays, onConfirm, onCancel }, ref) {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- ref is always a useRef object at every call site in this app
   useModalDismissWorkaround(ref as { current: any }, onCancel);
   const previewFetcher = useFetcher<ShuffleAllPreview>({
@@ -50,7 +51,7 @@ export const ShuffleAllConfirmModal = forwardRef<
             <s-paragraph>
               <s-text color="subdued">
                 Usually takes about {preview.estimatedSeconds} second{preview.estimatedSeconds === 1 ? "" : "s"}.
-                Every run is saved for 30 days, so any of them can be undone.
+                Order snapshots can be undone for {undoRetentionDays} day{undoRetentionDays === 1 ? "" : "s"}.
               </s-text>
             </s-paragraph>
           </>

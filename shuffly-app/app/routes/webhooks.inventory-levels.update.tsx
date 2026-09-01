@@ -24,7 +24,7 @@ interface InventoryItemProductResponse {
 }
 
 // Inventory quantities live on InventoryLevel, so this is the authoritative
-// trigger for the "sold out within a minute" behavior. The payload identifies
+// trigger for automatic sold-out handling. The payload identifies
 // an inventory item, not its product; fetch the current product aggregate so
 // multi-location and multi-variant products only move after all stock is gone.
 export const action = async ({ request }: ActionFunctionArgs) => {

@@ -15,7 +15,7 @@ import {
 import { runShuffleForCollection } from "../lib/shuffle-engine.server";
 import { previewShuffleAll } from "../lib/shuffle-preview.server";
 import { computeNextRun, formatActivityTimestamp, type ScheduleType } from "../lib/schedule.server";
-import { planOf } from "../lib/plans.server";
+import { defaultScheduleForPlan, planOf, pruneExpiredUndoSnapshots } from "../lib/plans.server";
 import { closeModal } from "../lib/polaris-modal";
 import { CollectionRow, type CollectionRowData } from "../components/CollectionRow";
 import {
@@ -56,6 +56,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const now = new Date();
 
   const settings = await getOrCreateShopSettings(admin, shop);
+  await pruneExpiredUndoSnapshots(shop, planOf(settings.plan).id);
   const tracked = await db.collectionConfig.findMany({ where: { shop }, orderBy: { createdAt: "asc" } });
   const trackedIds = tracked.map((t) => t.id);
   const trackedGidsForHydration = tracked.map((t) => t.collectionGid);
@@ -301,6 +302,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     lastBatch,
     planName: plan.name,
     planLimit: plan.maxCollections === Infinity ? null : plan.maxCollections,
+    undoRetentionDays: plan.undoRetentionDays,
   };
 };
 
@@ -366,6 +368,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const formData = await request.formData();
   const actionType = formData.get("_action");
   const settings = await getOrCreateShopSettings(admin, shop);
+  const defaultSchedule = defaultScheduleForPlan(settings.plan);
+  const defaultWeekday = defaultSchedule === "WEEKLY" ? 1 : null;
 
   if (actionType === "add-collections") {
     const plan = planOf(settings.plan);
@@ -394,11 +398,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
     for (const gid of toAdd) {
       const title = String(formData.get(`collectionTitle:${gid}`) ?? "Collection");
-      const nextRunAt = computeNextRun(new Date(), settings.timezone, "DAILY", settings.defaultRunTime, null);
+      const nextRunAt = computeNextRun(new Date(), settings.timezone, defaultSchedule, settings.defaultRunTime, defaultWeekday);
       await db.collectionConfig.upsert({
         where: { shop_collectionGid: { shop, collectionGid: gid } },
         update: {},
-        create: { shop, collectionGid: gid, title, scheduleTime: settings.defaultRunTime, nextRunAt, ...preset },
+        create: { shop, collectionGid: gid, title, scheduleType: defaultSchedule, scheduleTime: settings.defaultRunTime, scheduleWeekday: defaultWeekday, nextRunAt, ...preset, pins: plan.canPin ? preset.pins : 0 },
       });
     }
     return data({ ok: true, added: toAdd.length, skipped: ids.length - toAdd.length });
@@ -412,11 +416,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     }
     const gid = String(formData.get("gid"));
     const title = String(formData.get("title") ?? "Collection");
-    const nextRunAt = computeNextRun(new Date(), settings.timezone, "DAILY", settings.defaultRunTime, null);
+    const nextRunAt = computeNextRun(new Date(), settings.timezone, defaultSchedule, settings.defaultRunTime, defaultWeekday);
     await db.collectionConfig.upsert({
       where: { shop_collectionGid: { shop, collectionGid: gid } },
       update: {},
-      create: { shop, collectionGid: gid, title, scheduleTime: settings.defaultRunTime, nextRunAt, ...DEFAULT_ADD_PRESET },
+      create: { shop, collectionGid: gid, title, scheduleType: defaultSchedule, scheduleTime: settings.defaultRunTime, scheduleWeekday: defaultWeekday, nextRunAt, ...DEFAULT_ADD_PRESET },
     });
     return data({ ok: true });
   }
@@ -431,11 +435,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const title = String(formData.get("title") ?? "Collection");
     const switched = await setCollectionManualSort(admin, gid);
     if (!switched.ok) return data({ ok: false, error: switched.error ?? "Couldn't switch that collection." }, { status: 400 });
-    const nextRunAt = computeNextRun(new Date(), settings.timezone, "DAILY", settings.defaultRunTime, null);
+    const nextRunAt = computeNextRun(new Date(), settings.timezone, defaultSchedule, settings.defaultRunTime, defaultWeekday);
     await db.collectionConfig.upsert({
       where: { shop_collectionGid: { shop, collectionGid: gid } },
       update: {},
-      create: { shop, collectionGid: gid, title, scheduleTime: settings.defaultRunTime, nextRunAt, ...DEFAULT_ADD_PRESET },
+      create: { shop, collectionGid: gid, title, scheduleType: defaultSchedule, scheduleTime: settings.defaultRunTime, scheduleWeekday: defaultWeekday, nextRunAt, ...DEFAULT_ADD_PRESET },
     });
     return data({ ok: true });
   }
@@ -454,11 +458,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         const switched = await setCollectionManualSort(admin, gid);
         if (!switched.ok) continue;
       }
-      const nextRunAt = computeNextRun(new Date(), settings.timezone, "DAILY", settings.defaultRunTime, null);
+      const nextRunAt = computeNextRun(new Date(), settings.timezone, defaultSchedule, settings.defaultRunTime, defaultWeekday);
       await db.collectionConfig.upsert({
         where: { shop_collectionGid: { shop, collectionGid: gid } },
         update: {},
-        create: { shop, collectionGid: gid, title: titles[i] ?? "Collection", scheduleTime: settings.defaultRunTime, nextRunAt, ...DEFAULT_ADD_PRESET },
+        create: { shop, collectionGid: gid, title: titles[i] ?? "Collection", scheduleType: defaultSchedule, scheduleTime: settings.defaultRunTime, scheduleWeekday: defaultWeekday, nextRunAt, ...DEFAULT_ADD_PRESET },
       });
       added++;
     }
@@ -622,6 +626,7 @@ export default function Collections() {
     lastBatch,
     planName,
     planLimit,
+    undoRetentionDays,
   } = useLoaderData<typeof loader>();
   const revalidator = useRevalidator();
   const navigation = useNavigation();
@@ -932,7 +937,6 @@ export default function Collections() {
         ···
       </s-button>
       <s-menu id="collections-overflow-menu" accessibilityLabel="More actions">
-        <s-button onClick={() => shopify.toast.show("Export isn't available yet")}>Export</s-button>
         <PauseAllButton />
       </s-menu>
 
@@ -1110,7 +1114,12 @@ export default function Collections() {
         onSearch={searchAddModal}
       />
 
-      <ShuffleAllConfirmModal ref={shuffleAllModalRef} onConfirm={confirmShuffleAll} onCancel={() => closeModal(shuffleAllModalRef.current)} />
+      <ShuffleAllConfirmModal
+        ref={shuffleAllModalRef}
+        undoRetentionDays={undoRetentionDays}
+        onConfirm={confirmShuffleAll}
+        onCancel={() => closeModal(shuffleAllModalRef.current)}
+      />
 
       <SwitchToManualModal
         ref={switchModalRef}

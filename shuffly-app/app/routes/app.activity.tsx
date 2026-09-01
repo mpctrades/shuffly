@@ -20,6 +20,7 @@ import { closeModal } from "../lib/polaris-modal";
 import { ActivityRow, ActivityDayHeading } from "../components/ActivityRow";
 import { RestoreActivityModal } from "../components/RestoreActivityModal";
 import { ActivityDiffModal } from "../components/ActivityDiffModal";
+import { planOf, pruneExpiredUndoSnapshots } from "../lib/plans.server";
 
 type ActivityTab = "all" | "runs" | "automatic" | "attention";
 const TABS: Array<{ value: ActivityTab; label: string }> = [
@@ -51,6 +52,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { admin, session } = await authenticate.admin(request);
   const shop = session.shop;
   const settings = await getOrCreateShopSettings(admin, shop);
+  await pruneExpiredUndoSnapshots(shop, planOf(settings.plan).id);
   const url = new URL(request.url);
   const cursor = url.searchParams.get("cursor");
   const query = readQuery(url);

@@ -25,7 +25,6 @@ const SUPPORT_EMAIL = "support@mpctrades.com";
 // Same value as shopify.app.toml's application_url. Hardcoded rather than
 // read from a loader (which this static page otherwise has no need for) —
 // update this if the app ever moves off the "dev" domain.
-const PUBLIC_POLICY_URL = "https://dev.shuffly.mpctrades.com/privacy";
 
 type Tone = "success" | "warning" | "info";
 
@@ -55,7 +54,7 @@ const WEBHOOKS: Array<{ topic: string; description: string }> = [
   {
     topic: "customers/data_request",
     description:
-      "Sent if a customer asks a merchant for their data. Shuffly never stores customer data, so there is nothing to export — Shuffly acknowledges the request and logs it.",
+      "Sent if a customer asks a merchant for their data. Shuffly never stores customer data, so there is nothing to export — Shuffly acknowledges the request.",
   },
   {
     topic: "customers/redact",
@@ -65,14 +64,14 @@ const WEBHOOKS: Array<{ topic: string; description: string }> = [
   {
     topic: "shop/redact",
     description:
-      "Sent after a shop uninstalls Shuffly. This is the one with real work to do: it hard-deletes every row Shuffly stored for that shop — collection configuration, settings, and run history — which is what backs the “deleted within 48 hours” promise above.",
+      "Shopify sends this 48 hours after a shop uninstalls Shuffly. On receipt, Shuffly hard-deletes every stored row for that shop, including configuration, settings, sessions, and run history.",
   },
 ];
 
 const STORES: Array<{ what: string; why: string }> = [
   {
-    what: "Shop domain, timezone, notification preferences",
-    why: "So schedules run at the right local time and reach the right inbox.",
+    what: "Shop domain, timezone, and authenticated app session data (which can include staff name and email)",
+    why: "So the app can authenticate the shop and run schedules at the right local time.",
   },
   {
     what: "Which collections you've added, and how (pin count, toggles, schedule)",
@@ -81,6 +80,10 @@ const STORES: Array<{ what: string; why: string }> = [
   {
     what: "A rolling history of shuffle runs",
     why: "Powers the Activity screen and Undo.",
+  },
+  {
+    what: "Operational logs such as shop domain, webhook status, and error diagnostics",
+    why: "Used to secure, operate, and troubleshoot the service.",
   },
 ];
 
@@ -113,9 +116,9 @@ export default function Privacy() {
                   margin: "18px 0 20px",
                 }}
               >
-                <Stat value="2" label="API scopes used" />
+                <Stat value="3" label="API scopes used" />
                 <Stat value="0" label="Customer or order records stored" />
-                <Stat value="48 hrs" label="Until shop data is deleted" />
+                <Stat value="48 hrs" label="Until Shopify sends the shop deletion request" />
               </div>
               {/* Plain <p>, not <s-paragraph> — Polaris's text components
                   default to a dark, light-surface text color regardless of
@@ -123,11 +126,11 @@ export default function Privacy() {
                   copy unreadable here. Explicit white instead (measured
                   17.1:1 against #1F1B18 — see PR notes). */}
               <p style={{ margin: 0, color: "#FFFFFF", fontSize: 15, lineHeight: 1.65 }}>
-                Shuffly requests two Shopify Admin API scopes, <Code>read_products</Code> and{" "}
-                <Code>write_products</Code>, and uses them only to read your product catalogue
-                and collections and to set product position inside collections you&apos;ve
-                chosen to have it manage. It never requests customer data, order data, or your
-                storefront theme.
+                Shuffly requests three Shopify Admin API scopes: <Code>read_products</Code>,{" "}
+                <Code>write_products</Code>, and <Code>read_inventory</Code>. They are used to
+                read products and collections, set product positions in collections you choose,
+                and react when inventory changes. Shuffly never requests customer data, order
+                data, or access to your storefront theme.
               </p>
             </HeroCard>
 
@@ -143,9 +146,9 @@ export default function Privacy() {
 
             <SectionCard icon="shield-check-mark" tone="success" title="Data retention &amp; compliance">
               <s-paragraph>
-                If you uninstall Shuffly, all data associated with your shop is deleted within
-                48 hours. Your collections keep whatever order they had at the time of uninstall
-                — Shuffly does not revert anything.
+                Shopify sends Shuffly a shop-deletion request 48 hours after uninstall. Shuffly
+                deletes the shop&apos;s stored app data when that request arrives. Your collections
+                keep whatever order they had at uninstall — Shuffly does not revert anything.
               </s-paragraph>
 
               <div style={{ marginTop: 24 }}>
@@ -181,9 +184,10 @@ export default function Privacy() {
 
             <SectionCard icon="chat" tone="warning" title="Third parties &amp; contact">
               <s-paragraph>
-                Shuffly does not sell or share your store&apos;s data with third parties.
-                Billing is handled entirely through Shopify&apos;s Billing API — Shuffly never
-                sees your payment details.
+                Shuffly does not sell your store&apos;s data. Shopify and the infrastructure used
+                to operate Shuffly process data only as needed to provide the service. Billing
+                is handled through Shopify&apos;s Billing API — Shuffly never sees your payment
+                details.
               </s-paragraph>
               <p style={{ marginTop: 12, marginBottom: 0 }}>
                 Questions about this policy or your data? Write to{" "}
@@ -194,8 +198,8 @@ export default function Privacy() {
             <p style={{ textAlign: "center", margin: "4px 0 8px" }}>
               <s-text color="subdued">
                 Share this policy outside Shopify Admin:{" "}
-                <s-link href={PUBLIC_POLICY_URL} target="_blank">
-                  {PUBLIC_POLICY_URL}
+                <s-link href="/privacy" target="_blank">
+                  Open the public policy
                 </s-link>
               </s-text>
             </p>

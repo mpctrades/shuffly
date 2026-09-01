@@ -9,6 +9,7 @@ import { getCollectionPreviewAndCount } from "../lib/collections.server";
 import { runShuffleForCollection, undoRun } from "../lib/shuffle-engine.server";
 import { computeNextRun, formatActivityTimestamp, formatNextRun, type ScheduleType } from "../lib/schedule.server";
 import { closeModal, useModalDismissWorkaround } from "../lib/polaris-modal";
+import { planOf, pruneExpiredUndoSnapshots } from "../lib/plans.server";
 
 const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 const RULES_SAVE_BAR_ID = "collection-rules-save-bar";
@@ -20,6 +21,8 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   if (!config) throw new Response("Not found", { status: 404 });
 
   const settings = await getOrCreateShopSettings(admin, shop);
+  const plan = planOf(settings.plan);
+  await pruneExpiredUndoSnapshots(shop, plan.id);
   // Only fetches the 16 products this page actually renders, plus Shopify's
   // own aggregate count — not the whole collection (see
   // getCollectionPreviewAndCount's doc comment). The real shuffle re-fetches
@@ -60,6 +63,9 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     runs,
     timezone: settings.timezone,
     nextRunLabel: formatNextRun(config.nextRunAt, settings.timezone),
+    allowedSchedules: plan.allowedSchedules,
+    canPin: plan.canPin,
+    undoRetentionDays: plan.undoRetentionDays,
   };
 };
 
@@ -72,13 +78,19 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
   const formData = await request.formData();
   const actionType = formData.get("_action");
   const settings = await getOrCreateShopSettings(admin, shop);
+  const plan = planOf(settings.plan);
 
   if (actionType === "save-settings") {
-    const pins = Math.max(0, Math.min(20, Number(formData.get("pins") ?? 0)));
+    const pins = plan.canPin
+      ? Math.max(0, Math.min(20, Number(formData.get("pins") ?? 0)))
+      : 0;
     const pushSoldOutToEnd = formData.get("pushSoldOutToEnd") === "on";
     const boostNewArrivals = formData.get("boostNewArrivals") === "on";
     const giveEveryoneATurn = formData.get("giveEveryoneATurn") === "on";
     const scheduleType = String(formData.get("scheduleType") ?? "DAILY") as ScheduleType;
+    if (!plan.allowedSchedules.includes(scheduleType)) {
+      return data({ ok: false, error: "That schedule isn't available on your plan." }, { status: 400 });
+    }
     const scheduleTime = String(formData.get("scheduleTime") ?? "06:00");
     const scheduleWeekdayRaw = formData.get("scheduleWeekday");
     const scheduleWeekday = scheduleWeekdayRaw != null && scheduleWeekdayRaw !== "" ? Number(scheduleWeekdayRaw) : null;
@@ -135,7 +147,17 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
 };
 
 export default function Workspace() {
-  const { config, sortOrder, productCount, preview, runs, nextRunLabel } = useLoaderData<typeof loader>();
+  const {
+    config,
+    sortOrder,
+    productCount,
+    preview,
+    runs,
+    nextRunLabel,
+    allowedSchedules,
+    canPin,
+    undoRetentionDays,
+  } = useLoaderData<typeof loader>();
   const navigation = useNavigation();
   const busy = navigation.state !== "idle";
   const isLoading = navigation.state === "loading" && navigation.location?.pathname === `/app/collections/${config.id}`;
@@ -256,18 +278,24 @@ export default function Workspace() {
         </ui-save-bar>
 
         <s-stack direction="block" gap="base">
-          <s-number-field
-            label="Pin the first"
-            value={String(pins)}
-            min={0}
-            max={20}
-            details="These never move."
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- currentTarget.value isn't in the typed event map
-            onInput={(e: any) => {
-              setPins(Math.max(0, Math.min(20, Number(e.currentTarget?.value ?? 0))));
-              markRulesDirty();
-            }}
-          />
+          {canPin ? (
+            <s-number-field
+              label="Pin the first"
+              value={String(pins)}
+              min={0}
+              max={20}
+              details="These never move."
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any -- currentTarget.value isn't in the typed event map
+              onInput={(e: any) => {
+                setPins(Math.max(0, Math.min(20, Number(e.currentTarget?.value ?? 0))));
+                markRulesDirty();
+              }}
+            />
+          ) : (
+            <s-paragraph>
+              Pinning is available on Starter and Pro. <s-link href="/app/plan">See plans</s-link>
+            </s-paragraph>
+          )}
           <s-switch
             label="Sold-out to the end"
             checked={pushSoldOutToEnd || undefined}
@@ -304,10 +332,10 @@ export default function Workspace() {
               markRulesDirty();
             }}
           >
-            <s-option value="DAILY">Daily</s-option>
-            <s-option value="TWICE_DAILY">Twice daily</s-option>
-            <s-option value="WEEKLY">Weekly</s-option>
-            <s-option value="MANUAL">Only when I press Shuffle</s-option>
+            {allowedSchedules.includes("DAILY") && <s-option value="DAILY">Daily</s-option>}
+            {allowedSchedules.includes("TWICE_DAILY") && <s-option value="TWICE_DAILY">Twice daily</s-option>}
+            {allowedSchedules.includes("WEEKLY") && <s-option value="WEEKLY">Weekly</s-option>}
+            {allowedSchedules.includes("MANUAL") && <s-option value="MANUAL">Only when I press Shuffle</s-option>}
           </s-select>
           <s-text-field
             label="Time (24h, HH:MM)"
@@ -421,7 +449,10 @@ export default function Workspace() {
             </s-table-body>
           </s-table>
         )}
-        <s-paragraph>Every run is saved so an earlier order can be put back with Undo.</s-paragraph>
+        <s-paragraph>
+          Activity remains logged. Order snapshots can be restored for {undoRetentionDays} day
+          {undoRetentionDays === 1 ? "" : "s"} on your plan.
+        </s-paragraph>
       </s-section>
 
       <s-modal ref={removeModalRef} heading={`Remove ${config.title} from Shuffly?`}>

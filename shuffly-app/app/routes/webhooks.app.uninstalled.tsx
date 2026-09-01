@@ -1,18 +1,18 @@
 import type { ActionFunctionArgs } from "react-router";
-import { authenticate } from "../shopify.server";
 import db from "../db.server";
+import { authenticateSessionlessWebhook } from "../lib/sessionless-webhook.server";
 
 export const action = async ({ request }: ActionFunctionArgs) => {
-  const { shop, session, topic } = await authenticate.webhook(request);
+  const { shop, topic } = await authenticateSessionlessWebhook(request, [
+    "APP_UNINSTALLED",
+  ]);
 
   console.log(`Received ${topic} webhook for ${shop}`);
 
   try {
-    // Webhook requests can trigger multiple times and after an app has already been uninstalled.
-    // If this webhook already ran, the session may have been deleted previously.
-    if (session) {
-      await db.session.deleteMany({ where: { shop } });
-    }
+    // Webhooks can be delivered more than once. deleteMany is intentionally
+    // idempotent and does not require an active/revoked Shopify session.
+    await db.session.deleteMany({ where: { shop } });
   } catch (err) {
     // Surfacing a 500 (rather than swallowing this) is deliberate: it tells
     // Shopify to retry, which is correct if this was a transient DB error —

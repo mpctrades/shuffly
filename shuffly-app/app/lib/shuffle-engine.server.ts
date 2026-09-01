@@ -1,5 +1,5 @@
 import type { AdminApiContext } from "@shopify/shopify-app-react-router/server";
-import type { CollectionConfig } from "@prisma/client";
+import type { CollectionConfig, Prisma } from "@prisma/client";
 import db from "../db.server";
 import {
   diffToMoves,
@@ -10,6 +10,7 @@ import {
 import { bumpTurnCounts, computeShuffledOrder, type ShuffleProductInput } from "./shuffle-algorithm.server";
 import { computeNextRun, type ScheduleType } from "./schedule.server";
 import { recordProductPositions, recordKnownProducts, invalidateInsightsCache } from "./insights.server";
+import { undoRetentionCutoff } from "./plans";
 
 export interface ShuffleRunSummary {
   ok: boolean;
@@ -253,10 +254,20 @@ export async function undoRun(
   runId?: string,
   pauseAfter = true,
 ): Promise<{ ok: boolean; error?: string }> {
+  const settings = await db.shopSettings.findUnique({ where: { shop } });
+  const cutoff = undoRetentionCutoff(settings?.plan);
+  const eligibleRun = {
+    shop,
+    collectionId: config.id,
+    status: "OK",
+    trigger: { in: ["SCHEDULED", "MANUAL"] },
+    createdAt: { gte: cutoff },
+    previousOrder: { not: null },
+  } satisfies Prisma.ShuffleRunWhereInput;
   const run = runId
-    ? await db.shuffleRun.findUnique({ where: { id: runId } })
+    ? await db.shuffleRun.findFirst({ where: { id: runId, ...eligibleRun } })
     : await db.shuffleRun.findFirst({
-        where: { collectionId: config.id, status: "OK", previousOrder: { not: null } },
+        where: eligibleRun,
         orderBy: { createdAt: "desc" },
       });
   if (!run?.previousOrder) return { ok: false, error: "Nothing to restore" };

@@ -7,7 +7,7 @@ interface ProductUpdateVariant {
   inventory_quantity: number;
 }
 
-// Powers the "sold out within a minute" reaction advertised on the
+// Powers the automatic sold-out reaction described on the
 // Workspace/Activity screens. We don't wait for the next scheduled shuffle —
 // as soon as Shopify tells us a tracked product just ran out, we push it to
 // the end of every running collection that has "sold-out to the end" on.

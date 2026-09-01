@@ -3,6 +3,7 @@ import {
   ApiVersion,
   AppDistribution,
   BillingInterval,
+  BillingReplacementBehavior,
   shopifyApp,
 } from "@shopify/shopify-app-react-router/server";
 import { PrismaSessionStorage } from "@shopify/shopify-app-session-storage-prisma";
@@ -17,6 +18,7 @@ import { startInProcessSchedulerOnce } from "./lib/scheduler.server";
 // monthly amount ("2 months free"), via plans.server.ts's annualPrice().
 export const BILLING_PLANS = {
   STARTER: {
+    replacementBehavior: BillingReplacementBehavior.ApplyImmediately,
     lineItems: [
       {
         amount: 3.99,
@@ -26,6 +28,7 @@ export const BILLING_PLANS = {
     ],
   },
   STARTER_ANNUAL: {
+    replacementBehavior: BillingReplacementBehavior.ApplyImmediately,
     lineItems: [
       {
         amount: 39.9,
@@ -35,6 +38,7 @@ export const BILLING_PLANS = {
     ],
   },
   PRO: {
+    replacementBehavior: BillingReplacementBehavior.ApplyImmediately,
     lineItems: [
       {
         amount: 7.99,
@@ -44,6 +48,7 @@ export const BILLING_PLANS = {
     ],
   },
   PRO_ANNUAL: {
+    replacementBehavior: BillingReplacementBehavior.ApplyImmediately,
     lineItems: [
       {
         amount: 79.9,
@@ -53,6 +58,7 @@ export const BILLING_PLANS = {
     ],
   },
   AGENCY: {
+    replacementBehavior: BillingReplacementBehavior.ApplyImmediately,
     lineItems: [
       {
         amount: 49,
@@ -62,6 +68,7 @@ export const BILLING_PLANS = {
     ],
   },
   AGENCY_ANNUAL: {
+    replacementBehavior: BillingReplacementBehavior.ApplyImmediately,
     lineItems: [
       {
         amount: 490,

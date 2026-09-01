@@ -1,6 +1,6 @@
 import type { ActionFunctionArgs } from "react-router";
-import { authenticate } from "../shopify.server";
 import db from "../db.server";
+import { authenticateSessionlessWebhook } from "../lib/sessionless-webhook.server";
 
 // The three mandatory GDPR/CCPA compliance webhooks — configured together
 // in shopify.app.toml under `compliance_topics` (not `topics`), which is why
@@ -11,23 +11,33 @@ import db from "../db.server";
 // customer data, so data_request/customers_redact have nothing to export or
 // erase — we just have to acknowledge them. shop/redact is the one with real
 // work to do: it's what backs the Settings screen's promise that Shuffly's
-// data is deleted within 48 hours of uninstall.
+// data is deleted when Shopify sends shop/redact 48 hours after uninstall.
 export const action = async ({ request }: ActionFunctionArgs) => {
-  const { shop, topic, payload } = await authenticate.webhook(request);
+  const { shop, topic } = await authenticateSessionlessWebhook(request, [
+    "CUSTOMERS_DATA_REQUEST",
+    "CUSTOMERS_REDACT",
+    "SHOP_REDACT",
+  ]);
 
   try {
     switch (topic) {
       case "CUSTOMERS_DATA_REQUEST":
       case "CUSTOMERS_REDACT":
         // eslint-disable-next-line no-console
-        console.log(`[compliance] ${topic} for ${shop}`, { customerId: payload?.customer?.id });
+        console.log(`[compliance] ${topic} for ${shop} — no customer data stored`);
         break;
       case "SHOP_REDACT":
         // eslint-disable-next-line no-console
         console.log(`[compliance] ${topic} for ${shop} — deleting all stored data`);
-        await db.collectionConfig.deleteMany({ where: { shop } });
-        await db.shopSettings.deleteMany({ where: { shop } });
-        await db.session.deleteMany({ where: { shop } });
+        await db.$transaction([
+          db.productPosition.deleteMany({ where: { shop } }),
+          db.positionSnapshot.deleteMany({ where: { shop } }),
+          db.productExposure.deleteMany({ where: { shop } }),
+          db.shuffleRun.deleteMany({ where: { shop } }),
+          db.collectionConfig.deleteMany({ where: { shop } }),
+          db.shopSettings.deleteMany({ where: { shop } }),
+          db.session.deleteMany({ where: { shop } }),
+        ]);
         break;
       default:
         // eslint-disable-next-line no-console
@@ -35,7 +45,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     }
   } catch (err) {
     // Deliberately a 500, not a swallowed error: SHOP_REDACT backs the
-    // "deleted within 48 hours" promise on the Settings/privacy pages. If
+    // deletion statement on the Settings/privacy pages. If
     // the delete actually failed, Shopify needs to see a failure and retry
     // — returning 200 here would let a real compliance failure go silent.
     // eslint-disable-next-line no-console

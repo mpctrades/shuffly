@@ -28,14 +28,14 @@ api_version = "2026-07"
   uri = "/webhooks/compliance"
   compliance_topics = [ "customers/data_request", "customers/redact", "shop/redact" ]
 
-  # Powers the "sold out within a minute" / "restocked" reactions on the
+  # Powers the automatic sold-out / restocked reactions on the
   # Workspace and Activity screens.
   [[webhooks.subscriptions]]
   uri = "/webhooks/products/update"
   topics = [ "products/update" ]
 
   # Inventory quantities live on InventoryLevel. This is the reliable trigger
-  # for the "sold out within a minute" behavior; the server resolves the item
+  # for automatic sold-out handling; the server resolves the item
   # back to its product and confirms total inventory before reordering.
   [[webhooks.subscriptions]]
   uri = "/webhooks/inventory-levels/update"
