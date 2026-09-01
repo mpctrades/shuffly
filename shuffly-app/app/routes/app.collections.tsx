@@ -6,9 +6,7 @@ import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { getOrCreateShopSettings } from "../lib/shop-context.server";
 import {
-  getTotalCollectionsCount,
   hydrateTrackedCollections,
-  listAllCollections,
   setCollectionManualSort,
   sortOrderLabel,
 } from "../lib/collections.server";
@@ -48,6 +46,12 @@ interface UntrackedCollectionItem {
   sortOrderLabel: string;
 }
 
+interface UntrackedCollectionsData {
+  items: UntrackedCollectionItem[];
+  hasMore: boolean;
+  totalStoreCollections: number | null;
+}
+
 // ============================== loader ==============================
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
@@ -55,13 +59,19 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const shop = session.shop;
   const now = new Date();
 
-  const settings = await getOrCreateShopSettings(admin, shop);
+  const [settings, tracked] = await Promise.all([
+    getOrCreateShopSettings(admin, shop),
+    db.collectionConfig.findMany({ where: { shop }, orderBy: { createdAt: "asc" } }),
+  ]);
   await pruneExpiredUndoSnapshots(shop, planOf(settings.plan).id);
-  const tracked = await db.collectionConfig.findMany({ where: { shop }, orderBy: { createdAt: "asc" } });
   const trackedIds = tracked.map((t) => t.id);
   const trackedGidsForHydration = tracked.map((t) => t.collectionGid);
 
-  const [hydratedTracked, untrackedResult, totalStoreCollections] = await Promise.all([
+  // Keep the first paint bounded to data that is actually visible in the
+  // tracked-collections workspace. The full catalogue scan and aggregate
+  // count used by the optional "Not shuffled yet" card live in a resource
+  // route and run only after the merchant asks to see that card.
+  const [hydratedTracked, latestRuns, recentRuns, lastScheduledRun] = await Promise.all([
     // Every tracked collection's live sort order/product count/thumbnails,
     // fetched by exact id — bounded by how many collections are tracked,
     // never by how many exist in the store (unlike a full-catalogue scan).
@@ -71,23 +81,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           return null;
         })
       : Promise.resolve(new Map()),
-    // Capped (see listAllCollections) — a store with hundreds of untracked
-    // collections doesn't get them all fetched/rendered on every page view;
-    // "Add collections" (with search) is the way to reach the rest.
-    listAllCollections(admin, { limit: 200 }).catch((err) => {
-      console.error("[app.collections] listAllCollections failed:", err);
-      return null;
-    }),
-    // Cheap aggregate count, just for the "X of Y collections" stat — no
-    // need to fetch every collection's full record just to count them.
-    getTotalCollectionsCount(admin).catch(() => null),
-  ]);
-
-  const hydrationFailed = hydratedTracked == null;
-  const liveByGid = hydratedTracked ?? new Map();
-  const untrackedFetchFailed = untrackedResult == null;
-
-  const [latestRuns, recentRuns, lastScheduledRun] = await Promise.all([
     trackedIds.length
       ? db.shuffleRun.findMany({
           where: { shop, collectionId: { in: trackedIds } },
@@ -112,6 +105,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         })
       : Promise.resolve(null),
   ]);
+
+  const hydrationFailed = hydratedTracked == null;
+  const liveByGid = hydratedTracked ?? new Map();
   const latestRunByCollectionId = new Map(latestRuns.map((r) => [r.collectionId, r]));
 
   const recentRunsByCollectionId = new Map<string, typeof recentRuns>();
@@ -154,8 +150,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     const allSoldOut = c.lastSoldOutCount != null && c.lastSoldOutCount > 0 && liveCount > 0 && c.lastSoldOutCount >= liveCount;
     return { config: c, live, needsAttention, allSoldOut };
   });
-
-  const trackedGidSet = new Set(tracked.map((t) => t.collectionGid));
 
   // ---- status row ----
   const runningCount = tracked.filter((t) => t.status === "RUNNING").length;
@@ -268,31 +262,13 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     };
   });
 
-  // ---- "Not shuffled yet" card: untracked collections, capped (see
-  // listAllCollections) — untrackedMore signals there are more than shown. ----
-  const untrackedCollections: UntrackedCollectionItem[] = untrackedFetchFailed
-    ? []
-    : (untrackedResult?.collections ?? [])
-        .filter((c) => !trackedGidSet.has(c.id))
-        .map((c) => ({
-          gid: c.id,
-          title: c.title,
-          productsCount: c.productsCount,
-          sortOrder: c.sortOrder,
-          sortOrderLabel: sortOrderLabel(c.sortOrder),
-        }));
-  const untrackedMore = !untrackedFetchFailed && (untrackedResult?.hasMore ?? false);
-
   const plan = planOf(settings.plan);
 
   return {
     rows,
     trackedTotal: tracked.length,
-    totalStoreCollections,
     hydrationFailed,
     attentionLines,
-    untrackedCollections,
-    untrackedMore,
     runningCount,
     pausedCount,
     nextRunAtMs: soonestNextRunMs ?? null,
@@ -613,11 +589,8 @@ export default function Collections() {
   const {
     rows,
     trackedTotal,
-    totalStoreCollections,
     hydrationFailed,
     attentionLines,
-    untrackedCollections,
-    untrackedMore,
     runningCount,
     nextRunAtMs,
     nextRunLabel,
@@ -644,6 +617,7 @@ export default function Collections() {
   const bulkRemoveModalRef = useRef<any>(null);
 
   const picker = useFetcher<AddCollectionsPickerData>({ key: "collections-picker" });
+  const untrackedDataFetcher = useFetcher<UntrackedCollectionsData>({ key: "untracked-collections" });
   const previewFetcher = useFetcher({ key: "shuffle-all-preview" });
   const remainingFetcher = useFetcher({ key: "shuffle-remaining" });
   const switchFetcher = useFetcher<{ ok: boolean; error?: string }>({ key: "switch-to-manual" });
@@ -903,6 +877,9 @@ export default function Collections() {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- suppressHydrationWarning is a React-only prop, absent from the generated custom-element prop types
   const noHydrationWarning = { suppressHydrationWarning: true } as any;
 
+  const untrackedCollections = untrackedDataFetcher.data?.items ?? [];
+  const untrackedMore = untrackedDataFetcher.data?.hasMore ?? false;
+  const totalStoreCollections = untrackedDataFetcher.data?.totalStoreCollections ?? null;
   const untrackedFetcher = useFetcher<{ ok: boolean; added?: number; skipped?: number }>({ key: "add-all-untracked" });
   function addAllUntracked() {
     untrackedFetcher.submit(
@@ -1061,7 +1038,10 @@ export default function Collections() {
             <div style={{ padding: "12px 16px" }}>
               <s-stack direction="inline" justifyContent="space-between" alignItems="center">
                 <s-text color="subdued">
-                  {trackedTotal} of {totalStoreCollections ?? "?"} collections · {totalProductsInRotation} products in rotation
+                  {totalStoreCollections == null
+                    ? `${trackedTotal} tracked collection${trackedTotal === 1 ? "" : "s"}`
+                    : `${trackedTotal} of ${totalStoreCollections} collections`}
+                  {" · "}{totalProductsInRotation} products in rotation
                   {" · "}Bars show the last 7 runs
                 </s-text>
                 <s-stack direction="inline" gap="small-200" alignItems="center">
@@ -1085,7 +1065,24 @@ export default function Collections() {
         )}
       </s-section>
 
-      {untrackedCollections.length > 0 && (
+      {!untrackedDataFetcher.data ? (
+        <div className="shuffly-untracked-card">
+          <div className="shuffly-untracked-header">
+            <div>
+              <s-text type="strong">Collections not shuffled yet</s-text>
+              <div style={{ marginTop: 4 }}>
+                <s-text color="subdued">View collections available to add to Shuffly.</s-text>
+              </div>
+            </div>
+            <s-button
+              onClick={() => untrackedDataFetcher.load("/app/collections/untracked")}
+              {...(untrackedDataFetcher.state !== "idle" ? { loading: true } : {})}
+            >
+              View collections
+            </s-button>
+          </div>
+        </div>
+      ) : untrackedCollections.length > 0 ? (
         <NotShuffledYetCard
           items={untrackedCollections}
           hasMore={untrackedMore}
@@ -1093,6 +1090,12 @@ export default function Collections() {
           addingAll={untrackedFetcher.state !== "idle"}
           onFindMore={openAddModal}
         />
+      ) : (
+        <div className="shuffly-untracked-card">
+          <div className="shuffly-untracked-header">
+            <s-text color="subdued">Every collection is already being shuffled.</s-text>
+          </div>
+        </div>
       )}
 
       {planLimit != null && (
@@ -1711,7 +1714,9 @@ function StatusRow({
             {productsActuallyMoving} of {totalProductsInRotation} products
           </div>
           <div className="shuffly-status-detail">
-            across {trackedTotal} of your {totalStoreCollections ?? "?"} collections
+            {totalStoreCollections == null
+              ? `across ${trackedTotal} tracked collection${trackedTotal === 1 ? "" : "s"}`
+              : `across ${trackedTotal} of your ${totalStoreCollections} collections`}
           </div>
         </div>
       </div>

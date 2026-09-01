@@ -36,8 +36,8 @@ export default function App() {
       <head>
         <meta charSet="utf-8" />
         <meta name="viewport" content="width=device-width,initial-scale=1" />
-        <AppBridgeHead apiKey={apiKey} />
         <link rel="preconnect" href="https://cdn.shopify.com/" />
+        <AppBridgeHead apiKey={apiKey} />
         <link
           rel="stylesheet"
           href="https://cdn.shopify.com/static/fonts/inter/v4/styles.css"
@@ -70,6 +70,7 @@ export function ErrorBoundary() {
       <head>
         <meta charSet="utf-8" />
         <meta name="viewport" content="width=device-width,initial-scale=1" />
+        <link rel="preconnect" href="https://cdn.shopify.com/" />
         <AppBridgeHead apiKey={rootData?.apiKey ?? ""} />
         <Meta />
         <Links />
