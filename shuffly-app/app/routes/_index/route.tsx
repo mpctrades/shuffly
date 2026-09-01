@@ -13,7 +13,13 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     throw redirect(`/app?${url.searchParams.toString()}`);
   }
 
-  return { showForm: Boolean(login) };
+  // Shopify App Store review requirement 2.3.1: apps must not ask a merchant
+  // to manually type a myshopify.com domain during install/config. Real
+  // installs always arrive here with a `shop` param (redirected above)
+  // straight from the Shopify Admin / App Store — this form only exists as
+  // a local-dev convenience for hitting the bare app URL directly, so it
+  // must never render in production.
+  return { showForm: process.env.NODE_ENV !== "production" && Boolean(login) };
 };
 
 export default function App() {

@@ -1,23 +1,37 @@
+import { useEffect } from "react";
 import type { HeadersFunction, LoaderFunctionArgs } from "react-router";
-import { Outlet, useLoaderData, useRouteError, useRouteLoaderData } from "react-router";
+import { Outlet, useNavigate, useRouteError } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { AppProvider } from "@shopify/shopify-app-react-router/react";
 
 import { authenticate } from "../shopify.server";
-import type { loader as rootLoader } from "../root";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   await authenticate.admin(request);
-
-  // eslint-disable-next-line no-undef
-  return { apiKey: process.env.SHOPIFY_API_KEY || "" };
+  return null;
 };
 
-export default function App() {
-  const { apiKey } = useLoaderData<typeof loader>();
+function EmbeddedAppProvider({ children }: { children: React.ReactNode }) {
+  const navigate = useNavigate();
 
+  useEffect(() => {
+    const handleNavigate = (event: Event) => {
+      const href = (event.target as Element | null)?.getAttribute("href");
+      if (href) navigate(href);
+    };
+
+    document.addEventListener("shopify:navigate", handleNavigate);
+    return () => document.removeEventListener("shopify:navigate", handleNavigate);
+  }, [navigate]);
+
+  // App Bridge is loaded once in root.tsx's document <head>, as required by
+  // Built for Shopify. This provider still loads Polaris for every app route.
+  return <AppProvider embedded={false}>{children}</AppProvider>;
+}
+
+export default function App() {
   return (
-    <AppProvider embedded apiKey={apiKey}>
+    <EmbeddedAppProvider>
       <s-app-nav>
         <s-link href="/app/collections">Collections</s-link>
         <s-link href="/app/activity">Activity</s-link>
@@ -28,22 +42,18 @@ export default function App() {
         <s-link href="https://shuffly.mpctrades.com" target="_blank">Website</s-link>
       </s-app-nav>
       <Outlet />
-    </AppProvider>
+    </EmbeddedAppProvider>
   );
 }
 
 // Shopify needs React Router to catch some thrown responses, so that their headers are included in the response.
-// Wrapped in AppProvider so a thrown response (e.g. a reauth redirect) still
-// renders with Polaris styling and the App Bridge script, instead of the
-// bare, unstyled HTML the library's boundary.error() returns on its own.
-// apiKey comes from the root loader, not this route's own — this route's
-// loader (which calls authenticate.admin) may be the very thing that threw.
+// Keep Polaris styling and App Bridge navigation behavior when Shopify's
+// authentication helper throws a response handled by this route boundary.
 export function ErrorBoundary() {
-  const rootData = useRouteLoaderData<typeof rootLoader>("root");
   return (
-    <AppProvider embedded apiKey={rootData?.apiKey ?? ""}>
+    <EmbeddedAppProvider>
       {boundary.error(useRouteError())}
-    </AppProvider>
+    </EmbeddedAppProvider>
   );
 }
 

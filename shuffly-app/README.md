@@ -20,9 +20,9 @@ local dev data.
 - **Plan** — Free / Starter / Pro / Agency, wired to the real Shopify Billing API (subscribe, cancel, test mode outside production).
 - **Onboarding** — pick collections, try a real (unsaved) shuffle preview, turn it on.
 - **Automatic scheduling** — an in-process poller (`app/lib/scheduler.server.ts`) runs due shuffles every minute; for multi-replica/serverless deployments, point an external cron at `POST /api/cron/run-shuffles` instead (protect it with a `CRON_SECRET` env var) and set `DISABLE_IN_PROCESS_SCHEDULER=1`.
-- **Sold-out reaction** — a `products/update` webhook pushes a product to the end of every collection that wants that, within moments of it selling out, without waiting for the next scheduled run.
+- **Sold-out reaction** — `inventory_levels/update` (with `products/update` as a fallback) pushes a product to the end of every collection that wants that, within moments of it selling out, without waiting for the next scheduled run.
 - **Compliance webhooks** — `customers/data_request`, `customers/redact`, `shop/redact` (the last one cascade-deletes all of that shop's Shuffly data — see Settings' "If you uninstall" promise).
-- **Only the scopes it uses** — `read_products`, `write_products`. No customer, order, or theme access.
+- **Only the scopes it uses** — `read_products`, `write_products`, `read_inventory`. No customer, order, or theme access.
 
 All the Admin GraphQL used here (`collectionReorderProducts`, `collectionUpdate`, pagination, the Job-polling pattern) was validated against the live 2026-07 schema while building this — see `app/lib/collections.server.ts` for the exact operations.
 

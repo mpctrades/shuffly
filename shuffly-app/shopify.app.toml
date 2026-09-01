@@ -6,12 +6,12 @@ embedded = true
 name = "Shuffly"
 
 [access_scopes]
-# Only the scopes Shuffly actually uses: reading products/collections, and
-# reordering products inside manually-sorted collections.
-scopes = "read_products,write_products"
+# Only the scopes Shuffly actually uses: reading products/collections and
+# inventory, and reordering products inside manually-sorted collections.
+scopes = "read_products,write_products,read_inventory"
 
 [webhooks]
-api_version = "2026-10"
+api_version = "2026-07"
 
   [[webhooks.subscriptions]]
   uri = "/webhooks/app/uninstalled"
@@ -34,8 +34,15 @@ api_version = "2026-10"
   uri = "/webhooks/products/update"
   topics = [ "products/update" ]
 
+  # Inventory quantities live on InventoryLevel. This is the reliable trigger
+  # for the "sold out within a minute" behavior; the server resolves the item
+  # back to its product and confirms total inventory before reordering.
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/inventory-levels/update"
+  topics = [ "inventory_levels/update" ]
+
 [auth]
 redirect_urls = [ "https://dev.shuffly.mpctrades.com/auth/callback" ]
 
 [build]
-automatically_update_urls_on_dev = true
+automatically_update_urls_on_dev = false

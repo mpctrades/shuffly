@@ -1,44 +1,14 @@
-import { useEffect } from "react";
-import { Links, Meta, Outlet, Scripts, ScrollRestoration, useRouteError } from "react-router";
+import {
+  Links,
+  Meta,
+  Outlet,
+  Scripts,
+  ScrollRestoration,
+  useLoaderData,
+  useRouteError,
+  useRouteLoaderData,
+} from "react-router";
 import { AppProvider } from "@shopify/shopify-app-react-router/react";
-
-// TEMPORARY — CLS/LCP diagnostic for the admin-performance investigation.
-// Dev-only: import.meta.env.DEV is statically known at build time, so Vite
-// tree-shakes this entire branch (including the web-vitals import) out of
-// the production bundle. Remove this whole component once the fix is
-// verified — it is not meant to ship.
-function WebVitalsDebug() {
-  useEffect(() => {
-    if (!import.meta.env.DEV) return;
-    let cancelled = false;
-    import("web-vitals/attribution").then(({ onCLS, onLCP }) => {
-      if (cancelled) return;
-      onCLS((m) => {
-        // eslint-disable-next-line no-console
-        console.log("[CLS]", m.value, m.attribution.largestShiftTarget, m.attribution.largestShiftSource);
-      });
-      onLCP((m) => {
-        // eslint-disable-next-line no-console
-        console.log(
-          "[LCP]",
-          m.value,
-          // `element` in older web-vitals; this installed version (6.x)
-          // renamed the field to `target` but kept the same meaning — a
-          // selector for the LCP element.
-          m.attribution.target,
-          "ttfb",
-          m.attribution.timeToFirstByte,
-          "render",
-          m.attribution.elementRenderDelay,
-        );
-      });
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-  return null;
-}
 
 // Exposed so any ErrorBoundary (including this one, and app.tsx's nested
 // one) can read the API key without depending on a route-specific loader
@@ -49,12 +19,24 @@ export const loader = async () => {
   return { apiKey: process.env.SHOPIFY_API_KEY || "" };
 };
 
+function AppBridgeHead({ apiKey }: { apiKey: string }) {
+  return (
+    <>
+      <meta name="shopify-api-key" content={apiKey} />
+      <script src="https://cdn.shopify.com/shopifycloud/app-bridge.js" />
+    </>
+  );
+}
+
 export default function App() {
+  const { apiKey } = useLoaderData<typeof loader>();
+
   return (
     <html lang="en">
       <head>
         <meta charSet="utf-8" />
         <meta name="viewport" content="width=device-width,initial-scale=1" />
+        <AppBridgeHead apiKey={apiKey} />
         <link rel="preconnect" href="https://cdn.shopify.com/" />
         <link
           rel="stylesheet"
@@ -67,7 +49,6 @@ export default function App() {
         <Links />
       </head>
       <body>
-        <WebVitalsDebug />
         <Outlet />
         <ScrollRestoration />
         <Scripts />
@@ -80,17 +61,16 @@ export default function App() {
 // ErrorBoundary (e.g. app.tsx's, which only handles Shopify's own
 // ErrorResponse shape and rethrows everything else). Root has no parent to
 // supply <html>/<head>/<body>, so it has to render the full document itself.
-// Rendered `embedded={false}` on purpose: by the time an error gets here we
-// can no longer assume a valid shop/host pair for App Bridge to initialize
-// against, so this only guarantees Polaris styling, not embedding.
 export function ErrorBoundary() {
   useRouteError();
+  const rootData = useRouteLoaderData<typeof loader>("root");
 
   return (
     <html lang="en">
       <head>
         <meta charSet="utf-8" />
         <meta name="viewport" content="width=device-width,initial-scale=1" />
+        <AppBridgeHead apiKey={rootData?.apiKey ?? ""} />
         <Meta />
         <Links />
       </head>
