@@ -425,12 +425,14 @@
   .price-feats li { font-size: 13.5px; display: flex; gap: 8px; align-items: flex-start; }
   .price-feats li::before { content: "✓"; color: var(--orange-dark); font-weight: 800; flex: none; }
   .price-card .btn { margin-top: 22px; width: 100%; }
+  .price-cta-note { margin-top: 8px; font-size: 11.5px; line-height: 1.4; text-align: center; color: var(--grey-500); }
   .price-trust {
     display: flex; justify-content: flex-start; gap: 20px; flex-wrap: wrap;
     margin-top: 26px; font-size: 13px; color: var(--grey-600);
   }
   .price-trust span { display: inline-flex; align-items: center; gap: 6px; }
   .price-trust span::before { content: "✓"; color: var(--orange-dark); font-weight: 800; }
+  .price-disclaimer { margin-top: 14px; font-size: 12.5px; line-height: 1.5; color: var(--grey-500); max-width: 640px; }
 
   /* ---------- faq ---------- */
   #faq .section-num { color: var(--orange); font-size: 11px; font-weight: 800; letter-spacing: 0.09em; text-transform: uppercase; }
@@ -1117,6 +1119,7 @@
             <li>Automatic sold-out handling</li>
           </ul>
           <a class="btn btn-ghost" href="#contact">Get early access</a>
+          <p class="price-cta-note">No payment collected here — Free stays $0, billed by Shopify.</p>
         </div>
 
         <div class="price-card popular">
@@ -1136,6 +1139,7 @@
             <li>7-day undo history</li>
           </ul>
           <a class="btn btn-primary" href="#contact">Get early access</a>
+          <p class="price-cta-note">No payment collected here — subscribing happens inside Shopify, via Shopify Billing.</p>
         </div>
 
         <div class="price-card">
@@ -1154,6 +1158,7 @@
             <li>Priority support</li>
           </ul>
           <a class="btn btn-ghost" href="#contact">Get early access</a>
+          <p class="price-cta-note">No payment collected here — subscribing happens inside Shopify, via Shopify Billing.</p>
         </div>
       </div>
       <div class="price-trust">
@@ -1161,6 +1166,7 @@
         <span>Change plan instantly</span>
         <span>Billed through Shopify</span>
       </div>
+      <p class="price-disclaimer">Every paid plan is billed exclusively through Shopify's own Billing API, approved on Shopify's native charge screen when you install the app — this site never collects payment details or arranges pricing directly.</p>
     </div>
   </section>
 
@@ -1258,7 +1264,7 @@
             <span>Is Shuffly on the Shopify App Store yet?</span><span class="faq-toggle"></span>
           </button>
           <div class="faq-panel" id="faq-panel-9" role="region" aria-labelledby="faq-btn-9">
-            <p>Not yet — it's still in build. We're taking on early-access stores directly while we finish it. ("Shuffly" is a working title.)</p>
+            <p>It's currently submitted for Shopify App Store review. In the meantime, we're onboarding early-access stores directly — every plan, including these, is still billed exclusively through Shopify's own Billing API once the app is installed, never through us.</p>
           </div>
         </div>
 
@@ -1307,7 +1313,6 @@
             <select id="cf-topic" name="topic">
               <option>General question</option>
               <option>Early access</option>
-              <option>Custom pricing / agency</option>
               <option>Other</option>
             </select>
           </div>
@@ -1326,7 +1331,7 @@
 
 <footer>
   <div class="wrap footer-row">
-    <p class="footer-disclaimer">Shuffly is a working title and is not yet available on the Shopify App Store. Not affiliated with or endorsed by Shopify Inc.</p>
+    <p class="footer-disclaimer">Shuffly is currently submitted for Shopify App Store review. Not affiliated with or endorsed by Shopify Inc.</p>
     <div class="footer-links">
       <a href="#how-it-works">How it works</a>
       <a href="#pricing">Pricing</a>
