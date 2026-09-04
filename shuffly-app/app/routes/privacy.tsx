@@ -21,7 +21,7 @@ import { AppProvider } from "@shopify/shopify-app-react-router/react";
 // the one small brand touch. Still no loader/async data, so still nothing
 // that can shift in after first paint.
 const LAST_UPDATED = "September 1, 2026";
-const SUPPORT_EMAIL = "support@mpctrades.com";
+const SUPPORT_EMAIL = "team@mapetitecoree.com";
 // Same value as shopify.app.toml's application_url. Hardcoded rather than
 // read from a loader (which this static page otherwise has no need for) —
 // update this if the app ever moves off the "dev" domain.
