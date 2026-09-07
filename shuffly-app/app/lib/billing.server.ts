@@ -20,12 +20,14 @@ import db from "../db.server";
 import { planOf, type PlanId } from "./plans";
 
 // Keyed by *normalized* plan name (see normalizeSubscriptionName) so the
-// exact spelling Shopify reports doesn't matter. It varies more than you'd
-// hope: the managed-pricing plans are titled "Free", "Starter" and "PRO" in
-// the Partner Dashboard, while the older Billing API definitions used
-// "STARTER"/"STARTER_ANNUAL". All of those have to land on the same PlanId —
-// a merchant on the annual Starter plan is still just "STARTER" as far as
-// feature gating and ShopSettings.plan are concerned.
+// exact spelling Shopify reports doesn't matter. Today it happens to match
+// anyway — the Partner Dashboard's "Plan name for merchant invoices", which
+// is what `billing.check()` reports, is `STARTER`, `PRO` and `Free` (the
+// plans' *display* names on the pricing page are different fields: "Free",
+// "Starter", "PRO"). Normalizing is insurance against a rename, and against
+// the older Billing API spellings like "STARTER_ANNUAL": all of them have to
+// land on the same PlanId, since a merchant on the annual Starter plan is
+// still just "STARTER" as far as feature gating and ShopSettings.plan go.
 const SUBSCRIPTION_NAME_TO_PLAN: Record<string, PlanId> = {
   FREE: "FREE",
   STARTER: "STARTER",
