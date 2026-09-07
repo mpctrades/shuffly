@@ -1,101 +1,62 @@
-import { describe, expect, it, vi } from "vitest";
-import {
-  planIdFromSubscriptionName,
-  confirmationUrlFromBillingRedirect,
-  requestSubscriptionConfirmationUrl,
-  planApprovalReturnUrl,
-} from "./billing.server";
+import { describe, expect, it } from "vitest";
+import { planIdFromSubscriptionName, managedPricingUrl } from "./billing.server";
 
-// Only planIdFromSubscriptionName is tested here — reconcilePlanFromSubscriptions
+// Only the two pure functions are tested here — reconcilePlanFromSubscriptions
 // and previewDowngradeImpact both hit the real Prisma db and belong in an
-// integration test against a real (test) database instead of a unit test.
+// integration test against a real (test) database instead of a unit test, and
+// fetchAppHandle needs an Admin GraphQL client.
 describe("planIdFromSubscriptionName", () => {
-  it("maps both the monthly and annual subscription names to the same PlanId", () => {
-    expect(planIdFromSubscriptionName("STARTER")).toBe("STARTER");
-    expect(planIdFromSubscriptionName("STARTER_ANNUAL")).toBe("STARTER");
+  it("maps the managed-pricing plan titles, whatever their casing", () => {
+    // These are the exact strings the Partner Dashboard plans produce.
+    expect(planIdFromSubscriptionName("Free")).toBe("FREE");
+    expect(planIdFromSubscriptionName("Starter")).toBe("STARTER");
     expect(planIdFromSubscriptionName("PRO")).toBe("PRO");
-    expect(planIdFromSubscriptionName("PRO_ANNUAL")).toBe("PRO");
+  });
+
+  it("maps the legacy Billing API names to the same PlanIds", () => {
+    expect(planIdFromSubscriptionName("STARTER")).toBe("STARTER");
+    expect(planIdFromSubscriptionName("PRO")).toBe("PRO");
     expect(planIdFromSubscriptionName("AGENCY")).toBe("AGENCY");
+  });
+
+  it("ignores a billing-cycle suffix, so annual is the same plan", () => {
+    expect(planIdFromSubscriptionName("STARTER_ANNUAL")).toBe("STARTER");
+    expect(planIdFromSubscriptionName("PRO_ANNUAL")).toBe("PRO");
     expect(planIdFromSubscriptionName("AGENCY_ANNUAL")).toBe("AGENCY");
+    expect(planIdFromSubscriptionName("Starter (yearly)")).toBe("STARTER");
+    expect(planIdFromSubscriptionName("Pro — Annual")).toBe("PRO");
+    expect(planIdFromSubscriptionName("Starter monthly")).toBe("STARTER");
   });
 
   it("defaults to FREE for undefined, empty, or unrecognized names", () => {
+    // FREE is the safe default: an unrecognized name must never silently
+    // grant paid entitlements.
     expect(planIdFromSubscriptionName(undefined)).toBe("FREE");
     expect(planIdFromSubscriptionName("")).toBe("FREE");
     expect(planIdFromSubscriptionName("SOME_OTHER_CHARGE")).toBe("FREE");
   });
 });
 
-// The two shapes Shopify's `billing.request` actually throws. Getting the
-// confirmation URL out of them is the whole reason plan switching works at
-// all from inside the embedded admin, so both are pinned here.
-describe("confirmationUrlFromBillingRedirect", () => {
-  const CONFIRMATION = "https://admin.shopify.com/store/demo/charges/shuffly/123/confirm";
-
-  it("reads the App Bridge reauthorize header off the 401 a session-token fetch gets", () => {
-    const thrown = new Response(undefined, {
-      status: 401,
-      headers: { "X-Shopify-API-Request-Failure-Reauthorize-Url": CONFIRMATION },
-    });
-    expect(confirmationUrlFromBillingRedirect(thrown)).toBe(CONFIRMATION);
-  });
-
-  it("reads the exitIframe param off the 302 a document request gets", () => {
-    const thrown = new Response(undefined, {
-      status: 302,
-      headers: {
-        Location: `/auth/exit-iframe?shop=demo.myshopify.com&exitIframe=${encodeURIComponent(CONFIRMATION)}`,
-      },
-    });
-    expect(confirmationUrlFromBillingRedirect(thrown)).toBe(CONFIRMATION);
-  });
-
-  it("falls back to an absolute Location (non-embedded apps)", () => {
-    const thrown = new Response(undefined, { status: 302, headers: { Location: CONFIRMATION } });
-    expect(confirmationUrlFromBillingRedirect(thrown)).toBe(CONFIRMATION);
-  });
-
-  it("returns null for anything that isn't one of those redirects", () => {
-    expect(confirmationUrlFromBillingRedirect(new Error("boom"))).toBeNull();
-    expect(confirmationUrlFromBillingRedirect(new Response(undefined, { status: 500 }))).toBeNull();
-  });
-});
-
-describe("requestSubscriptionConfirmationUrl", () => {
-  const CONFIRMATION = "https://admin.shopify.com/store/demo/charges/shuffly/123/confirm";
-
-  it("turns the thrown redirect into a returned URL", async () => {
-    await expect(
-      requestSubscriptionConfirmationUrl(() => {
-        throw new Response(undefined, {
-          status: 401,
-          headers: { "X-Shopify-API-Request-Failure-Reauthorize-Url": CONFIRMATION },
-        });
-      }),
-    ).resolves.toBe(CONFIRMATION);
-  });
-
-  it("rethrows a genuine failure instead of swallowing it as a redirect", async () => {
-    await expect(
-      requestSubscriptionConfirmationUrl(() => Promise.reject(new Error("Billing API down"))),
-    ).rejects.toThrow("Billing API down");
-  });
-});
-
-describe("planApprovalReturnUrl", () => {
-  it("returns the merchant to the Plan page inside the embedded admin", () => {
-    vi.stubEnv("SHOPIFY_API_KEY", "test-client-id");
-    expect(planApprovalReturnUrl("demo.myshopify.com", "https://app.example.com")).toBe(
-      "https://admin.shopify.com/store/demo/apps/test-client-id/app/plan",
+// Shopify runs every plan change on this page under managed pricing, so a
+// wrong URL here is the whole feature broken — it has to be the admin host,
+// keyed by store handle and app handle.
+describe("managedPricingUrl", () => {
+  it("builds the admin pricing-plans URL from the shop domain", () => {
+    expect(managedPricingUrl("shuffly-kd37m7ec.myshopify.com", "shuffly")).toBe(
+      "https://admin.shopify.com/store/shuffly-kd37m7ec/charges/shuffly/pricing_plans",
     );
-    vi.unstubAllEnvs();
   });
 
-  it("falls back to the app origin when the API key is missing", () => {
-    vi.stubEnv("SHOPIFY_API_KEY", "");
-    expect(planApprovalReturnUrl("demo.myshopify.com", "https://app.example.com")).toBe(
-      "https://app.example.com/app/plan",
+  it("strips the .myshopify.com suffix case-insensitively", () => {
+    expect(managedPricingUrl("Demo-Store.MyShopify.com", "shuffly")).toBe(
+      "https://admin.shopify.com/store/Demo-Store/charges/shuffly/pricing_plans",
     );
-    vi.unstubAllEnvs();
+  });
+
+  it("returns null without an app handle rather than guessing one", () => {
+    // A guessed handle lands the merchant on an unrelated admin page, so the
+    // Plan page shows a banner instead of a button that goes nowhere.
+    expect(managedPricingUrl("demo.myshopify.com", null)).toBeNull();
+    expect(managedPricingUrl("demo.myshopify.com", "")).toBeNull();
   });
 });

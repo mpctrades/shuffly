@@ -1,27 +1,48 @@
-// Bridges Shopify's real Billing API (admin.billing.* — see the Plan
-// screen, app/routes/app.plan.tsx) to Shuffly's own ShopSettings.plan
-// cache, and previews what a downgrade would pause before it happens.
+// Bridges Shopify's billing state to Shuffly's own ShopSettings.plan cache,
+// and previews what a downgrade would pause before it happens.
 //
-// Shopify is the source of truth for "is this shop actually paying" —
-// ShopSettings.plan/activeSubscriptionId is just a fast local copy of that,
+// Shuffly uses **Shopify managed pricing**: the plans live in the Partner
+// Dashboard and Shopify renders its own plan-selection page, so this app
+// never creates charges itself. Requesting one is in fact refused outright —
+// `appSubscriptionCreate` answers "Cannot use the Billing API (to create
+// charges) when on Shopify App Pricing." Every plan change therefore hands
+// the merchant off to `managedPricingUrl()` below, and Shopify runs the
+// approval, replacement, proration and cancellation.
+//
+// Reading stays ours: `billing.check()` still works under managed pricing,
+// so Shopify remains the source of truth for "is this shop actually paying"
+// and ShopSettings.plan/activeSubscriptionId is just a fast local copy,
 // refreshed every time the Plan page loads (reconcilePlanFromSubscriptions
 // below) so the rest of the app (collection caps, schedule granularity)
-// never has to call the Billing API itself.
+// never has to ask Shopify itself.
+import type { AdminApiContext } from "@shopify/shopify-app-react-router/server";
 import db from "../db.server";
 import { planOf, type PlanId } from "./plans";
 
-// Both the monthly and annual subscription names (see BILLING_PLANS in
-// shopify.server.ts) resolve back to the same PlanId — a merchant on the
-// annual Starter plan is still just "STARTER" as far as feature gating and
-// ShopSettings.plan are concerned.
+// Keyed by *normalized* plan name (see normalizeSubscriptionName) so the
+// exact spelling Shopify reports doesn't matter. It varies more than you'd
+// hope: the managed-pricing plans are titled "Free", "Starter" and "PRO" in
+// the Partner Dashboard, while the older Billing API definitions used
+// "STARTER"/"STARTER_ANNUAL". All of those have to land on the same PlanId —
+// a merchant on the annual Starter plan is still just "STARTER" as far as
+// feature gating and ShopSettings.plan are concerned.
 const SUBSCRIPTION_NAME_TO_PLAN: Record<string, PlanId> = {
+  FREE: "FREE",
   STARTER: "STARTER",
-  STARTER_ANNUAL: "STARTER",
   PRO: "PRO",
-  PRO_ANNUAL: "PRO",
   AGENCY: "AGENCY",
-  AGENCY_ANNUAL: "AGENCY",
 };
+
+/** Case, spacing, punctuation and a trailing billing-cycle word are all
+ * noise when deciding which PlanId a subscription is: "PRO", "Pro",
+ * "Pro (yearly)" and "PRO_ANNUAL" are one plan. Strips everything that
+ * isn't a letter, then drops a cycle suffix. */
+function normalizeSubscriptionName(name: string): string {
+  return name
+    .toUpperCase()
+    .replace(/[^A-Z]/g, "")
+    .replace(/(ANNUALLY|ANNUAL|YEARLY|MONTHLY|PERYEAR|PERMONTH)$/, "");
+}
 
 export interface ActiveSubscriptionLike {
   id: string;
@@ -47,11 +68,12 @@ export interface BillingSummary {
   isAnnual: boolean;
 }
 
-/** Shopify's own name for the plan the merchant approved — map it back to
- * one of Shuffly's four PlanIds. Unknown/no subscription = FREE. */
+/** Shopify's own name for the plan the merchant is subscribed to — map it
+ * back to one of Shuffly's four PlanIds. Unknown/no subscription = FREE, so
+ * an unrecognised plan name never silently grants paid entitlements. */
 export function planIdFromSubscriptionName(name: string | undefined): PlanId {
   if (!name) return "FREE";
-  return SUBSCRIPTION_NAME_TO_PLAN[name] ?? "FREE";
+  return SUBSCRIPTION_NAME_TO_PLAN[normalizeSubscriptionName(name)] ?? "FREE";
 }
 
 /** Reconcile ShopSettings against whatever `billing.check()` actually
@@ -113,84 +135,47 @@ export async function previewDowngradeImpact(
 }
 
 // ---------------------------------------------------------------------------
-// Starting a plan change from inside the embedded admin
+// Handing a plan change off to Shopify's managed pricing page
 // ---------------------------------------------------------------------------
 
-/** The header Shopify's React Router library uses to hand an out-of-app
- * redirect target back to the browser. */
-const REAUTH_URL_HEADER = "X-Shopify-API-Request-Failure-Reauthorize-Url";
+/** Shopify keys the managed pricing page by the app's *handle*, not its
+ * client id — `/charges/<client id>/pricing_plans` just bounces to the
+ * generic Apps settings list. The handle isn't in any env var the CLI
+ * writes, so read it back from the installation itself. */
+const APP_HANDLE_QUERY = `#graphql
+  query ShufflyAppHandle {
+    currentAppInstallation {
+      app {
+        handle
+      }
+    }
+  }`;
 
-/** `billing.request()` never resolves — it always throws, and *what* it
- * throws depends on how the request reached us:
- *
- *  - a session-token fetch (which is every `useFetcher` submit inside the
- *    embedded admin, because App Bridge attaches an `Authorization` header):
- *    a bare **401** whose only payload is the confirmation URL in
- *    `REAUTH_URL_HEADER`;
- *  - an embedded document request: a **302** to
- *    `/auth/exit-iframe?…&exitIframe=<confirmationUrl>`.
- *
- * React Router surfaces that 401 as an ErrorResponse, so the Plan page was
- * torn down and replaced by app.tsx's error boundary before anything could
- * read the header — the merchant never reached Shopify's approval screen and
- * no plan could be changed from inside the app. Unwrap the throw here and
- * return the confirmation URL as an ordinary string instead, so the action
- * can send it back as JSON and the client can open it in the top-level
- * window itself. Returns null for anything that isn't one of those two
- * redirect shapes, so genuine failures still propagate. */
-export function confirmationUrlFromBillingRedirect(thrown: unknown): string | null {
-  if (!(thrown instanceof Response)) return null;
-
-  const reauthUrl = thrown.headers.get(REAUTH_URL_HEADER);
-  if (reauthUrl) return reauthUrl;
-
-  const location = thrown.headers.get("Location");
-  if (!location) return null;
+/** `SHOPIFY_APP_HANDLE` wins when set — it lets a deployment pin the handle
+ * without a round trip (and keeps the Plan page working if the query ever
+ * starts coming back empty). Otherwise ask Shopify. Returns null when
+ * neither source produces one, which the Plan page shows as a banner rather
+ * than a dead button. */
+export async function fetchAppHandle(admin: AdminApiContext): Promise<string | null> {
+  const fromEnv = process.env.SHOPIFY_APP_HANDLE?.trim();
+  if (fromEnv) return fromEnv;
   try {
-    // Relative for the exit-iframe hop, absolute for non-embedded apps — the
-    // base is only there to let relative values parse at all.
-    const exitIframe = new URL(location, "https://shuffly.invalid").searchParams.get("exitIframe");
-    if (exitIframe) return exitIframe;
-    return /^https?:\/\//i.test(location) ? location : null;
-  } catch {
+    const res = await admin.graphql(APP_HANDLE_QUERY);
+    const json = await res.json();
+    return json.data?.currentAppInstallation?.app?.handle ?? null;
+  } catch (err) {
+    console.error("[billing] couldn't read the app handle:", err);
     return null;
   }
 }
 
-/** Run a `billing.request(...)` call and give back the Shopify approval URL
- * the merchant has to visit. Takes a thunk rather than the billing object so
- * the caller keeps the library's own narrow typing of `plan`. */
-export async function requestSubscriptionConfirmationUrl(
-  requestBilling: () => Promise<unknown>,
-): Promise<string> {
-  try {
-    await requestBilling();
-  } catch (thrown) {
-    const url = confirmationUrlFromBillingRedirect(thrown);
-    if (url) return url;
-    throw thrown;
-  }
-  throw new Error("Shopify's Billing API returned no subscription confirmation URL.");
-}
-
-/** Whether *new* charges are created as Shopify test charges. Test mode is
- * the default outside production; `SHOPIFY_BILLING_TEST` forces it either
- * way, so a production build can still be exercised with test charges (for
- * an App Store review pass, say) without changing `NODE_ENV`. */
-export function billingIsTest(): boolean {
-  const override = process.env.SHOPIFY_BILLING_TEST;
-  if (override) return override !== "false" && override !== "0";
-  return process.env.NODE_ENV !== "production";
-}
-
-/** Where Shopify returns the merchant after they approve or decline a
- * charge. It has to be an *admin* URL, not our own origin: a bare hit on
- * `https://<app host>/app/plan` carries no `shop`/`host`, so it can't
- * re-enter the embedded admin and strands the merchant outside the app.
- * `appOrigin` is only a fallback for a misconfigured deployment. */
-export function planApprovalReturnUrl(shop: string, appOrigin: string): string {
-  const apiKey = process.env.SHOPIFY_API_KEY;
-  if (!apiKey) return `${appOrigin}/app/plan`;
+/** Shopify's own plan-selection page for this app — where every plan change
+ * actually happens under managed pricing. It has to be the *admin* host, not
+ * our origin, and it takes the store handle rather than the `.myshopify.com`
+ * domain. Returns null without an app handle, since a guessed one would land
+ * the merchant on an unrelated page. */
+export function managedPricingUrl(shop: string, appHandle: string | null): string | null {
+  if (!appHandle) return null;
   const storeHandle = shop.replace(/\.myshopify\.com$/i, "");
-  return `https://admin.shopify.com/store/${storeHandle}/apps/${apiKey}/app/plan`;
+  return `https://admin.shopify.com/store/${storeHandle}/charges/${appHandle}/pricing_plans`;
 }

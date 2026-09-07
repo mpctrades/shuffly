@@ -25,9 +25,9 @@ Legend: ✅ supported by code/config; ⚠️ needs a real Partner test. There ar
 | 1.1.14 No agency/developer marketplace | ✅ | Support links reach Shuffly's own support. |
 | 1.1.15 Original-processor refunds | ✅ | No refund functionality. |
 | 1.1.16 No capital lending | ✅ | No lending functionality. |
-| 1.2.1 Shopify Billing | ✅ | Paid plans use Shopify's Billing API; no external app billing. |
-| 1.2.2 Billing correctness | ⚠️ | Approval/replacement/cancellation code is corrected; test approval, decline, abandoned approval, uninstall, and reinstall in a development store. |
-| 1.2.3 In-app plan changes | ⚠️ | Upgrade, paid downgrade, monthly↔annual replacement, and cancellation are available in-app. The September 7, 2026 review rejection ("we encounter an error and not able to switch to any plan") is fixed — see *Plan switching failure reported in review* below; re-verify charge history and effective entitlements in a development store. |
+| 1.2.1 Shopify Billing | ✅ | Paid plans use Shopify managed pricing; no external app billing. |
+| 1.2.2 Billing correctness | ⚠️ | Shopify itself runs approval, replacement, proration and cancellation under managed pricing; the app only reads the result back via `billing.check`. Test approval, decline, abandoned approval, uninstall, and reinstall in a development store. |
+| 1.2.3 In-app plan changes | ✅ | The Plan page's "View plans & pricing" button opens Shopify's managed pricing page from inside the app, where upgrade, downgrade, monthly↔annual and cancellation all happen — no support contact, no reinstall. Verified end-to-end in a development store on September 7, 2026. Shopify records the charges, so app charge history is its responsibility, not the app's. |
 | 2.2.1 Shopify APIs | ✅ | Uses Admin GraphQL for collections, products, inventory, and shop data. |
 | 2.2.3 Latest App Bridge | ✅ | `app-bridge.js` is in the document head before other scripts. |
 | 2.2.4 GraphQL Admin API | ✅ | No REST Admin API calls found; operations match the configured 2026-07 API. |
@@ -48,22 +48,48 @@ Skipped as not applicable: 5.1 Online store, 5.2 Payment, 5.4 Purchase option, 5
 
 ## Plan switching failure reported in review
 
-Shopify's September 2026 review rejected the app under 1.2.3 with a screencast showing an error on every plan selection. Two independent defects produced it, both now fixed:
+Shopify's September 2026 review rejected the app under 1.2.3 with a screencast showing an error on every plan selection. The cause was not in the page's own logic:
 
-1. **The approval redirect killed the page.** The Plan screen submits plan changes with `useFetcher`, and App Bridge attaches an `Authorization` header to those requests. Shopify's `billing.request()` treats an authorized request as XHR and *throws* a bare `401` carrying the charge confirmation URL in `X-Shopify-API-Request-Failure-Reauthorize-Url`. React Router turns that 401 into an `ErrorResponse`, so `app/routes/app.tsx`'s error boundary replaced the Plan page and the merchant never reached Shopify's approval screen. The action now unwraps the thrown redirect (`requestSubscriptionConfirmationUrl` in `app/lib/billing.server.ts`), returns the confirmation URL as ordinary JSON, and the client opens it with `window.open(url, "_top")` so App Bridge escapes the admin iframe.
-2. **Approved charges were then invisible.** `billing.check({ isTest })` was passed the environment flag, but on `check` `isTest` means *"also count test charges"*, not *"create one"*. Development stores force every app subscription to be a test charge regardless of what `billing.request` asked for, so a production build passing `isTest: false` discarded the subscription the merchant had just approved and the page kept reporting Free — which also left `activeSubscriptionId` null, so cancelling to Free skipped `billing.cancel`. `check` now always passes `isTest: true`.
+**Shuffly is on Shopify managed pricing, and managed pricing forbids the Billing API.** The plans are defined in the Partner Dashboard, and Shopify renders its own plan-selection page at `https://admin.shopify.com/store/<store>/charges/<app handle>/pricing_plans`. With that in place, `appSubscriptionCreate` is refused outright. Every plan click hit the server and came back 500:
 
-Two supporting fixes landed with them:
+```
+BillingError: Error while billing the store
+errorData: [{ field: null,
+  message: 'Cannot use the Billing API (to create charges) when on Shopify App Pricing.' }]
+POST /app/plan.data 500
+```
 
-- Monthly↔annual on the plan a shop already pays for is a plan change Shopify requires to be in-app, but the current plan's card was unconditionally disabled. It now becomes a "Switch to annual"/"Switch to monthly" action whenever the billing-cycle toggle differs from the active subscription's interval.
-- `returnUrl` pointed at `https://<app host>/app/plan`, which carries no `shop`/`host` and cannot re-enter the embedded admin. It is now the admin deep link `https://admin.shopify.com/store/<store>/apps/<client id>/app/plan`.
+Reproduced on `shuffly-kd37m7ec.myshopify.com` on September 7, 2026, from the app's own Plan page.
 
-`SHOPIFY_BILLING_TEST` now forces test or live charges independently of `NODE_ENV`, so a production deployment can be exercised with test charges during review.
+The Plan page now hands every plan change to Shopify's pricing page instead of creating charges itself.
+
+**How the handoff works.** The Plan page's "View plans & pricing" CTA is a plain anchor — `<a href="https://admin.shopify.com/store/<store>/charges/<app handle>/pricing_plans" target="_top">` — which is App Bridge's documented Navigation API for reaching an admin page outside the app's iframe.
+
+Two earlier attempts were wrong and are worth recording so they aren't repeated:
+
+1. A client-side `window.open(url, "_top")` from the Plan page. Embedded apps have no permission to move the parent window, so this silently did nothing.
+2. A loader-only `/app/change-plan` route that answered with the admin context's `redirect(pricingUrl, { target: "_top" })`. That *did* reach Shopify's page, but it broke Shopify's own "← Select a plan" arrow. The arrow is not `history.back()` — verified by arriving at the pricing page from `/orders` and watching it return to `/apps/shuffly/app/plan` — it returns the merchant to the app's **last visited route**. After the hop that route was `/app/change-plan`, whose loader immediately redirected back out to the pricing page, so the URL never appeared to leave it.
+
+Linking directly means no intermediate app route is ever visited, `/app/plan` stays the remembered route, and the back arrow returns to the Plan page. `app/routes/app.change-plan.tsx` survives as a safety net: any merchant whose remembered route is still `/app/change-plan` is redirected to `/app/plan` using the *admin context's* `redirect` — React Router's plain `redirect` drops the `embedded`/`shop`/`host` query parameters, and the Plan page then renders Shopify's "Something went wrong" with no admin context.
+
+Verified working in the `shuffly-kd37m7ec` development store on September 7, 2026: clicking through from the Plan page lands on Shopify's plan selection page with no error.
+
+**The Plan page no longer shows prices.** It used to render its own three-card pricing table, which contradicted Shopify's: this app said "Starter $3.99/month" while Shopify's page said "$39.90 / year", "$0", "30 trial days". Two disagreeing price lists is both confusing and a 1.1.4 accuracy risk, and only Shopify's page knows the real prices, trials and billing cycle. The page now shows what Shopify's cannot — the active plan, live collection usage against that plan's cap, the next charge, what the next tier would add, and how many collections a drop to Free would pause — and every capability line is derived from `PLANS` rather than hand-written, so no claim can drift from what the code enforces. One "View plans & pricing" button leads to Shopify.
+
+**A second defect would have hidden any successful subscription.** `planIdFromSubscriptionName` matched subscription names exactly against `STARTER`/`PRO`, but the managed-pricing plans are titled `Free`, `Starter` and `PRO`. A merchant who subscribed would have been reported as Free — no entitlements, and `activeSubscriptionId` left null. Name matching is now normalized for case, punctuation and a trailing billing-cycle word, so `Starter`, `STARTER`, `STARTER_ANNUAL` and `Starter (yearly)` all resolve to `STARTER`, while an unrecognized name still falls back to `FREE` rather than granting paid features.
+
+Two related corrections landed with them:
+
+- `billing.check({ isTest: true })` — on `check`, `isTest` means *"also count test charges"*, not *"create one"*. It must stay `true` regardless of environment: development stores, and stores inside managed pricing's trial, hold a test subscription, so `isTest: false` filtered out the very plan the merchant had just picked.
+- The "Test mode" badge and `SHOPIFY_BILLING_TEST` were removed. The app no longer creates charges, so a flag claiming to control whether they are test charges controlled nothing, and the badge would have been a false statement to merchants (1.1.4).
+
+### What was superseded
+
+An earlier pass at this rejection diagnosed it as the App Bridge `Authorization` header making `billing.request()` throw a bare `401` that React Router turned into an `ErrorResponse`, so `app/routes/app.tsx`'s boundary rendered `boundary.error`'s empty-bodied fallback in place of the Plan page. That mechanism is real and the unwrap worked, but it was not the cause here — the Billing API never got far enough to redirect. Those helpers are gone, since the Billing API cannot be called by this app at all.
 
 ## Fixed in source
 
-- Paid plan downgrades now request a replacement Shopify subscription instead of canceling billing and granting the target plan locally. Shopify remains the source of truth.
-- Cancellation errors are no longer swallowed. Free is applied only after a successful cancellation.
+- Plan changes are handed to Shopify's managed pricing page rather than attempted through the Billing API, which this app is not permitted to use. Shopify remains the source of truth, and `billing.check` re-derives entitlements on every Plan page load.
 - Collection limits, schedule availability, pinning, onboarding defaults, and undo retention are now enforced server-side and reflected in the UI.
 - Expired undo snapshots are pruned while activity records remain available.
 - Onboarding now honors the active plan, persists the previewed rules, and validates submitted collections against Shopify.
