@@ -20,6 +20,9 @@ import {
 import {
   reconcilePlanFromSubscriptions,
   previewDowngradeImpact,
+  requestSubscriptionConfirmationUrl,
+  billingIsTest,
+  planApprovalReturnUrl,
   type BillingSummary,
 } from "../lib/billing.server";
 import { closeModal } from "../lib/polaris-modal";
@@ -109,7 +112,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const shop = session.shop;
   await getOrCreateShopSettings(admin, shop);
 
-  const isTest = process.env.NODE_ENV !== "production";
+  const isTest = billingIsTest();
 
   // Shopify is the source of truth for what's actually being paid for —
   // reconcile our cached ShopSettings.plan against it on every load, so a
@@ -125,7 +128,13 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   };
   let reconcileFailed = false;
   try {
-    const { appSubscriptions } = await billing.check({ isTest });
+    // `isTest: true` here means "also count test charges", not "create
+    // one" — it is the wrong knob to tie to the environment. Development
+    // stores force *every* app subscription to be a test charge no matter
+    // what `billing.request` asked for, so a production build passing
+    // `isTest: false` filtered out the subscription the merchant had just
+    // approved and the Plan page kept insisting they were still on Free.
+    const { appSubscriptions } = await billing.check({ isTest: true });
     const reconciled = await reconcilePlanFromSubscriptions(
       shop,
       appSubscriptions.map((s) => ({
@@ -184,7 +193,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { billing, session } = await authenticate.admin(request);
   const shop = session.shop;
-  const isTest = process.env.NODE_ENV !== "production";
+  const isTest = billingIsTest();
   const formData = await request.formData();
   const actionType = formData.get("_action");
 
@@ -224,14 +233,26 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const billingKey = (
       billingCycle === "annual" ? `${planId}_ANNUAL` : planId
     ) as "STARTER" | "STARTER_ANNUAL" | "PRO" | "PRO_ANNUAL" | "AGENCY" | "AGENCY_ANNUAL";
-    const url = new URL(request.url);
-    // Throws internally (redirects to Shopify's approval page) — never
-    // actually resolves on success.
-    return billing.request({
-      plan: billingKey,
-      isTest,
-      returnUrl: `${url.origin}/app/plan`,
-    });
+    try {
+      // `billing.request` never resolves — it throws a redirect that React
+      // Router would turn into an error boundary render for a fetcher
+      // submit. Unwrap it and hand the approval URL back as plain JSON; the
+      // client opens it in the top-level window.
+      const confirmationUrl = await requestSubscriptionConfirmationUrl(() =>
+        billing.request({
+          plan: billingKey,
+          isTest,
+          returnUrl: planApprovalReturnUrl(shop, new URL(request.url).origin),
+        }),
+      );
+      return data({ ok: true, confirmationUrl });
+    } catch (err) {
+      console.error("[app.plan] subscribe failed:", err);
+      return data(
+        { ok: false, error: "Couldn't start that plan change just now." },
+        { status: 500 },
+      );
+    }
   }
 
   if (actionType === "downgrade") {
@@ -250,12 +271,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         const billingKey = (
           billingCycle === "annual" ? `${targetPlanId}_ANNUAL` : targetPlanId
         ) as "STARTER" | "STARTER_ANNUAL" | "PRO" | "PRO_ANNUAL" | "AGENCY" | "AGENCY_ANNUAL";
-        const url = new URL(request.url);
-        return billing.request({
-          plan: billingKey,
-          isTest,
-          returnUrl: `${url.origin}/app/plan`,
-        });
+        const confirmationUrl = await requestSubscriptionConfirmationUrl(() =>
+          billing.request({
+            plan: billingKey,
+            isTest,
+            returnUrl: planApprovalReturnUrl(shop, new URL(request.url).origin),
+          }),
+        );
+        return data({ ok: true, confirmationUrl });
       }
 
       const settings = await db.shopSettings.findUnique({ where: { shop } });
@@ -299,28 +322,64 @@ export default function Plan() {
   } = useLoaderData<typeof loader>();
   const navigation = useNavigation();
   const shopify = useAppBridge();
-  const subscribeFetcher = useFetcher<{ ok: boolean; error?: string }>();
+  const subscribeFetcher = useFetcher<{ ok: boolean; confirmationUrl?: string; error?: string }>();
   const previewFetcher = useFetcher<{ ok: boolean; impact?: DowngradeImpact; error?: string }>();
-  const downgradeFetcher = useFetcher<{ ok: boolean; pausedTitles?: string[]; error?: string }>();
+  const downgradeFetcher = useFetcher<{
+    ok: boolean;
+    confirmationUrl?: string;
+    pausedTitles?: string[];
+    error?: string;
+  }>();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- showOverlay/hideOverlay aren't on the typed public props
   const modalRef = useRef<any>(null);
 
   const [billingCycle, setBillingCycle] = useState<BillingCycle>("monthly");
   const [downgradeTarget, setDowngradeTarget] = useState<PlanId | null>(null);
+  // Set the moment we hand the browser off to Shopify's approval screen —
+  // the top-level navigation takes a beat, and every button has to stay
+  // inert until it lands rather than firing a second charge request.
+  const [openingApproval, setOpeningApproval] = useState(false);
 
   const isLoading =
     navigation.state === "loading" && navigation.location?.pathname === "/app/plan";
   const anyBusy =
+    openingApproval ||
     subscribeFetcher.state !== "idle" ||
     previewFetcher.state !== "idle" ||
     downgradeFetcher.state !== "idle";
+
+  // Monthly ↔ annual on the plan the shop is already paying for is a real
+  // plan change (Shopify replaces the subscription), so the current plan's
+  // own card has to stay actionable whenever the selected cycle isn't the
+  // one being billed today. Without this the only way off monthly was to
+  // downgrade to Free and re-subscribe.
+  const cycleSwitchAvailable =
+    hasActiveSubscription && (billingCycle === "annual") !== billing.isAnnual;
+
+  /** Shopify's charge approval lives outside the admin iframe. App Bridge
+   * patches `window.open`, so `_top` breaks out correctly — assigning to
+   * `window.top.location` is blocked cross-origin and silently does
+   * nothing. */
+  function openApproval(confirmationUrl: string) {
+    setOpeningApproval(true);
+    window.open(confirmationUrl, "_top");
+  }
 
   const currentIndex = PLAN_ORDER.indexOf(currentPlanId);
 
   function requestSwitch(planId: PlanId) {
     if (anyBusy) return;
     const targetIndex = PLAN_ORDER.indexOf(planId);
-    if (targetIndex === currentIndex) return;
+    if (targetIndex === currentIndex) {
+      // Same plan, different billing cycle — request the replacement
+      // subscription the same way an upgrade does.
+      if (!cycleSwitchAvailable || !PUBLIC_PAID_PLAN_IDS.includes(planId)) return;
+      subscribeFetcher.submit(
+        { _action: "subscribe", planId, billingCycle },
+        { method: "post" },
+      );
+      return;
+    }
     if (targetIndex > currentIndex) {
       subscribeFetcher.submit(
         { _action: "subscribe", planId, billingCycle },
@@ -350,8 +409,12 @@ export default function Plan() {
   }, [previewFetcher.state, previewFetcher.data]);
 
   useEffect(() => {
-    if (subscribeFetcher.state === "idle" && subscribeFetcher.data && !subscribeFetcher.data.ok) {
-      shopify.toast.show(subscribeFetcher.data.error ?? "Couldn't start that upgrade", {
+    if (subscribeFetcher.state !== "idle" || !subscribeFetcher.data) return;
+    const result = subscribeFetcher.data;
+    if (result.ok && result.confirmationUrl) {
+      openApproval(result.confirmationUrl);
+    } else if (!result.ok) {
+      shopify.toast.show(result.error ?? "Couldn't start that plan change", {
         isError: true,
       });
     }
@@ -369,6 +432,13 @@ export default function Plan() {
 
   useEffect(() => {
     if (downgradeFetcher.state === "idle" && downgradeFetcher.data) {
+      // A paid-to-paid downgrade still needs Shopify's approval screen —
+      // only the drop to Free settles server-side.
+      if (downgradeFetcher.data.ok && downgradeFetcher.data.confirmationUrl) {
+        openApproval(downgradeFetcher.data.confirmationUrl);
+        setDowngradeTarget(null);
+        return;
+      }
       if (downgradeFetcher.data.ok) {
         const paused = downgradeFetcher.data.pausedTitles ?? [];
         shopify.toast.show(
@@ -509,12 +579,20 @@ export default function Plan() {
                   ? `${plan.name.toUpperCase()} · MOST POPULAR`
                   : plan.name.toUpperCase();
 
-              const ctaLabel = isCurrent ? "Current plan" : isUpgrade ? "Upgrade" : "Downgrade";
-              const ctaTone: "dark" | "orange" | "muted" = isCurrent
-                ? "muted"
-                : isFeatured
-                  ? "orange"
-                  : "dark";
+              // The card for the plan the shop is already on turns into a
+              // cycle switch when the toggle points at the other cycle.
+              const isCycleSwitch = isCurrent && planId !== "FREE" && cycleSwitchAvailable;
+              const ctaLabel = isCycleSwitch
+                ? billingCycle === "annual"
+                  ? "Switch to annual"
+                  : "Switch to monthly"
+                : isCurrent
+                  ? "Current plan"
+                  : isUpgrade
+                    ? "Upgrade"
+                    : "Downgrade";
+              const ctaTone: "dark" | "orange" | "muted" =
+                isCurrent && !isCycleSwitch ? "muted" : isFeatured ? "orange" : "dark";
 
               // Usage bar only ever shows on the shop's actual current
               // plan's own card.
@@ -549,7 +627,7 @@ export default function Plan() {
                   tagline={PLAN_TAGLINE[planId]}
                   ctaLabel={ctaLabel}
                   ctaTone={ctaTone}
-                  disabled={isCurrent || anyBusy}
+                  disabled={(isCurrent && !isCycleSwitch) || anyBusy}
                   onClick={() => requestSwitch(planId)}
                 />
               );
