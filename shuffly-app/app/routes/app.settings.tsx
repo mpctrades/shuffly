@@ -8,6 +8,8 @@ import { getOrCreateShopSettings } from "../lib/shop-context.server";
 import { KeyValueRows } from "../components/KeyValueRows";
 import { getShopTimezone } from "../lib/collections.server";
 import { timezoneOffsetLabel } from "../lib/schedule.server";
+// Client-safe (see time-slots.ts) — the component below renders these.
+import { normalizeHhMm, timeOptionsIncluding } from "../lib/time-slots";
 
 const SAVE_BAR_ID = "settings-save-bar";
 
@@ -81,7 +83,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   await getOrCreateShopSettings(admin, shop);
   const formData = await request.formData();
 
-  const defaultRunTime = String(formData.get("defaultRunTime") ?? "06:00");
+  const defaultRunTime = normalizeHhMm(String(formData.get("defaultRunTime") ?? "06:00"));
   const neverMoveTags = String(formData.get("neverMoveTags") ?? "");
 
   await db.shopSettings.update({
@@ -213,16 +215,22 @@ export default function Settings() {
                 >
                   <s-option value={settings.timezone}>{timezoneLabel}</s-option>
                 </s-select>
-                <s-text-field
+                <s-select
                   label="Default run time"
                   value={defaultRunTime}
-                  details="Choose when automatic shuffles should run."
+                  details="The starting time for collections you add from now on. Change any collection's own time on its page."
                   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- currentTarget.value isn't in the typed event map
-                  onInput={(e: any) => {
-                    setDefaultRunTime(e.currentTarget?.value ?? "");
+                  onChange={(e: any) => {
+                    setDefaultRunTime(e.currentTarget?.value ?? "06:00");
                     markDirty();
                   }}
-                />
+                >
+                  {timeOptionsIncluding(settings.defaultRunTime, defaultRunTime).map((t) => (
+                    <s-option key={t} value={t}>
+                      {t}
+                    </s-option>
+                  ))}
+                </s-select>
               </s-stack>
             </SettingsCard>
 

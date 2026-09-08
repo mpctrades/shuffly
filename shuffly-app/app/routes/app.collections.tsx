@@ -12,7 +12,7 @@ import {
 } from "../lib/collections.server";
 import { runShuffleForCollection } from "../lib/shuffle-engine.server";
 import { previewShuffleAll } from "../lib/shuffle-preview.server";
-import { computeNextRun, formatActivityTimestamp, type ScheduleType } from "../lib/schedule.server";
+import { formatActivityTimestamp, nextRunFor, scheduleWriteFields, type ScheduleType } from "../lib/schedule.server";
 import { defaultScheduleForPlan, planOf, pruneExpiredUndoSnapshots } from "../lib/plans.server";
 import { closeModal } from "../lib/polaris-modal";
 import { CollectionRow, type CollectionRowData } from "../components/CollectionRow";
@@ -222,7 +222,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     if (c.pins > 0 && pinsVaries) settingsBadges.push(`${c.pins} pin${c.pins === 1 ? "" : "s"}`);
     if (c.giveEveryoneATurn && giveEveryoneATurnVaries) settingsBadges.push("Fair rotation");
 
-    const scheduleLine = c.status === "PAUSED" ? "Paused" : scheduleLabel(c.scheduleType, c.scheduleTime, c.scheduleWeekday);
+    const scheduleLine = c.status === "PAUSED" ? "Paused" : scheduleLabel(c.scheduleType, c.scheduleTime, c.scheduleWeekday, c.scheduleTime2);
     const scheduleSubLine =
       c.status === "PAUSED" ? "Resume to schedule" : c.nextRunAt ? "" : "Shuffles only when you press Shuffle";
 
@@ -282,14 +282,21 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   };
 };
 
-function scheduleLabel(type: string, time: string, weekday: number | null): string {
+function scheduleLabel(
+  type: string,
+  time: string,
+  weekday: number | null,
+  time2: string | null,
+): string {
   switch (type) {
     case "DAILY":
       return `Daily at ${time}`;
     case "TWICE_DAILY":
-      return "Twice daily";
+      // Both merchant-picked times, in chronological order — "Twice daily"
+      // alone left the merchant with no way to see when the second run is.
+      return `Twice daily at ${[time, time2].filter(Boolean).sort().join(" and ")}`;
     case "WEEKLY":
-      return `Weekly, ${WEEKDAYS[weekday ?? 1]}`;
+      return `Weekly, ${WEEKDAYS[weekday ?? 1]} at ${time}`;
     default:
       return "Manual only";
   }
@@ -346,6 +353,18 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const settings = await getOrCreateShopSettings(admin, shop);
   const defaultSchedule = defaultScheduleForPlan(settings.plan);
   const defaultWeekday = defaultSchedule === "WEEKLY" ? 1 : null;
+  // Every "add a collection" path seeds the same starting schedule, and
+  // scheduleWriteFields is the only thing that derives nextRunAt from it —
+  // so a new collection can't be created with a nextRunAt that disagrees
+  // with the schedule stored alongside it. Newly added collections start
+  // RUNNING, hence the default status.
+  const defaultScheduleFields = () =>
+    scheduleWriteFields(new Date(), settings.timezone, {
+      scheduleType: defaultSchedule,
+      scheduleTime: settings.defaultRunTime,
+      scheduleTime2: null,
+      scheduleWeekday: defaultWeekday,
+    });
 
   if (actionType === "add-collections") {
     const plan = planOf(settings.plan);
@@ -374,11 +393,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
     for (const gid of toAdd) {
       const title = String(formData.get(`collectionTitle:${gid}`) ?? "Collection");
-      const nextRunAt = computeNextRun(new Date(), settings.timezone, defaultSchedule, settings.defaultRunTime, defaultWeekday);
       await db.collectionConfig.upsert({
         where: { shop_collectionGid: { shop, collectionGid: gid } },
         update: {},
-        create: { shop, collectionGid: gid, title, scheduleType: defaultSchedule, scheduleTime: settings.defaultRunTime, scheduleWeekday: defaultWeekday, nextRunAt, ...preset, pins: plan.canPin ? preset.pins : 0 },
+        create: { shop, collectionGid: gid, title, ...defaultScheduleFields(), ...preset, pins: plan.canPin ? preset.pins : 0 },
       });
     }
     return data({ ok: true, added: toAdd.length, skipped: ids.length - toAdd.length });
@@ -392,11 +410,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     }
     const gid = String(formData.get("gid"));
     const title = String(formData.get("title") ?? "Collection");
-    const nextRunAt = computeNextRun(new Date(), settings.timezone, defaultSchedule, settings.defaultRunTime, defaultWeekday);
     await db.collectionConfig.upsert({
       where: { shop_collectionGid: { shop, collectionGid: gid } },
       update: {},
-      create: { shop, collectionGid: gid, title, scheduleType: defaultSchedule, scheduleTime: settings.defaultRunTime, scheduleWeekday: defaultWeekday, nextRunAt, ...DEFAULT_ADD_PRESET },
+      create: { shop, collectionGid: gid, title, ...defaultScheduleFields(), ...DEFAULT_ADD_PRESET },
     });
     return data({ ok: true });
   }
@@ -411,11 +428,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const title = String(formData.get("title") ?? "Collection");
     const switched = await setCollectionManualSort(admin, gid);
     if (!switched.ok) return data({ ok: false, error: switched.error ?? "Couldn't switch that collection." }, { status: 400 });
-    const nextRunAt = computeNextRun(new Date(), settings.timezone, defaultSchedule, settings.defaultRunTime, defaultWeekday);
     await db.collectionConfig.upsert({
       where: { shop_collectionGid: { shop, collectionGid: gid } },
       update: {},
-      create: { shop, collectionGid: gid, title, scheduleType: defaultSchedule, scheduleTime: settings.defaultRunTime, scheduleWeekday: defaultWeekday, nextRunAt, ...DEFAULT_ADD_PRESET },
+      create: { shop, collectionGid: gid, title, ...defaultScheduleFields(), ...DEFAULT_ADD_PRESET },
     });
     return data({ ok: true });
   }
@@ -434,11 +450,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         const switched = await setCollectionManualSort(admin, gid);
         if (!switched.ok) continue;
       }
-      const nextRunAt = computeNextRun(new Date(), settings.timezone, defaultSchedule, settings.defaultRunTime, defaultWeekday);
       await db.collectionConfig.upsert({
         where: { shop_collectionGid: { shop, collectionGid: gid } },
         update: {},
-        create: { shop, collectionGid: gid, title: titles[i] ?? "Collection", scheduleType: defaultSchedule, scheduleTime: settings.defaultRunTime, scheduleWeekday: defaultWeekday, nextRunAt, ...DEFAULT_ADD_PRESET },
+        create: { shop, collectionGid: gid, title: titles[i] ?? "Collection", ...defaultScheduleFields(), ...DEFAULT_ADD_PRESET },
       });
       added++;
     }
@@ -473,7 +488,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const nextStatus = actionType === "pause" ? "PAUSED" : "RUNNING";
     const nextRunAt =
       nextStatus === "RUNNING"
-        ? computeNextRun(new Date(), settings.timezone, config.scheduleType as ScheduleType, config.scheduleTime, config.scheduleWeekday)
+        ? nextRunFor(new Date(), settings.timezone, {
+            scheduleType: config.scheduleType as ScheduleType,
+            scheduleTime: config.scheduleTime,
+            scheduleTime2: config.scheduleTime2,
+            scheduleWeekday: config.scheduleWeekday,
+          })
         : null;
     await db.$transaction([
       db.collectionConfig.update({ where: { id }, data: { status: nextStatus, nextRunAt } }),
@@ -511,7 +531,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       configs.flatMap((c) => {
         const nextRunAt =
           nextStatus === "RUNNING"
-            ? computeNextRun(new Date(), settings.timezone, c.scheduleType as ScheduleType, c.scheduleTime, c.scheduleWeekday)
+            ? nextRunFor(new Date(), settings.timezone, {
+                scheduleType: c.scheduleType as ScheduleType,
+                scheduleTime: c.scheduleTime,
+                scheduleTime2: c.scheduleTime2,
+                scheduleWeekday: c.scheduleWeekday,
+              })
             : null;
         return [
           db.collectionConfig.update({ where: { id: c.id }, data: { status: nextStatus, nextRunAt } }),

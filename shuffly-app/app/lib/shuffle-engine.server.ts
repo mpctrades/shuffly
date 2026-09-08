@@ -8,7 +8,7 @@ import {
   setCollectionManualSort,
 } from "./collections.server";
 import { bumpTurnCounts, computeShuffledOrder, type ShuffleProductInput } from "./shuffle-algorithm.server";
-import { computeNextRun, type ScheduleType } from "./schedule.server";
+import { nextRunFor, type ScheduleType } from "./schedule.server";
 import { recordProductPositions, recordKnownProducts, invalidateInsightsCache } from "./insights.server";
 import { undoRetentionCutoff } from "./plans";
 
@@ -169,13 +169,15 @@ export async function runShuffleForCollection(
   }
 
   const nextTurnCounts = bumpTurnCounts(turnCounts, result.order, result.pinnedCount);
-  const nextRunAt = computeNextRun(
-    new Date(),
-    timezone,
-    config.scheduleType as ScheduleType,
-    config.scheduleTime,
-    config.scheduleWeekday,
-  );
+  // Advisory only — the cron sweep re-derives what's due from the stored
+  // schedule (see cron.server.ts). This keeps the countdown honest and the
+  // sweep's candidate query index-backed.
+  const nextRunAt = nextRunFor(new Date(), timezone, {
+    scheduleType: config.scheduleType as ScheduleType,
+    scheduleTime: config.scheduleTime,
+    scheduleTime2: config.scheduleTime2,
+    scheduleWeekday: config.scheduleWeekday,
+  });
 
   const writes = [
     db.collectionConfig.update({

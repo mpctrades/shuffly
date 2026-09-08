@@ -5,7 +5,7 @@
 // `from "../lib/plans.server"` imports (loaders/actions) keep working.
 import db from "../db.server";
 import { defaultScheduleForPlan, planOf, undoRetentionCutoff, type PlanId } from "./plans";
-import { computeNextRun } from "./schedule.server";
+import { scheduleWriteFields } from "./schedule.server";
 
 export * from "./plans";
 
@@ -62,27 +62,22 @@ export async function enforcePlanEntitlements(shop: string, planId: PlanId): Pro
   ]);
   const scheduleTime = settings?.defaultRunTime ?? "06:00";
   const scheduleWeekday = fallbackSchedule === "WEEKLY" ? 1 : null;
-  const nextRunAt = settings
-    ? computeNextRun(
-        new Date(),
-        settings.timezone,
-        fallbackSchedule,
-        scheduleTime,
-        scheduleWeekday,
-      )
-    : null;
+  // Dropping to a schedule the new plan allows also drops the second time
+  // slot, since only the top tier has one — scheduleWriteFields nulls it for
+  // any non-TWICE_DAILY type, so that can't be forgotten here.
+  const scheduleFields = scheduleWriteFields(new Date(), settings?.timezone ?? "UTC", {
+    scheduleType: fallbackSchedule,
+    scheduleTime,
+    scheduleTime2: null,
+    scheduleWeekday,
+  });
 
   await db.$transaction([
     ...(disallowed.length > 0
       ? [
           db.collectionConfig.updateMany({
             where: { id: { in: disallowed.map(({ id }) => id) } },
-            data: {
-              scheduleType: fallbackSchedule,
-              scheduleTime,
-              scheduleWeekday,
-              nextRunAt,
-            },
+            data: scheduleFields,
           }),
         ]
       : []),

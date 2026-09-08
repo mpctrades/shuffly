@@ -2,6 +2,11 @@
 // Intl (no extra date library). All schedules are expressed as a local wall
 // clock time in the shop's IANA timezone (from Shop.ianaTimezone).
 
+import { defaultSecondSlot, normalizeHhMm, parseHhMm } from "./time-slots";
+
+// Re-exported so server-side callers can keep importing it from here.
+export { normalizeHhMm };
+
 export type ScheduleType = "DAILY" | "TWICE_DAILY" | "WEEKLY" | "MANUAL";
 
 interface LocalParts {
@@ -73,10 +78,235 @@ function utcInstantFor(
   return new Date(Date.UTC(year, month - 1, day, hour, minute, 0) - offset * 60000);
 }
 
+export interface SlotSchedule {
+  scheduleType: ScheduleType;
+  /** "HH:MM" local time — the first (or only) slot. */
+  scheduleTime: string;
+  /** "HH:MM" local time for the second slot. Only meaningful for
+   * TWICE_DAILY; null means "derive it", which is what pre-Update-1 rows
+   * relied on. */
+  scheduleTime2?: string | null;
+  scheduleWeekday: number | null; // 0=Sunday..6=Saturday, WEEKLY only
+}
+
+/** What happened when a wall-clock time was turned into a real instant.
+ * Both non-"exact" cases only ever occur on a DST transition day. */
+export type LocalTimeResolution =
+  /** The requested wall clock exists exactly once that day. */
+  | "exact"
+  /** Fall-back day: it happens twice, and we deliberately took the first. */
+  | "ambiguous"
+  /** Spring-forward day: it never happens, so we took the moment the clock
+   * jumped past it. */
+  | "skipped";
+
+/** A local Y/M/D + H:M rendered as a comparable stamp, so two wall clocks
+ * can be ordered without caring which offset produced them. */
+function localStamp(instant: Date, timeZone: string): number {
+  const p = localPartsInTz(instant, timeZone);
+  return Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, 0);
+}
+
 /**
- * Given "now", a schedule, and the shop's timezone, return the next UTC
- * instant this collection should shuffle. Returns null for MANUAL schedules
- * (they only ever run when the merchant presses "Shuffle now").
+ * Turn a local wall-clock time into the UTC instant it actually happens at,
+ * handling both DST edges explicitly instead of hoping a mid-day offset
+ * guess lands right:
+ *
+ *   - Normal day: exactly one instant matches. Return it.
+ *   - Fall-back day (e.g. 01:30 in America/New_York on 1 Nov): the wall
+ *     clock happens twice, an hour apart. Always return the FIRST, so the
+ *     answer is identical on every sweep and the second occurrence can never
+ *     be mistaken for a separate run.
+ *   - Spring-forward day (e.g. 02:30 in America/New_York on 8 Mar): the wall
+ *     clock never happens. Return the instant the clock jumps past it
+ *     (03:00 local), so the run still fires once that day and never *early* —
+ *     the old mid-day-offset guess resolved it to 01:30, an hour before the
+ *     merchant asked for.
+ */
+export function resolveLocalTime(
+  year: number,
+  month: number,
+  day: number,
+  hour: number,
+  minute: number,
+  timeZone: string,
+): { at: Date; resolution: LocalTimeResolution } {
+  const pseudoUtc = Date.UTC(year, month - 1, day, hour, minute, 0);
+  // The offset in force can change *within* this local day, so try the one
+  // from either side of it rather than a single sample.
+  const offsets = Array.from(
+    new Set([
+      tzOffsetMinutes(new Date(pseudoUtc - 86_400_000), timeZone),
+      tzOffsetMinutes(new Date(pseudoUtc + 86_400_000), timeZone),
+    ]),
+  );
+
+  const matches = offsets
+    .map((offset) => new Date(pseudoUtc - offset * 60_000))
+    .filter((instant) => localStamp(instant, timeZone) === pseudoUtc)
+    .sort((a, b) => a.getTime() - b.getTime());
+
+  if (matches.length === 1) return { at: matches[0], resolution: "exact" };
+  if (matches.length > 1) return { at: matches[0], resolution: "ambiguous" };
+
+  // Nothing matched: the requested wall clock falls inside a spring-forward
+  // gap. Binary-search the (at most ~2h) window the transition must lie in
+  // for the first instant whose local time has reached the requested one.
+  let low = pseudoUtc - Math.max(...offsets) * 60_000;
+  let high = pseudoUtc - Math.min(...offsets) * 60_000;
+  while (high - low > 60_000) {
+    const mid = low + Math.floor((high - low) / 2 / 60_000) * 60_000;
+    if (mid <= low) break;
+    if (localStamp(new Date(mid), timeZone) >= pseudoUtc) high = mid;
+    else low = mid;
+  }
+  const at = localStamp(new Date(low), timeZone) >= pseudoUtc ? new Date(low) : new Date(high);
+  return { at, resolution: "skipped" };
+}
+
+/**
+ * The time slots this schedule actually has, as { slot index, "HH:MM" }.
+ *
+ * The slot index is tied to the *field* (0 = scheduleTime, 1 = scheduleTime2),
+ * never to chronological order — that keeps a slot's identity stable when a
+ * merchant edits one of the two times, so re-ordering 09:00/18:00 to
+ * 18:00/09:00 can't make an already-fired slot look unfired.
+ */
+export function slotTimesFor(schedule: SlotSchedule): Array<{ slot: number; time: string }> {
+  if (schedule.scheduleType === "MANUAL") return [];
+  const first = { slot: 0, time: normalizeHhMm(schedule.scheduleTime) };
+  if (schedule.scheduleType !== "TWICE_DAILY") return [first];
+  // Null scheduleTime2 = a row from before merchants could pick the second
+  // slot, which derived it as +12h. The migration backfilled these, so this
+  // is belt-and-braces for anything written outside it.
+  const second = {
+    slot: 1,
+    time: normalizeHhMm(schedule.scheduleTime2 ?? defaultSecondSlot(first.time)),
+  };
+  // Both slots on the same minute is one run, not two.
+  return second.time === first.time ? [first] : [first, second];
+}
+
+/** How far back a sweep will still pick up a slot it missed. Long enough to
+ * ride out a deploy or a short outage, short enough that a container down
+ * overnight doesn't replay yesterday's runs when it comes back. */
+export const DUE_LOOKBACK_MS = 6 * 3_600_000;
+
+export interface DueSlot {
+  slot: number;
+  /** "YYYY-MM-DD" of the slot's own local day — half of the idempotency key. */
+  dateKey: string;
+  /** The UTC instant this slot resolved to. */
+  at: Date;
+  resolution: LocalTimeResolution;
+}
+
+/**
+ * Which of this collection's slots are due right now, decided from the
+ * schedule as it is stored *at this moment*. This is what makes a merchant's
+ * time change take effect immediately: nothing is queued ahead of time, so
+ * there is never a leftover run pointing at the old time.
+ */
+export function dueSlots(
+  now: Date,
+  timezone: string,
+  schedule: SlotSchedule,
+  lookbackMs = DUE_LOOKBACK_MS,
+): DueSlot[] {
+  const slots = slotTimesFor(schedule);
+  if (slots.length === 0) return [];
+
+  const out: DueSlot[] = [];
+  // Today and yesterday, in the shop's own local terms: a slot late in the
+  // local evening is still inside the lookback window shortly after local
+  // midnight has rolled the date over.
+  for (const dayOffset of [0, -1]) {
+    const p = localPartsInTz(new Date(now.getTime() + dayOffset * 86_400_000), timezone);
+    if (
+      schedule.scheduleType === "WEEKLY" &&
+      schedule.scheduleWeekday != null &&
+      p.weekday !== schedule.scheduleWeekday
+    ) {
+      continue;
+    }
+    const dateKey = `${p.year}-${String(p.month).padStart(2, "0")}-${String(p.day).padStart(2, "0")}`;
+    for (const { slot, time } of slots) {
+      const { hour, minute } = parseHhMm(time);
+      const { at, resolution } = resolveLocalTime(p.year, p.month, p.day, hour, minute, timezone);
+      const age = now.getTime() - at.getTime();
+      if (age >= 0 && age <= lookbackMs) out.push({ slot, dateKey, at, resolution });
+    }
+  }
+  return out.sort((a, b) => a.at.getTime() - b.at.getTime());
+}
+
+/**
+ * The next UTC instant this collection should shuffle. Null for MANUAL.
+ *
+ * This is now a *display and prefilter* value, not the scheduling decision —
+ * `dueSlots` is what the cron sweep actually acts on. It still drives the
+ * "next run in 4h 12m" countdown, and it keeps the sweep's candidate query
+ * index-backed instead of scanning every RUNNING collection.
+ */
+export function nextRunFor(now: Date, timezone: string, schedule: SlotSchedule): Date | null {
+  const slots = slotTimesFor(schedule);
+  if (slots.length === 0) return null;
+
+  // 8 days covers weekly, plus any DST edge that shifts a day boundary.
+  for (let dayOffset = 0; dayOffset <= 8; dayOffset++) {
+    const p = localPartsInTz(new Date(now.getTime() + dayOffset * 86_400_000), timezone);
+    if (
+      schedule.scheduleType === "WEEKLY" &&
+      schedule.scheduleWeekday != null &&
+      p.weekday !== schedule.scheduleWeekday
+    ) {
+      continue;
+    }
+    const ahead = slots
+      .map(({ time }) => {
+        const { hour, minute } = parseHhMm(time);
+        return resolveLocalTime(p.year, p.month, p.day, hour, minute, timezone).at;
+      })
+      .filter((at) => at.getTime() > now.getTime())
+      .sort((a, b) => a.getTime() - b.getTime());
+    if (ahead.length > 0) return ahead[0];
+  }
+  return null;
+}
+
+/**
+ * The one place a schedule change becomes database fields. Every write that
+ * touches a schedule goes through this, so `nextRunAt` cannot be left behind
+ * pointing at a time the merchant has already changed — the failure mode of
+ * having this recomputed by hand at a dozen separate call sites.
+ */
+export function scheduleWriteFields(
+  now: Date,
+  timezone: string,
+  schedule: SlotSchedule,
+  status: "RUNNING" | "PAUSED" = "RUNNING",
+) {
+  const normalized: SlotSchedule = {
+    scheduleType: schedule.scheduleType,
+    scheduleTime: normalizeHhMm(schedule.scheduleTime),
+    scheduleTime2:
+      schedule.scheduleType === "TWICE_DAILY" && schedule.scheduleTime2
+        ? normalizeHhMm(schedule.scheduleTime2)
+        : null,
+    scheduleWeekday: schedule.scheduleWeekday,
+  };
+  return {
+    scheduleType: normalized.scheduleType,
+    scheduleTime: normalized.scheduleTime,
+    scheduleTime2: normalized.scheduleTime2,
+    scheduleWeekday: normalized.scheduleWeekday,
+    nextRunAt: status === "RUNNING" ? nextRunFor(now, timezone, normalized) : null,
+  };
+}
+
+/**
+ * Back-compatible 5-argument wrapper around `nextRunFor`, kept because most
+ * callers only ever had one time to give it.
  */
 export function computeNextRun(
   now: Date,
@@ -84,46 +314,9 @@ export function computeNextRun(
   scheduleType: ScheduleType,
   scheduleTime: string, // "HH:MM"
   scheduleWeekday: number | null, // 0=Sunday..6=Saturday, WEEKLY only
+  scheduleTime2: string | null = null,
 ): Date | null {
-  if (scheduleType === "MANUAL") return null;
-
-  const [hh, mm] = scheduleTime.split(":").map((n) => parseInt(n, 10));
-  const hour = Number.isFinite(hh) ? hh : 6;
-  const minute = Number.isFinite(mm) ? mm : 0;
-  const local = localPartsInTz(now, timezone);
-
-  const candidateTimes: Array<{ hour: number; minute: number }> =
-    scheduleType === "TWICE_DAILY"
-      ? [
-          { hour, minute },
-          { hour: (hour + 12) % 24, minute },
-        ].sort((a, b) => a.hour * 60 + a.minute - (b.hour * 60 + b.minute))
-      : [{ hour, minute }];
-
-  // Walk forward day by day (up to 8 days covers weekly + DST edge cases)
-  // until we find the first candidate strictly after `now`.
-  for (let dayOffset = 0; dayOffset <= 8; dayOffset++) {
-    const dayGuess = new Date(now.getTime() + dayOffset * 86_400_000);
-    const dp = localPartsInTz(dayGuess, timezone);
-
-    if (scheduleType === "WEEKLY" && scheduleWeekday != null && dp.weekday !== scheduleWeekday) {
-      continue;
-    }
-
-    for (const t of candidateTimes) {
-      const instant = utcInstantFor(dp.year, dp.month, dp.day, t.hour, t.minute, timezone);
-      if (instant.getTime() > now.getTime()) {
-        // Re-derive using local's own Y/M/D (dp already reflects dayOffset's local date)
-        return instant;
-      }
-    }
-    // fall through: none of today's/this-day's candidate times are still ahead of now
-    void local;
-  }
-
-  // Fallback (shouldn't happen): tomorrow at the first candidate time.
-  const tomorrow = localPartsInTz(new Date(now.getTime() + 86_400_000), timezone);
-  return utcInstantFor(tomorrow.year, tomorrow.month, tomorrow.day, candidateTimes[0].hour, candidateTimes[0].minute, timezone);
+  return nextRunFor(now, timezone, { scheduleType, scheduleTime, scheduleTime2, scheduleWeekday });
 }
 
 export function formatNextRun(nextRunAt: Date | null, timezone: string): string {

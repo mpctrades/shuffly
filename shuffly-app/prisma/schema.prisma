@@ -73,7 +73,12 @@ model CollectionConfig {
   giveEveryoneATurn Boolean @default(true) // fairness: least-recently-featured first
   newArrivalDays Int       @default(14) // a product counts as "new" if created within N days
   scheduleType   String    @default("DAILY") // DAILY | TWICE_DAILY | WEEKLY | MANUAL
-  scheduleTime   String    @default("06:00") // "HH:MM" local time
+  scheduleTime   String    @default("06:00") // "HH:MM" local time — the first (or only) time slot
+  scheduleTime2  String?   // "HH:MM" local time for the SECOND slot, used only when
+                           // scheduleType=TWICE_DAILY (a Pro/Agency entitlement). Before
+                           // merchants could pick it, the second slot was derived as
+                           // scheduleTime + 12h; existing rows were backfilled to that
+                           // same value so nobody's schedule moved.
   scheduleWeekday Int?     // 0=Sunday..6=Saturday, used when scheduleType=WEEKLY
   lastRunAt      DateTime?
   lastSoldOutCount Int?    // sold-out products pushed to the end on the most recent run — real, not estimated
@@ -90,10 +95,32 @@ model CollectionConfig {
   exposures ProductExposure[]
   snapshots PositionSnapshot[]
   positions ProductPosition[]
+  slotClaims ShuffleSlotClaim[]
 
   @@unique([shop, collectionGid])
   @@index([shop])
   @@index([status, nextRunAt])
+}
+
+// One row per (collection, shop-local day, time slot) that a scheduled run
+// has been claimed for. The unique constraint IS the idempotency guard: the
+// cron sweep inserts the claim *before* it runs the shuffle, so a slot fires
+// exactly once per local calendar day per collection even when two sweeps
+// overlap, a sweep is retried, or the shop's wall clock repeats an hour on a
+// DST fall-back day. Rows older than the retention window are pruned by the
+// sweep itself — see pruneOldSlotClaims in cron.server.ts.
+model ShuffleSlotClaim {
+  id           String   @id @default(cuid())
+  shop         String
+  collectionId String
+  collection   CollectionConfig @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+  dateKey      String   // "YYYY-MM-DD" in the shop's own timezone
+  slot         Int      // 0 = first time slot, 1 = second (twice-daily's later run)
+  scheduledFor DateTime // the UTC instant this slot resolved to — kept for diagnosing DST edges
+  claimedAt    DateTime @default(now())
+
+  @@unique([collectionId, dateKey, slot])
+  @@index([shop, claimedAt])
 }
 
 // A single shuffle/reorder event — powers the Workspace "History" tab, the

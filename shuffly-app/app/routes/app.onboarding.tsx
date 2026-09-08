@@ -6,7 +6,7 @@ import db from "../db.server";
 import { getOrCreateShopSettings } from "../lib/shop-context.server";
 import { listAllCollections, getCollectionProductsInOrder } from "../lib/collections.server";
 import { computeShuffledOrder, type ShuffleProductInput } from "../lib/shuffle-algorithm.server";
-import { computeNextRun } from "../lib/schedule.server";
+import { scheduleWriteFields } from "../lib/schedule.server";
 import { defaultScheduleForPlan, planOf } from "../lib/plans.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
@@ -114,13 +114,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const giveEveryoneATurn = formData.get("giveEveryoneATurn") === "true";
 
     for (const collection of allowed) {
-      const nextRunAt = computeNextRun(
-        new Date(),
-        settings.timezone,
-        scheduleType,
-        settings.defaultRunTime,
-        scheduleWeekday,
-      );
       await db.collectionConfig.upsert({
         where: { shop_collectionGid: { shop, collectionGid: collection.id } },
         update: {},
@@ -132,10 +125,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           pushSoldOutToEnd,
           boostNewArrivals,
           giveEveryoneATurn,
-          scheduleType,
-          scheduleTime: settings.defaultRunTime,
-          scheduleWeekday,
-          nextRunAt,
+          ...scheduleWriteFields(new Date(), settings.timezone, {
+            scheduleType,
+            scheduleTime: settings.defaultRunTime,
+            scheduleTime2: null,
+            scheduleWeekday,
+          }),
         },
       });
     }

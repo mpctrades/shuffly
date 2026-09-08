@@ -1,5 +1,6 @@
 // The one function that actually makes Shuffly "automatic": find every
-// collection across every shop whose nextRunAt has passed, and shuffle it.
+// collection whose schedule says it's due right now, in that shop's own
+// local time, and shuffle it.
 //
 // Two things call this:
 //   1. app/lib/scheduler.server.ts — an in-process poller, good enough for
@@ -10,29 +11,89 @@
 //      instead, for serverless/multi-instance deployments. Recommended for
 //      production since it survives restarts and avoids double-running
 //      across replicas.
+//
+// How "due" is decided (this changed in Update 1):
+//
+// Nothing is queued ahead of time. Each pass re-reads every candidate
+// collection's *currently stored* schedule and asks `dueSlots` what that
+// schedule says about right now. So when a merchant moves their shuffle from
+// 18:00 to 09:00, the next run follows the new time immediately — there is no
+// leftover job pointing at 18:00, because there was never a job.
+//
+// `nextRunAt` survives only as (a) the countdown the UI renders and (b) an
+// index-backed prefilter that keeps this from scanning every RUNNING
+// collection every minute. It is advisory: a stale value can invite a
+// collection into a sweep that turns out to have nothing due (harmless, and
+// repaired on the way out), but it can never cause a run at the old time.
+//
+// Firing exactly once is enforced by ShuffleSlotClaim, not by timing: the
+// claim row (collection, shop-local date, slot) is inserted *before* the
+// shuffle runs, and its unique constraint rejects a second attempt. That
+// covers overlapping sweeps, a retried sweep, two replicas racing, and the
+// repeated hour on a DST fall-back day.
 
 import { randomUUID } from "node:crypto";
 import db from "../db.server";
 import { unauthenticated } from "../shopify.server";
 import { runShuffleForCollection } from "./shuffle-engine.server";
+import { dueSlots, nextRunFor, type DueSlot, type ScheduleType } from "./schedule.server";
 
 export interface CronSweepResult {
   checked: number;
   ran: number;
   failed: number;
+  /** Slots that were due but already claimed by another sweep — the
+   * idempotency guard doing its job, not an error. */
+  skipped: number;
   details: Array<{ shop: string; collection: string; ok: boolean; message: string }>;
 }
 
-export async function runDueShuffles(): Promise<CronSweepResult> {
-  const due = await db.collectionConfig.findMany({
-    where: { status: "RUNNING", nextRunAt: { lte: new Date() } },
+/** Claims are only useful for as long as a slot could still be considered
+ * due, plus enough history to debug a complaint about a missed run. */
+const CLAIM_RETENTION_MS = 30 * 86_400_000;
+
+/**
+ * Take the (collection, local day, slot) claims for `slots`, returning only
+ * the ones this process actually won. A unique-constraint violation (P2002)
+ * means another sweep got there first, which is the whole point.
+ */
+async function claimSlots(shop: string, collectionId: string, slots: DueSlot[]): Promise<DueSlot[]> {
+  const won: DueSlot[] = [];
+  for (const slot of slots) {
+    try {
+      await db.shuffleSlotClaim.create({
+        data: { shop, collectionId, dateKey: slot.dateKey, slot: slot.slot, scheduledFor: slot.at },
+      });
+      won.push(slot);
+    } catch (err) {
+      if ((err as { code?: string }).code !== "P2002") throw err;
+    }
+  }
+  return won;
+}
+
+async function pruneOldSlotClaims(now: Date): Promise<void> {
+  await db.shuffleSlotClaim.deleteMany({
+    where: { claimedAt: { lt: new Date(now.getTime() - CLAIM_RETENTION_MS) } },
+  });
+}
+
+export async function runDueShuffles(now: Date = new Date()): Promise<CronSweepResult> {
+  // Advisory prefilter — see the note at the top of this file. `nextRunAt:
+  // null` is included because a row that has never been scheduled (or was
+  // written by a path that didn't set it) must still be evaluated.
+  const candidates = await db.collectionConfig.findMany({
+    where: {
+      status: "RUNNING",
+      OR: [{ nextRunAt: null }, { nextRunAt: { lte: now } }],
+    },
   });
 
-  const result: CronSweepResult = { checked: due.length, ran: 0, failed: 0, details: [] };
-  if (due.length === 0) return result;
+  const result: CronSweepResult = { checked: candidates.length, ran: 0, failed: 0, skipped: 0, details: [] };
+  if (candidates.length === 0) return result;
 
-  const byShop = new Map<string, typeof due>();
-  for (const config of due) {
+  const byShop = new Map<string, typeof candidates>();
+  for (const config of candidates) {
     byShop.set(config.shop, [...(byShop.get(config.shop) ?? []), config]);
   }
 
@@ -41,11 +102,42 @@ export async function runDueShuffles(): Promise<CronSweepResult> {
     if (!settings) {
       settings = await db.shopSettings.create({ data: { shop } });
     }
+
+    // Work out what's due before paying for an admin session: a sweep that
+    // only picked these collections up because of a stale nextRunAt has
+    // nothing to do, and shouldn't touch Shopify at all.
+    const work = configs.map((config) => ({
+      config,
+      due: dueSlots(now, settings.timezone, {
+        scheduleType: config.scheduleType as ScheduleType,
+        scheduleTime: config.scheduleTime,
+        scheduleTime2: config.scheduleTime2,
+        scheduleWeekday: config.scheduleWeekday,
+      }),
+    }));
+
+    // Repair the advisory countdown for everything in this sweep, whether or
+    // not it runs — this is what stops a stale nextRunAt from persisting.
+    for (const { config } of work) {
+      const nextRunAt = nextRunFor(new Date(), settings.timezone, {
+        scheduleType: config.scheduleType as ScheduleType,
+        scheduleTime: config.scheduleTime,
+        scheduleTime2: config.scheduleTime2,
+        scheduleWeekday: config.scheduleWeekday,
+      });
+      if (nextRunAt?.getTime() !== config.nextRunAt?.getTime()) {
+        await db.collectionConfig.update({ where: { id: config.id }, data: { nextRunAt } });
+      }
+    }
+
+    const withWork = work.filter((item) => item.due.length > 0);
+    if (withWork.length === 0) continue;
+
     let admin;
     try {
       admin = (await unauthenticated.admin(shop)).admin;
     } catch (err) {
-      for (const config of configs) {
+      for (const { config } of withWork) {
         result.failed++;
         result.details.push({
           shop,
@@ -62,7 +154,18 @@ export async function runDueShuffles(): Promise<CronSweepResult> {
     // moved" as a single entry instead of N separate lines.
     const batchId = randomUUID();
 
-    for (const config of configs) {
+    for (const { config, due } of withWork) {
+      // Claim every due slot but shuffle only once. If a sweep comes back
+      // from an outage with both of today's slots overdue, running the same
+      // collection twice inside a second would move products twice for no
+      // merchant-visible benefit and log two Activity entries — while
+      // claiming both is what stops the earlier one being retried later.
+      const won = await claimSlots(shop, config.id, due);
+      if (won.length === 0) {
+        result.skipped += due.length;
+        continue;
+      }
+
       try {
         const summary = await runShuffleForCollection(
           admin,
@@ -84,5 +187,6 @@ export async function runDueShuffles(): Promise<CronSweepResult> {
     }
   }
 
+  await pruneOldSlotClaims(now);
   return result;
 }

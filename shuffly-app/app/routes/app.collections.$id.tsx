@@ -7,12 +7,27 @@ import db from "../db.server";
 import { getOrCreateShopSettings } from "../lib/shop-context.server";
 import { getCollectionPreviewAndCount } from "../lib/collections.server";
 import { runShuffleForCollection, undoRun } from "../lib/shuffle-engine.server";
-import { computeNextRun, formatActivityTimestamp, formatNextRun, type ScheduleType } from "../lib/schedule.server";
+import {
+  formatActivityTimestamp,
+  formatNextRun,
+  nextRunFor,
+  normalizeHhMm,
+  scheduleWriteFields,
+  timezoneOffsetLabel,
+  type ScheduleType,
+} from "../lib/schedule.server";
+// Client-safe (see time-slots.ts) — the component below renders these.
+import { defaultSecondSlot, timeOptionsIncluding } from "../lib/time-slots";
 import { closeModal, useModalDismissWorkaround } from "../lib/polaris-modal";
 import { planOf, pruneExpiredUndoSnapshots } from "../lib/plans.server";
 
 const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 const RULES_SAVE_BAR_ID = "collection-rules-save-bar";
+
+/** The second slot is a top-tier entitlement. Gate on the entitlement, not
+ * on a plan id: Agency has TWICE_DAILY too, and hardcoding "PRO" would lock
+ * the feature for the most expensive plan in production. */
+const SECOND_SLOT_SCHEDULE: ScheduleType = "TWICE_DAILY";
 
 export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   const { admin, session } = await authenticate.admin(request);
@@ -62,8 +77,10 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     preview,
     runs,
     timezone: settings.timezone,
+    timezoneLabel: `${settings.timezone} (${timezoneOffsetLabel(settings.timezone)})`,
     nextRunLabel: formatNextRun(config.nextRunAt, settings.timezone),
     allowedSchedules: plan.allowedSchedules,
+    canPickSecondSlot: plan.allowedSchedules.includes(SECOND_SLOT_SCHEDULE),
     canPin: plan.canPin,
     undoRetentionDays: plan.undoRetentionDays,
   };
@@ -95,14 +112,40 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
     const scheduleWeekdayRaw = formData.get("scheduleWeekday");
     const scheduleWeekday = scheduleWeekdayRaw != null && scheduleWeekdayRaw !== "" ? Number(scheduleWeekdayRaw) : null;
 
-    const nextRunAt =
-      config.status === "RUNNING"
-        ? computeNextRun(new Date(), settings.timezone, scheduleType, scheduleTime, scheduleWeekday)
+    // The second slot only exists on a plan that allows TWICE_DAILY, and the
+    // schedule-type guard above already rejects that type for other plans —
+    // so a submitted second time can't slip past by itself.
+    const scheduleTime2Raw = formData.get("scheduleTime2");
+    const scheduleTime2 =
+      scheduleType === SECOND_SLOT_SCHEDULE && scheduleTime2Raw != null && scheduleTime2Raw !== ""
+        ? String(scheduleTime2Raw)
         : null;
+    if (scheduleTime2 != null && normalizeHhMm(scheduleTime2) === normalizeHhMm(scheduleTime)) {
+      return data(
+        { ok: false, error: "Pick two different times for a twice-daily shuffle." },
+        { status: 400 },
+      );
+    }
 
     await db.collectionConfig.update({
       where: { id: config.id },
-      data: { pins, pushSoldOutToEnd, boostNewArrivals, giveEveryoneATurn, scheduleType, scheduleTime, scheduleWeekday, nextRunAt },
+      data: {
+        pins,
+        pushSoldOutToEnd,
+        boostNewArrivals,
+        giveEveryoneATurn,
+        // One helper derives every schedule field *and* nextRunAt together,
+        // so the stored countdown can never disagree with the stored time —
+        // and the cron sweep re-reads the time each pass anyway, so this
+        // save takes effect on the very next sweep with nothing left queued
+        // at the old time.
+        ...scheduleWriteFields(
+          new Date(),
+          settings.timezone,
+          { scheduleType, scheduleTime, scheduleTime2, scheduleWeekday },
+          config.status === "RUNNING" ? "RUNNING" : "PAUSED",
+        ),
+      },
     });
     return data({ ok: true });
   }
@@ -121,7 +164,12 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
     const nextStatus = config.status === "RUNNING" ? "PAUSED" : "RUNNING";
     const nextRunAt =
       nextStatus === "RUNNING"
-        ? computeNextRun(new Date(), settings.timezone, config.scheduleType as ScheduleType, config.scheduleTime, config.scheduleWeekday)
+        ? nextRunFor(new Date(), settings.timezone, {
+            scheduleType: config.scheduleType as ScheduleType,
+            scheduleTime: config.scheduleTime,
+            scheduleTime2: config.scheduleTime2,
+            scheduleWeekday: config.scheduleWeekday,
+          })
         : null;
     await db.$transaction([
       db.collectionConfig.update({ where: { id: config.id }, data: { status: nextStatus, nextRunAt } }),
@@ -154,7 +202,9 @@ export default function Workspace() {
     preview,
     runs,
     nextRunLabel,
+    timezoneLabel,
     allowedSchedules,
+    canPickSecondSlot,
     canPin,
     undoRetentionDays,
   } = useLoaderData<typeof loader>();
@@ -164,7 +214,7 @@ export default function Workspace() {
   const shopify = useAppBridge();
   const toggleFetcher = useFetcher();
   const removeFetcher = useFetcher();
-  const rulesFetcher = useFetcher<{ ok: boolean }>();
+  const rulesFetcher = useFetcher<{ ok: boolean; error?: string }>();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- showOverlay/hideOverlay are imperative methods not on the typed public props
   const removeModalRef = useRef<any>(null);
   useModalDismissWorkaround(removeModalRef);
@@ -178,8 +228,20 @@ export default function Workspace() {
   const [giveEveryoneATurn, setGiveEveryoneATurn] = useState(config.giveEveryoneATurn);
   const [scheduleType, setScheduleType] = useState(config.scheduleType);
   const [scheduleTime, setScheduleTime] = useState(config.scheduleTime);
+  // Pre-filled with a sensible second slot (12h apart, which is what
+  // twice-daily used to derive) so a Pro merchant switching to twice-daily
+  // isn't handed an empty field.
+  const [scheduleTime2, setScheduleTime2] = useState(
+    config.scheduleTime2 ?? defaultSecondSlot(config.scheduleTime),
+  );
   const [scheduleWeekday, setScheduleWeekday] = useState(config.scheduleWeekday ?? 1);
   const [rulesDirty, setRulesDirty] = useState(false);
+
+  const showSecondSlot = scheduleType === SECOND_SLOT_SCHEDULE || canPickSecondSlot;
+  const secondSlotLocked = !canPickSecondSlot;
+  const firstSlotOptions = timeOptionsIncluding(config.scheduleTime, scheduleTime);
+  const secondSlotOptions = timeOptionsIncluding(config.scheduleTime2, scheduleTime2);
+  const slotsClash = scheduleType === SECOND_SLOT_SCHEDULE && scheduleTime2 === scheduleTime;
 
   function markRulesDirty() {
     if (!rulesDirty) {
@@ -205,6 +267,7 @@ export default function Workspace() {
     setGiveEveryoneATurn(config.giveEveryoneATurn);
     setScheduleType(config.scheduleType);
     setScheduleTime(config.scheduleTime);
+    setScheduleTime2(config.scheduleTime2 ?? defaultSecondSlot(config.scheduleTime));
     setScheduleWeekday(config.scheduleWeekday ?? 1);
     setRulesDirty(false);
     shopify.saveBar.hide(RULES_SAVE_BAR_ID);
@@ -220,6 +283,9 @@ export default function Workspace() {
         giveEveryoneATurn: giveEveryoneATurn ? "on" : "",
         scheduleType,
         scheduleTime,
+        // Only sent when the plan actually has the entitlement — the action
+        // ignores it otherwise, but there's no reason to send it.
+        scheduleTime2: scheduleType === SECOND_SLOT_SCHEDULE && canPickSecondSlot ? scheduleTime2 : "",
         scheduleWeekday: String(scheduleWeekday),
       },
       { method: "post" },
@@ -227,10 +293,15 @@ export default function Workspace() {
   }
 
   useEffect(() => {
-    if (rulesFetcher.state === "idle" && rulesFetcher.data?.ok) {
+    if (rulesFetcher.state !== "idle" || !rulesFetcher.data) return;
+    if (rulesFetcher.data.ok) {
       setRulesDirty(false);
       shopify.saveBar.hide(RULES_SAVE_BAR_ID);
       shopify.toast.show("Rules saved");
+    } else {
+      // Leave the save bar up: the merchant's edit is still unsaved, so
+      // hiding it would imply otherwise.
+      shopify.toast.show(rulesFetcher.data.error ?? "Couldn't save those rules", { isError: true });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- fires only on fetcher settle
   }, [rulesFetcher.state, rulesFetcher.data]);
@@ -270,7 +341,7 @@ export default function Workspace() {
           <button
             variant="primary"
             onClick={saveRules}
-            disabled={rulesFetcher.state !== "idle" || undefined}
+            disabled={rulesFetcher.state !== "idle" || slotsClash || undefined}
           >
             Save
           </button>
@@ -337,17 +408,68 @@ export default function Workspace() {
             {allowedSchedules.includes("WEEKLY") && <s-option value="WEEKLY">Weekly</s-option>}
             {allowedSchedules.includes("MANUAL") && <s-option value="MANUAL">Only when I press Shuffle</s-option>}
           </s-select>
-          <s-text-field
-            label="Time (24h, HH:MM)"
-            value={scheduleTime}
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- currentTarget.value isn't in the typed event map
-            onInput={(e: any) => {
-              setScheduleTime(e.currentTarget?.value ?? "");
-              markRulesDirty();
-            }}
-          />
+          {scheduleType !== "MANUAL" && (
+            <>
+              <s-select
+                label={scheduleType === SECOND_SLOT_SCHEDULE ? "First shuffle at" : "Shuffle at"}
+                value={scheduleTime}
+                details={`${timezoneLabel} — your store's own time`}
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any -- currentTarget.value isn't in the typed event map
+                onChange={(e: any) => {
+                  setScheduleTime(e.currentTarget?.value ?? "06:00");
+                  markRulesDirty();
+                }}
+              >
+                {firstSlotOptions.map((t) => (
+                  <s-option key={t} value={t}>
+                    {t}
+                  </s-option>
+                ))}
+              </s-select>
+
+              {showSecondSlot && (
+                <>
+                  <s-select
+                    label="Second shuffle at"
+                    value={scheduleTime2}
+                    disabled={secondSlotLocked || scheduleType !== SECOND_SLOT_SCHEDULE || undefined}
+                    details={
+                      secondSlotLocked
+                        ? "Two shuffles a day is a Pro feature."
+                        : scheduleType === SECOND_SLOT_SCHEDULE
+                          ? undefined
+                          : "Set the schedule to Twice daily to use this."
+                    }
+                    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- currentTarget.value isn't in the typed event map
+                    onChange={(e: any) => {
+                      setScheduleTime2(e.currentTarget?.value ?? "18:00");
+                      markRulesDirty();
+                    }}
+                  >
+                    {secondSlotOptions.map((t) => (
+                      <s-option key={t} value={t}>
+                        {t}
+                      </s-option>
+                    ))}
+                  </s-select>
+                  {secondSlotLocked && (
+                    <s-paragraph>
+                      <s-text color="subdued">Shuffle twice a day on Pro. </s-text>
+                      <s-link href="/app/plan">Upgrade to Pro</s-link>
+                    </s-paragraph>
+                  )}
+                  {slotsClash && !secondSlotLocked && (
+                    <s-paragraph>
+                      <s-text tone="critical">Pick two different times for a twice-daily shuffle.</s-text>
+                    </s-paragraph>
+                  )}
+                </>
+              )}
+            </>
+          )}
           <s-select
             label="Weekday (for weekly)"
+            disabled={scheduleType !== "WEEKLY" || undefined}
             value={String(scheduleWeekday)}
             // eslint-disable-next-line @typescript-eslint/no-explicit-any -- currentTarget.value isn't in the typed event map
             onChange={(e: any) => {
