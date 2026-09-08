@@ -1,10 +1,19 @@
-import { forwardRef, useEffect, useRef, useState } from "react";
+import { Fragment, forwardRef, useEffect, useMemo, useRef, useState } from "react";
 import { useModalDismissWorkaround } from "../lib/polaris-modal";
 import { ModalErrorBoundary } from "./ModalErrorBoundary";
+import { ManualSortConsequences } from "./ManualSortWarning";
 
 export interface AddCollectionsPickerData {
-  addable: Array<{ id: string; title: string; productsCount: number }>;
-  nonManualCount: number;
+  addable: Array<{
+    id: string;
+    title: string;
+    productsCount: number;
+    sortOrder: string;
+    sortOrderLabel: string;
+    /** True for an automated (or otherwise non-Manual) collection. Still
+     * fully selectable — Shuffly switches it as part of adding it. */
+    needsManual: boolean;
+  }>;
   hasMore?: boolean;
   query?: string;
   plan: { name: string; maxCollections: number | null };
@@ -81,6 +90,21 @@ export const AddCollectionsModal = forwardRef<any, AddCollectionsModalProps>(
       });
     }
 
+    // Which of the selected collections Shuffly will have to switch to
+    // Manual sort. This is what turns the Add into a confirmed switch.
+    const selectedNeedingManual = useMemo(
+      () => (data?.addable ?? []).filter((c) => selected.has(c.id) && c.needsManual),
+      [data, selected],
+    );
+    const willSwitchAny = selectedNeedingManual.length > 0;
+    // A single acknowledgement covers the whole selection. A nested modal
+    // would be the other option, but Polaris modals don't nest reliably and
+    // this has to name every collection's own current sort anyway.
+    const [confirmedSwitch, setConfirmedSwitch] = useState(false);
+    useEffect(() => {
+      if (!willSwitchAny) setConfirmedSwitch(false);
+    }, [willSwitchAny]);
+
     const maxCollections = data?.plan.maxCollections ?? null;
     const trackedCount = data?.trackedCount ?? 0;
     const room =
@@ -89,7 +113,8 @@ export const AddCollectionsModal = forwardRef<any, AddCollectionsModalProps>(
         : Math.max(0, maxCollections - trackedCount);
     const nothingSelected = selected.size === 0;
     const overLimit = selected.size > room;
-    const addDisabled = nothingSelected || overLimit;
+    const needsAcknowledgement = willSwitchAny && !confirmedSwitch;
+    const addDisabled = nothingSelected || overLimit || needsAcknowledgement;
 
     let helperText: string | null = null;
     if (nothingSelected) {
@@ -99,6 +124,8 @@ export const AddCollectionsModal = forwardRef<any, AddCollectionsModalProps>(
         room === 0
           ? `Your ${data?.plan.name} plan is already at its limit of ${maxCollections} tracked collection${maxCollections === 1 ? "" : "s"}.`
           : `You can add up to ${room} more on your ${data?.plan.name} plan — uncheck ${selected.size - room} to continue.`;
+    } else if (needsAcknowledgement) {
+      helperText = "Confirm the sort change above to continue.";
     }
 
     return (
@@ -125,18 +152,9 @@ export const AddCollectionsModal = forwardRef<any, AddCollectionsModalProps>(
                 <s-paragraph>
                   {data.addable.length} collection
                   {data.addable.length === 1 ? "" : "s"} aren&apos;t being
-                  shuffled yet.
+                  shuffled yet. Pick any of them — Shuffly switches an
+                  automated collection to Manual sort for you.
                 </s-paragraph>
-
-                {data.nonManualCount > 0 && (
-                  <s-banner tone="warning">
-                    {data.nonManualCount} collection
-                    {data.nonManualCount === 1 ? "" : "s"} use
-                    {data.nonManualCount === 1 ? "s" : ""} a different sort
-                    order. Switch {data.nonManualCount === 1 ? "it" : "them"} to
-                    Manual sort first.
-                  </s-banner>
-                )}
 
                 {data.addable.length > 0 && (
                   <s-select
@@ -170,7 +188,7 @@ export const AddCollectionsModal = forwardRef<any, AddCollectionsModalProps>(
 
                 {data.hasMore && (
                   <s-banner tone="info">
-                    Showing the first {data.addable.length + data.nonManualCount} matching collections. Search by
+                    Showing the first {data.addable.length} matching collections. Search by
                     name to find a specific one.
                   </s-banner>
                 )}
@@ -197,6 +215,11 @@ export const AddCollectionsModal = forwardRef<any, AddCollectionsModalProps>(
                               name="collectionGid"
                               value={c.id}
                               label={`${c.title} — ${c.productsCount} product${c.productsCount === 1 ? "" : "s"}`}
+                              details={
+                                c.needsManual
+                                  ? `Sorted by ${c.sortOrderLabel} — will be switched to Manual`
+                                  : "Manual sort — ready to shuffle"
+                              }
                               checked={selected.has(c.id)}
                               // eslint-disable-next-line @typescript-eslint/no-explicit-any -- currentTarget.checked isn't in the typed event map
                               onChange={(e: any) =>
@@ -211,13 +234,48 @@ export const AddCollectionsModal = forwardRef<any, AddCollectionsModalProps>(
                   </div>
                 )}
                 {data.addable.map((c) => (
-                  <input
-                    key={c.id}
-                    type="hidden"
-                    name={`collectionTitle:${c.id}`}
-                    value={c.title}
-                  />
+                  <Fragment key={c.id}>
+                    <input type="hidden" name={`collectionTitle:${c.id}`} value={c.title} />
+                    {/* So the action knows which ones to switch without
+                        re-querying Shopify for every id. It re-checks the
+                        live sort order before writing anyway. */}
+                    <input type="hidden" name={`collectionSort:${c.id}`} value={c.sortOrder} />
+                  </Fragment>
                 ))}
+
+                {willSwitchAny && (
+                  <s-banner tone="warning" heading="This will change your collection sort to Manual">
+                    <s-stack direction="block" gap="small-200">
+                      <s-paragraph>
+                        {selectedNeedingManual.length === 1
+                          ? `"${selectedNeedingManual[0].title}" is sorted by ${selectedNeedingManual[0].sortOrderLabel}.`
+                          : `${selectedNeedingManual.length} of the collections you picked use a different sort:`}
+                      </s-paragraph>
+                      {selectedNeedingManual.length > 1 && (
+                        <s-unordered-list>
+                          {selectedNeedingManual.map((c) => (
+                            <s-list-item key={c.id}>
+                              {c.title} — {c.sortOrderLabel} → Manual
+                            </s-list-item>
+                          ))}
+                        </s-unordered-list>
+                      )}
+                      <ManualSortConsequences
+                        sortOrderLabel={
+                          selectedNeedingManual.length === 1
+                            ? selectedNeedingManual[0].sortOrderLabel
+                            : "their current sort"
+                        }
+                      />
+                      <s-checkbox
+                        label="I understand — switch them to Manual sort"
+                        checked={confirmedSwitch}
+                        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- currentTarget.checked isn't in the typed event map
+                        onChange={(e: any) => setConfirmedSwitch(Boolean(e.currentTarget?.checked))}
+                      />
+                    </s-stack>
+                  </s-banner>
+                )}
 
                 {helperText && <s-text color="subdued">{helperText}</s-text>}
               </s-stack>
@@ -230,7 +288,7 @@ export const AddCollectionsModal = forwardRef<any, AddCollectionsModalProps>(
           onClick={() => formRef.current?.requestSubmit()}
           disabled={addDisabled || undefined}
         >
-          Add
+          {willSwitchAny ? "Switch & add" : "Add"}
         </s-button>
         <s-button slot="secondary-actions" onClick={onCancel}>
           Cancel

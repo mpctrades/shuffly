@@ -3,6 +3,7 @@ import { useFetcher } from "react-router";
 import type { ShuffleAllPreview } from "../lib/shuffle-preview.server";
 import { useModalDismissWorkaround } from "../lib/polaris-modal";
 import { ModalErrorBoundary } from "./ModalErrorBoundary";
+import { ReorderDelayNote } from "./ManualSortWarning";
 
 interface ShuffleAllConfirmModalProps {
   undoRetentionDays: number;
@@ -53,6 +54,9 @@ export const ShuffleAllConfirmModal = forwardRef<
                 Usually takes about {preview.estimatedSeconds} second{preview.estimatedSeconds === 1 ? "" : "s"}.
                 Order snapshots can be undone for {undoRetentionDays} day{undoRetentionDays === 1 ? "" : "s"}.
               </s-text>
+            </s-paragraph>
+            <s-paragraph>
+              <ReorderDelayNote />
             </s-paragraph>
           </>
         )}

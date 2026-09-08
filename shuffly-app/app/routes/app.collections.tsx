@@ -25,6 +25,7 @@ import { ShuffleAllConfirmModal } from "../components/ShuffleAllConfirmModal";
 import { AddCollectionsModal, type AddCollectionsPickerData } from "../components/AddCollectionsModal";
 import { SwitchToManualModal, type SwitchToManualTarget } from "../components/SwitchToManualModal";
 import { BulkRemoveConfirmModal } from "../components/BulkRemoveConfirmModal";
+import { AddAllUntrackedModal } from "../components/AddAllUntrackedModal";
 
 const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 const SPARKLINE_LENGTH = 7;
@@ -180,6 +181,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         actionLabel: "Switch to Manual",
         actionKind: "switch" as const,
         switchTarget: {
+          mode: "tracked" as const,
           id: r.config.id,
           gid: r.config.collectionGid,
           title: r.config.title,
@@ -397,15 +399,54 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       preset = DEFAULT_ADD_PRESET;
     }
 
+    let switched = 0;
+    let added = 0;
+    const failures: string[] = [];
+
     for (const gid of toAdd) {
       const title = String(formData.get(`collectionTitle:${gid}`) ?? "Collection");
+      // The picker sends each collection's sort order alongside its title,
+      // so an all-Manual selection costs no extra Shopify calls. The value
+      // is only a hint about *whether* to switch — setCollectionManualSort
+      // reads the live sort itself to record previousSortOrder, and the
+      // shuffle engine's own NOT_MANUAL guard catches a hint that went stale
+      // because someone changed the sort in Shopify admin meanwhile.
+      const submittedSort = String(formData.get(`collectionSort:${gid}`) ?? "MANUAL");
+      let previousSortOrder: string | undefined;
+      if (submittedSort !== "MANUAL") {
+        const result = await setCollectionManualSort(admin, gid);
+        if (!result.ok) {
+          failures.push(title);
+          continue;
+        }
+        previousSortOrder = result.previousSortOrder;
+        switched++;
+      }
       await db.collectionConfig.upsert({
         where: { shop_collectionGid: { shop, collectionGid: gid } },
         update: {},
-        create: { shop, collectionGid: gid, title, ...defaultScheduleFields(), ...preset, pins: plan.canPin ? preset.pins : 0 },
+        create: {
+          shop,
+          collectionGid: gid,
+          title,
+          previousSortOrder,
+          ...defaultScheduleFields(),
+          ...preset,
+          pins: plan.canPin ? preset.pins : 0,
+        },
       });
+      added++;
     }
-    return data({ ok: true, added: toAdd.length, skipped: ids.length - toAdd.length });
+    return data({
+      ok: failures.length === 0,
+      added,
+      switched,
+      skipped: ids.length - toAdd.length,
+      error:
+        failures.length > 0
+          ? `Couldn't switch ${failures.join(", ")} to Manual sort. ${added} other collection${added === 1 ? "" : "s"} added.`
+          : undefined,
+    });
   }
 
   if (actionType === "add-untracked") {
@@ -434,11 +475,23 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const title = String(formData.get("title") ?? "Collection");
     const switched = await setCollectionManualSort(admin, gid);
     if (!switched.ok) return data({ ok: false, error: switched.error ?? "Couldn't switch that collection." }, { status: 400 });
-    await db.collectionConfig.upsert({
+    const config = await db.collectionConfig.upsert({
       where: { shop_collectionGid: { shop, collectionGid: gid } },
       update: {},
-      create: { shop, collectionGid: gid, title, ...defaultScheduleFields(), ...DEFAULT_ADD_PRESET },
+      create: {
+        shop,
+        collectionGid: gid,
+        title,
+        previousSortOrder: switched.previousSortOrder,
+        ...defaultScheduleFields(),
+        ...DEFAULT_ADD_PRESET,
+      },
     });
+    // "Switch it, add it, and shuffle it now" in one click, when the
+    // merchant chose not to keep the current order in the confirmation.
+    if (formData.get("keepOrder") === "false") {
+      await runShuffleForCollection(admin, shop, config, settings.timezone, settings.neverMoveTags, "MANUAL", undefined, settings.pageSize);
+    }
     return data({ ok: true });
   }
 
@@ -450,20 +503,31 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const existingCount = await db.collectionConfig.count({ where: { shop } });
     const room = plan.maxCollections === Infinity ? gids.length : Math.max(0, plan.maxCollections - existingCount);
     let added = 0;
+    let switchedCount = 0;
     for (let i = 0; i < gids.length && added < room; i++) {
       const gid = gids[i];
+      let previousSortOrder: string | undefined;
       if (sortOrders[i] !== "MANUAL") {
-        const switched = await setCollectionManualSort(admin, gid);
-        if (!switched.ok) continue;
+        const result = await setCollectionManualSort(admin, gid);
+        if (!result.ok) continue;
+        previousSortOrder = result.previousSortOrder;
+        switchedCount++;
       }
       await db.collectionConfig.upsert({
         where: { shop_collectionGid: { shop, collectionGid: gid } },
         update: {},
-        create: { shop, collectionGid: gid, title: titles[i] ?? "Collection", ...defaultScheduleFields(), ...DEFAULT_ADD_PRESET },
+        create: {
+          shop,
+          collectionGid: gid,
+          title: titles[i] ?? "Collection",
+          previousSortOrder,
+          ...defaultScheduleFields(),
+          ...DEFAULT_ADD_PRESET,
+        },
       });
       added++;
     }
-    return data({ ok: true, added, skipped: gids.length - added });
+    return data({ ok: true, added, switched: switchedCount, skipped: gids.length - added });
   }
 
   if (actionType === "switch-to-manual") {
@@ -654,7 +718,7 @@ export default function Collections() {
   const previewFetcher = useFetcher({ key: "shuffle-all-preview" });
   const remainingFetcher = useFetcher({ key: "shuffle-remaining" });
   const switchFetcher = useFetcher<{ ok: boolean; error?: string }>({ key: "switch-to-manual" });
-  const addFetcher = useFetcher<{ ok: boolean; added?: number; skipped?: number }>({ key: "add-collections" });
+  const addFetcher = useFetcher<{ ok: boolean; added?: number; switched?: number; skipped?: number; error?: string }>({ key: "add-collections" });
   const bulkFetcher = useFetcher<{ ok: boolean; moved?: number; collections?: number }>({ key: "bulk-action" });
 
   // ---- client-side search / filter / sort / page (spec: no server round-trip) ----
@@ -716,6 +780,8 @@ export default function Collections() {
   const [shuffleRunId, setShuffleRunId] = useState<number | null>(null);
   const [pendingRowIds, setPendingRowIds] = useState<Set<string>>(new Set());
   const [switchTarget, setSwitchTarget] = useState<SwitchToManualTarget | null>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- showOverlay/hideOverlay are imperative methods not on the typed public props
+  const addAllModalRef = useRef<any>(null);
   const [awaitingAddModal, setAwaitingAddModal] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const shuffleWasActive = useRef(false);
@@ -736,13 +802,12 @@ export default function Collections() {
   useEffect(() => {
     if (!awaitingAddModal || picker.state !== "idle" || !picker.data) return;
     setAwaitingAddModal(false);
-    const { addable, nonManualCount } = picker.data;
+    const { addable } = picker.data;
     if (addable.length > 0) {
+      // Automated collections are in `addable` now too, so an empty list
+      // genuinely means there is nothing left to add — no "switch them
+      // first" branch to send the merchant away any more.
       addModalRef.current?.showOverlay();
-    } else if (nonManualCount > 0) {
-      shopify.toast.show(
-        `${nonManualCount} collection${nonManualCount === 1 ? "" : "s"} use${nonManualCount === 1 ? "s" : ""} a different sort order. Switch ${nonManualCount === 1 ? "it" : "them"} to Manual sort first.`,
-      );
     } else {
       shopify.toast.show("Every collection is already being shuffled.");
     }
@@ -756,15 +821,16 @@ export default function Collections() {
   useEffect(() => {
     if (addFetcher.state === "idle" && addFetcher.data) {
       closeModal(addModalRef.current);
+      const { added = 0, switched = 0, skipped = 0, error } = addFetcher.data;
       if (addFetcher.data.ok) {
-        const { added = 0, skipped = 0 } = addFetcher.data;
-        shopify.toast.show(
-          skipped > 0
-            ? `${added} collection${added === 1 ? "" : "s"} added — ${skipped} skipped (plan limit)`
-            : `${added} collection${added === 1 ? "" : "s"} added`,
-        );
+        const parts = [`${added} collection${added === 1 ? "" : "s"} added`];
+        // Say so when we changed a merchant's sort order — it happened
+        // because they confirmed it, and it should still be acknowledged.
+        if (switched > 0) parts.push(`${switched} switched to Manual sort`);
+        if (skipped > 0) parts.push(`${skipped} skipped (plan limit)`);
+        shopify.toast.show(parts.join(" — "));
       } else {
-        shopify.toast.show("Couldn't add that just now", { isError: true });
+        shopify.toast.show(error ?? "Couldn't add that just now", { isError: true });
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- fires only on fetcher settle
@@ -808,6 +874,20 @@ export default function Collections() {
 
   function confirmSwitch(keepOrder: boolean) {
     if (!switchTarget) return;
+    // An untracked collection gets switched AND added in the one submit —
+    // that's the "one click, done" flow. A tracked one only needs the switch.
+    if (switchTarget.mode === "untracked") {
+      switchFetcher.submit(
+        {
+          _action: "switch-and-add",
+          gid: switchTarget.gid,
+          title: switchTarget.title,
+          keepOrder: String(keepOrder),
+        },
+        { method: "post" },
+      );
+      return;
+    }
     switchFetcher.submit(
       { _action: "switch-to-manual", id: switchTarget.id, gid: switchTarget.gid, keepOrder: String(keepOrder) },
       { method: "post" },
@@ -818,7 +898,12 @@ export default function Collections() {
     if (switchFetcher.state === "idle" && switchFetcher.data) {
       closeModal(switchModalRef.current);
       if (switchFetcher.data.ok) {
-        shopify.toast.show(`${switchTarget?.title ?? "Collection"} switched to Manual sort`);
+        const title = switchTarget?.title ?? "Collection";
+        shopify.toast.show(
+          switchTarget?.mode === "untracked"
+            ? `${title} switched to Manual sort and added`
+            : `${title} switched to Manual sort`,
+        );
       } else {
         shopify.toast.show(switchFetcher.data.error ?? "Couldn't switch that collection", { isError: true });
       }
@@ -913,8 +998,15 @@ export default function Collections() {
   const untrackedCollections = untrackedDataFetcher.data?.items ?? [];
   const untrackedMore = untrackedDataFetcher.data?.hasMore ?? false;
   const totalStoreCollections = untrackedDataFetcher.data?.totalStoreCollections ?? null;
-  const untrackedFetcher = useFetcher<{ ok: boolean; added?: number; skipped?: number }>({ key: "add-all-untracked" });
+  const untrackedFetcher = useFetcher<{ ok: boolean; added?: number; switched?: number; skipped?: number }>({ key: "add-all-untracked" });
   function addAllUntracked() {
+    // Always confirm: this is the one path that could switch several
+    // collections' sort at once, and it used to do it without asking.
+    addAllModalRef.current?.showOverlay();
+  }
+
+  function confirmAddAllUntracked() {
+    closeModal(addAllModalRef.current);
     untrackedFetcher.submit(
       formDataOf({
         _action: "add-all-untracked",
@@ -927,7 +1019,13 @@ export default function Collections() {
   }
   useEffect(() => {
     if (untrackedFetcher.state === "idle" && untrackedFetcher.data?.ok) {
-      shopify.toast.show(`${untrackedFetcher.data.added ?? 0} collection${(untrackedFetcher.data.added ?? 0) === 1 ? "" : "s"} added`);
+      const added = untrackedFetcher.data.added ?? 0;
+      const switched = untrackedFetcher.data.switched ?? 0;
+      shopify.toast.show(
+        switched > 0
+          ? `${added} collection${added === 1 ? "" : "s"} added — ${switched} switched to Manual sort`
+          : `${added} collection${added === 1 ? "" : "s"} added`,
+      );
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- fires only on fetcher settle
   }, [untrackedFetcher.state, untrackedFetcher.data]);
@@ -1125,6 +1223,7 @@ export default function Collections() {
           onAddAll={addAllUntracked}
           addingAll={untrackedFetcher.state !== "idle"}
           onFindMore={openAddModal}
+          onSwitch={openSwitchModal}
         />
       ) : (
         <div className="shuffly-untracked-card">
@@ -1166,6 +1265,14 @@ export default function Collections() {
         busy={switchFetcher.state !== "idle"}
         onConfirm={confirmSwitch}
         onCancel={() => closeModal(switchModalRef.current)}
+      />
+
+      <AddAllUntrackedModal
+        ref={addAllModalRef}
+        items={untrackedCollections}
+        busy={untrackedFetcher.state !== "idle"}
+        onConfirm={confirmAddAllUntracked}
+        onCancel={() => closeModal(addAllModalRef.current)}
       />
 
       <BulkRemoveConfirmModal
@@ -2015,13 +2122,16 @@ function NotShuffledYetCard({
   onAddAll,
   addingAll,
   onFindMore,
+  onSwitch,
 }: {
   items: UntrackedCollectionItem[];
   hasMore: boolean;
   onAddAll: () => void;
   addingAll: boolean;
   onFindMore: () => void;
+  onSwitch: (target: SwitchToManualTarget) => void;
 }) {
+  const anyNeedManual = items.some((item) => item.sortOrder !== "MANUAL");
   return (
     <div className="shuffly-untracked-card">
       <div className="shuffly-untracked-header">
@@ -2033,8 +2143,15 @@ function NotShuffledYetCard({
           Add all {items.length}
         </s-button>
       </div>
+      {anyNeedManual && (
+        <div style={{ padding: "8px 12px 0" }}>
+          <s-text color="subdued">
+            Automated collections can be added too — Shuffly asks before switching one to Manual sort.
+          </s-text>
+        </div>
+      )}
       {items.map((item) => (
-        <UntrackedRow key={item.gid} item={item} />
+        <UntrackedRow key={item.gid} item={item} onSwitch={onSwitch} />
       ))}
       {hasMore && (
         <div style={{ padding: "10px 12px" }}>
@@ -2050,17 +2167,33 @@ function NotShuffledYetCard({
   );
 }
 
-function UntrackedRow({ item }: { item: UntrackedCollectionItem }) {
+function UntrackedRow({
+  item,
+  onSwitch,
+}: {
+  item: UntrackedCollectionItem;
+  onSwitch: (target: SwitchToManualTarget) => void;
+}) {
   const needsManual = item.sortOrder !== "MANUAL";
   const addFetcher = useFetcher<{ ok: boolean; error?: string }>({ key: `row-action-untracked-${item.gid}` });
   const shopify = useAppBridge();
   const busy = addFetcher.state !== "idle";
 
   function onClick() {
-    addFetcher.submit(
-      { _action: needsManual ? "switch-and-add" : "add-untracked", gid: item.gid, title: item.title },
-      { method: "post" },
-    );
+    // Never switch a merchant's sort silently: hand a non-Manual collection
+    // to the confirmation modal, which then does the switch AND the add in
+    // one submit. An already-Manual one has nothing to confirm.
+    if (needsManual) {
+      onSwitch({
+        mode: "untracked",
+        id: "",
+        gid: item.gid,
+        title: item.title,
+        sortOrderLabel: item.sortOrderLabel,
+      });
+      return;
+    }
+    addFetcher.submit({ _action: "add-untracked", gid: item.gid, title: item.title }, { method: "post" });
   }
 
   useEffect(() => {

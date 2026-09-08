@@ -5,7 +5,7 @@ import { useAppBridge } from "@shopify/app-bridge-react";
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { getOrCreateShopSettings } from "../lib/shop-context.server";
-import { getCollectionPreviewAndCount } from "../lib/collections.server";
+import { getCollectionPreviewAndCount, setCollectionManualSort, sortOrderLabel } from "../lib/collections.server";
 import { runShuffleForCollection, undoRun } from "../lib/shuffle-engine.server";
 import {
   formatActivityTimestamp,
@@ -18,6 +18,8 @@ import {
 } from "../lib/schedule.server";
 // Client-safe (see time-slots.ts) — the component below renders these.
 import { defaultSecondSlot, timeOptionsIncluding } from "../lib/time-slots";
+import { SwitchToManualModal, type SwitchToManualTarget } from "../components/SwitchToManualModal";
+import { ReorderDelayNote } from "../components/ManualSortWarning";
 import { closeModal, useModalDismissWorkaround } from "../lib/polaris-modal";
 import { planOf, pruneExpiredUndoSnapshots } from "../lib/plans.server";
 
@@ -73,6 +75,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   return {
     config,
     sortOrder,
+    sortOrderLabel: sortOrderLabel(sortOrder),
     productCount: totalCount,
     preview,
     runs,
@@ -150,6 +153,24 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
     return data({ ok: true });
   }
 
+  if (actionType === "switch-to-manual") {
+    // Same one-click switch the Collections list offers, so a merchant who
+    // landed here from a link isn't sent back out to Shopify admin. Covered
+    // by the write_products scope the app already has — no new permission.
+    const result = await setCollectionManualSort(admin, config.collectionGid);
+    if (!result.ok) {
+      return data({ ok: false, error: result.error ?? "Couldn't switch that collection." }, { status: 400 });
+    }
+    await db.collectionConfig.update({
+      where: { id: config.id },
+      data: { status: "RUNNING", previousSortOrder: result.previousSortOrder },
+    });
+    if (formData.get("keepOrder") === "false") {
+      await runShuffleForCollection(admin, shop, config, settings.timezone, settings.neverMoveTags, "MANUAL", undefined, settings.pageSize);
+    }
+    return data({ ok: true });
+  }
+
   if (actionType === "shuffle-now") {
     const result = await runShuffleForCollection(admin, shop, config, settings.timezone, settings.neverMoveTags, "MANUAL", undefined, settings.pageSize);
     return data(result);
@@ -198,6 +219,7 @@ export default function Workspace() {
   const {
     config,
     sortOrder,
+    sortOrderLabel: currentSortLabel,
     productCount,
     preview,
     runs,
@@ -215,6 +237,10 @@ export default function Workspace() {
   const toggleFetcher = useFetcher();
   const removeFetcher = useFetcher();
   const rulesFetcher = useFetcher<{ ok: boolean; error?: string }>();
+  const switchFetcher = useFetcher<{ ok: boolean; error?: string }>();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- showOverlay/hideOverlay are imperative methods not on the typed public props
+  const switchModalRef = useRef<any>(null);
+  const [switchTarget, setSwitchTarget] = useState<SwitchToManualTarget | null>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- showOverlay/hideOverlay are imperative methods not on the typed public props
   const removeModalRef = useRef<any>(null);
   useModalDismissWorkaround(removeModalRef);
@@ -273,6 +299,36 @@ export default function Workspace() {
     shopify.saveBar.hide(RULES_SAVE_BAR_ID);
   }
 
+  function openSwitchModal() {
+    setSwitchTarget({
+      mode: "tracked",
+      id: config.id,
+      gid: config.collectionGid,
+      title: config.title,
+      sortOrderLabel: currentSortLabel,
+    });
+    switchModalRef.current?.showOverlay();
+  }
+
+  function confirmSwitch(keepOrder: boolean) {
+    switchFetcher.submit(
+      { _action: "switch-to-manual", keepOrder: String(keepOrder) },
+      { method: "post" },
+    );
+  }
+
+  useEffect(() => {
+    if (switchFetcher.state !== "idle" || !switchFetcher.data) return;
+    closeModal(switchModalRef.current);
+    setSwitchTarget(null);
+    if (switchFetcher.data.ok) {
+      shopify.toast.show(`${config.title} switched to Manual sort`);
+    } else {
+      shopify.toast.show(switchFetcher.data.error ?? "Couldn't switch that collection", { isError: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- fires only on fetcher settle
+  }, [switchFetcher.state, switchFetcher.data]);
+
   function saveRules() {
     rulesFetcher.submit(
       {
@@ -328,11 +384,20 @@ export default function Workspace() {
       </s-paragraph>
 
       {sortOrder !== "MANUAL" && (
-        <s-banner tone="warning" heading="This collection isn't sorted manually">
-          <s-paragraph>
-            Shopify only lets an app set product positions when a collection uses manual sort. Go to Collections and
-            use &quot;Switch to manual sort&quot; before shuffling this one.
-          </s-paragraph>
+        <s-banner tone="warning" heading={`This collection is sorted by ${currentSortLabel}`}>
+          <s-stack direction="block" gap="small">
+            <s-paragraph>
+              Shopify only lets an app set product positions on a manually-sorted collection. Shuffly can switch
+              it for you — you don&apos;t need to go to Shopify admin.
+            </s-paragraph>
+            <s-button
+              variant="primary"
+              onClick={openSwitchModal}
+              {...(switchFetcher.state !== "idle" ? { loading: true } : {})}
+            >
+              Switch to Manual sort
+            </s-button>
+          </s-stack>
         </s-banner>
       )}
 
@@ -542,10 +607,18 @@ export default function Workspace() {
           )}
         </s-stack>
 
-        <s-paragraph>
-          This is exactly what happens on schedule, on all {productCount} products — you don&apos;t need to open the
-          app.
-        </s-paragraph>
+        <s-stack direction="block" gap="small-200">
+          <s-paragraph>
+            This is exactly what happens on schedule, on all {productCount} products — you don&apos;t need to open
+            the app.
+          </s-paragraph>
+          <s-paragraph>
+            {/* collectionReorderProducts is asynchronous and the storefront
+                is cached, so the new order is instant in admin and lags on
+                the live store. */}
+            <ReorderDelayNote />
+          </s-paragraph>
+        </s-stack>
       </s-section>
 
       <s-section heading="History">
@@ -576,6 +649,17 @@ export default function Workspace() {
           {undoRetentionDays === 1 ? "" : "s"} on your plan.
         </s-paragraph>
       </s-section>
+
+      <SwitchToManualModal
+        ref={switchModalRef}
+        target={switchTarget}
+        busy={switchFetcher.state !== "idle"}
+        onConfirm={confirmSwitch}
+        onCancel={() => {
+          closeModal(switchModalRef.current);
+          setSwitchTarget(null);
+        }}
+      />
 
       <s-modal ref={removeModalRef} heading={`Remove ${config.title} from Shuffly?`}>
         <s-paragraph>

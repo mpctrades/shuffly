@@ -102,7 +102,11 @@ export async function runShuffleForCollection(
       pinnedCount: 0,
       soldOutCount: 0,
       durationMs: Date.now() - started,
-      message: `"${config.title}" uses a sort order Shuffly can't set positions on yet. Switch it to manual sort first.`,
+      // Reachable when a merchant changes the sort back in Shopify admin
+      // after Shuffly switched it. The Collections list and the collection's
+      // own page both offer a one-click switch, so point there rather than
+      // sending them to Shopify admin.
+      message: `"${config.title}" is no longer on Manual sort, so Shuffly can't set its positions. Open it in Shuffly to switch it back.`,
     };
   }
 
