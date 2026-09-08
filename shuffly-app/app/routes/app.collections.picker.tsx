@@ -43,6 +43,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       needsManual: c.sortOrder !== "MANUAL",
     })),
     hasMore,
+    autoSwitchToManual: settings.autoSwitchToManual,
     query: q,
     plan: { name: plan.name, maxCollections: plan.maxCollections === Infinity ? null : plan.maxCollections },
     trackedCount: tracked.length,

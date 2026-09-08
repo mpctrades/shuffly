@@ -46,6 +46,10 @@ model ShopSettings {
   emailOnFailure      Boolean   @default(true)
   emailMonthlySummary Boolean   @default(true)
   emailMorningRun     Boolean   @default(false)
+  autoSwitchToManual  Boolean   @default(false) // "Switch automatically from now on, don't ask again" —
+                                                 // set from the add-collections dialog. Revocable on the
+                                                 // Settings page: a consent the merchant can't withdraw
+                                                 // isn't consent.
   onboardedAt         DateTime?
   pageSize            Int       @default(24) // products per page in the merchant's theme — Shopify's Admin
                                               // API has no way to read this, so it's a manual setting with
@@ -67,6 +71,15 @@ model CollectionConfig {
   productCount   Int       @default(0)
   status         String    @default("RUNNING") // RUNNING | PAUSED
   previousSortOrder String? // what Collection.sortOrder was before we switched it to MANUAL, if we did
+  originalOrder  String?  // The product order this collection had the moment it was added to Shuffly,
+                          // as a JSON array of NUMERIC product ids (the "gid://shopify/Product/" prefix
+                          // is stripped — it's a quarter of the bytes on a 2000-product collection).
+                          // Deliberately NOT the same thing as ShuffleRun.previousOrder: that is a
+                          // per-run snapshot which pruneExpiredUndoSnapshots deletes after the plan's
+                          // retention window (1 day on Free), so it cannot back a "restore what it looked
+                          // like before Shuffly" promise. This column is never pruned.
+  originalOrderAt DateTime? // when originalOrder was captured; null means we have no snapshot, and the
+                            // remove dialog says so rather than promising a restore it can't do.
   pins           Int       @default(0) // "pin the first N" — these never move
   pushSoldOutToEnd Boolean @default(true)
   boostNewArrivals Boolean @default(true)
@@ -135,7 +148,7 @@ model ShuffleRun {
   shop          String
   collectionId  String
   collection    CollectionConfig @relation(fields: [collectionId], references: [id], onDelete: Cascade)
-  trigger       String // SCHEDULED | MANUAL | SOLD_OUT_REACTION | RESTOCK_REACTION | EXTERNAL_REORDER_DETECTED | PAUSED | RESUMED | SCHEDULE_CHANGED
+  trigger       String // SCHEDULED | MANUAL | SOLD_OUT_REACTION | RESTOCK_REACTION | EXTERNAL_REORDER_DETECTED | PAUSED | RESUMED | SCHEDULE_CHANGED | SORT_CHANGED | SORT_RESTORED
   status        String // OK | FAILED
   movedCount    Int       @default(0)
   pinnedCount   Int       @default(0)

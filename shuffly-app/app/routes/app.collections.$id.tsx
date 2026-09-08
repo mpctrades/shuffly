@@ -6,7 +6,7 @@ import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { getOrCreateShopSettings } from "../lib/shop-context.server";
 import { getCollectionPreviewAndCount, setCollectionManualSort, sortOrderLabel } from "../lib/collections.server";
-import { runShuffleForCollection, undoRun } from "../lib/shuffle-engine.server";
+import { restoreOnRemove, runShuffleForCollection, undoRun } from "../lib/shuffle-engine.server";
 import {
   formatActivityTimestamp,
   formatNextRun,
@@ -21,6 +21,7 @@ import {
 import { defaultSecondSlot, timeOptionsIncluding } from "../lib/time-slots";
 import { SwitchToManualModal, type SwitchToManualTarget } from "../components/SwitchToManualModal";
 import { ReorderDelayNote } from "../components/ManualSortWarning";
+import { RemoveCollectionModal } from "../components/RemoveCollectionModal";
 import { closeModal, useModalDismissWorkaround } from "../lib/polaris-modal";
 import { planOf, pruneExpiredUndoSnapshots, timeSlots } from "../lib/plans.server";
 
@@ -84,6 +85,12 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     timezoneLabel: `${settings.timezone} (${timezoneOffsetLabel(settings.timezone)})`,
     timezoneName: settings.timezone,
     nextRunLabel: formatNextRun(config.nextRunAt, settings.timezone),
+    // Drives the remove dialog's copy — it must only offer what these two
+    // fields can actually deliver.
+    restorable: {
+      sortOrderLabel: config.previousSortOrder ? sortOrderLabel(config.previousSortOrder) : null,
+      hasOrderSnapshot: Boolean(config.originalOrder) && !config.previousSortOrder,
+    },
     allowedSchedules: plan.allowedSchedules,
     // Same helper the plan bar composes "N time slots" from — so the picker
     // that offers the slot and the copy that advertises it cannot disagree.
@@ -237,6 +244,31 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
   }
 
   if (actionType === "remove") {
+    // The merchant chose in the dialog; restore is the default there, but the
+    // choice is always explicit — never silent either way.
+    const restore = formData.get("restore") !== "false";
+    let restored: { restoredSort: string | null; restoredOrder: boolean; error?: string } = {
+      restoredSort: null,
+      restoredOrder: false,
+    };
+    if (restore) restored = await restoreOnRemove(admin, config);
+
+    await db.shuffleRun.create({
+      data: {
+        shop,
+        collectionId: config.id,
+        trigger: "SORT_RESTORED",
+        status: restored.error ? "FAILED" : "OK",
+        message: restored.error
+          ? `Removed, but couldn't restore: ${restored.error}`
+          : restored.restoredSort
+            ? `Removed — sort put back to ${sortOrderLabel(restored.restoredSort)}`
+            : restored.restoredOrder
+              ? "Removed — original product order put back"
+              : "Removed — order left exactly as it is",
+      },
+    });
+
     await db.collectionConfig.delete({ where: { id: config.id } });
     return redirect("/app/collections");
   }
@@ -255,6 +287,7 @@ export default function Workspace() {
     nextRunLabel,
     timezoneLabel,
     timezoneName,
+    restorable,
     allowedSchedules,
     canPickSecondSlot,
     canPin,
@@ -715,24 +748,17 @@ export default function Workspace() {
         }}
       />
 
-      <s-modal ref={removeModalRef} heading={`Remove ${config.title} from Shuffly?`}>
-        <s-paragraph>
-          Shuffly will stop shuffling this collection. The order it currently has stays exactly as it is — nothing
-          reverts.
-        </s-paragraph>
-        <s-button
-          slot="primary-action"
-          variant="primary"
-          tone="critical"
-          onClick={() => removeFetcher.submit({ _action: "remove" }, { method: "post" })}
-          {...(removeFetcher.state !== "idle" ? { loading: true } : {})}
-        >
-          Remove
-        </s-button>
-        <s-button slot="secondary-actions" onClick={() => closeModal(removeModalRef.current)}>
-          Cancel
-        </s-button>
-      </s-modal>
+      <RemoveCollectionModal
+        ref={removeModalRef}
+        title={config.title}
+        restorable={restorable}
+        busy={removeFetcher.state !== "idle"}
+        onConfirm={(restore) =>
+          removeFetcher.submit({ _action: "remove", restore: String(restore) }, { method: "post" })
+        }
+        onCancel={() => closeModal(removeModalRef.current)}
+      />
+
     </s-page>
   );
 }

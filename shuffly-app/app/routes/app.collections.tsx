@@ -6,11 +6,13 @@ import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { getOrCreateShopSettings } from "../lib/shop-context.server";
 import {
+  captureOriginalOrder,
   hydrateTrackedCollections,
+  mapWithLimit,
   setCollectionManualSort,
   sortOrderLabel,
 } from "../lib/collections.server";
-import { runShuffleForCollection } from "../lib/shuffle-engine.server";
+import { restoreOnRemove, runShuffleForCollection } from "../lib/shuffle-engine.server";
 import { previewShuffleAll } from "../lib/shuffle-preview.server";
 import { formatActivityTimestamp, nextRunFor, scheduleWriteFields, type ScheduleType } from "../lib/schedule.server";
 import { cadenceLabel, defaultScheduleForPlan, isTopPlan, planOf, pruneExpiredUndoSnapshots } from "../lib/plans.server";
@@ -27,6 +29,7 @@ import { SwitchToManualModal, type SwitchToManualTarget } from "../components/Sw
 import { BulkRemoveConfirmModal } from "../components/BulkRemoveConfirmModal";
 import { PlanBar } from "../components/PlanBar";
 import { AddAllUntrackedModal } from "../components/AddAllUntrackedModal";
+import { SwitchSortConfirmModal, type SortSwitchTarget } from "../components/SwitchSortConfirmModal";
 
 const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 const SPARKLINE_LENGTH = 7;
@@ -279,6 +282,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     totalProductsInRotation,
     productsActuallyMoving,
     lastBatch,
+    // When on, the add dialog is skipped entirely and the switch happens
+    // straight away — revocable on the Settings page.
+    autoSwitchToManual: settings.autoSwitchToManual,
     planName: plan.name,
     planLimit: plan.maxCollections === Infinity ? null : plan.maxCollections,
     // The plan card's data. ShopSettings.plan is already a local cache of
@@ -403,29 +409,44 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       preset = DEFAULT_ADD_PRESET;
     }
 
-    let switched = 0;
-    let added = 0;
-    const failures: string[] = [];
+    // Consent: either the merchant just ticked "switch automatically from now
+    // on" in the dialog, or they'd ticked it previously. Either way it is
+    // recorded before anything is mutated, and it stays revocable on the
+    // Settings page.
+    if (formData.get("rememberAutoSwitch") === "true" && !settings.autoSwitchToManual) {
+      await db.shopSettings.update({ where: { shop }, data: { autoSwitchToManual: true } });
+    }
 
-    for (const gid of toAdd) {
+    interface AddOutcome {
+      gid: string;
+      title: string;
+      ok: boolean;
+      switchedFrom: string | null;
+      error?: string;
+    }
+
+    // Four at a time: fast enough for a twenty-collection batch, gentle
+    // enough not to trip Shopify's rate limiter. Each collection is
+    // independent, so one failure never fails the batch.
+    const outcomes = await mapWithLimit<string, AddOutcome>(toAdd, 4, async (gid) => {
       const title = String(formData.get(`collectionTitle:${gid}`) ?? "Collection");
-      // The picker sends each collection's sort order alongside its title,
-      // so an all-Manual selection costs no extra Shopify calls. The value
-      // is only a hint about *whether* to switch — setCollectionManualSort
-      // reads the live sort itself to record previousSortOrder, and the
-      // shuffle engine's own NOT_MANUAL guard catches a hint that went stale
-      // because someone changed the sort in Shopify admin meanwhile.
       const submittedSort = String(formData.get(`collectionSort:${gid}`) ?? "MANUAL");
+      const needsSwitch = submittedSort !== "MANUAL";
+
+      // Snapshot BEFORE touching anything — this is what makes the switch
+      // reversible, and it's captured for already-Manual collections too,
+      // since a hand-curated order is exactly what a merchant wants back.
+      const snapshot = await captureOriginalOrder(admin, gid);
+
       let previousSortOrder: string | undefined;
-      if (submittedSort !== "MANUAL") {
+      if (needsSwitch) {
         const result = await setCollectionManualSort(admin, gid);
         if (!result.ok) {
-          failures.push(title);
-          continue;
+          return { gid, title, ok: false, switchedFrom: null, error: result.error };
         }
         previousSortOrder = result.previousSortOrder;
-        switched++;
       }
+
       await db.collectionConfig.upsert({
         where: { shop_collectionGid: { shop, collectionGid: gid } },
         update: {},
@@ -434,21 +455,59 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           collectionGid: gid,
           title,
           previousSortOrder,
+          originalOrder: snapshot?.packed ?? null,
+          originalOrderAt: snapshot ? new Date() : null,
           ...defaultScheduleFields(),
           ...preset,
           pins: plan.canPin ? preset.pins : 0,
         },
       });
-      added++;
+
+      return { gid, title, ok: true, switchedFrom: previousSortOrder ?? null };
+    });
+
+    // One Activity row per sort change: which collection, from what, to what,
+    // and when. "Who" isn't available — this app uses offline tokens only, so
+    // there is no staff identity attached to the request.
+    const switchedOutcomes = outcomes.filter((o) => o.ok && o.switchedFrom);
+    if (switchedOutcomes.length > 0) {
+      const configs = await db.collectionConfig.findMany({
+        where: { shop, collectionGid: { in: switchedOutcomes.map((o) => o.gid) } },
+        select: { id: true, collectionGid: true },
+      });
+      const idByGid = new Map(configs.map((c) => [c.collectionGid, c.id]));
+      await db.$transaction(
+        switchedOutcomes
+          .filter((o) => idByGid.has(o.gid))
+          .map((o) =>
+            db.shuffleRun.create({
+              data: {
+                shop,
+                collectionId: idByGid.get(o.gid)!,
+                trigger: "SORT_CHANGED",
+                status: "OK",
+                message: `${sortOrderLabel(o.switchedFrom!)} → Manual`,
+              },
+            }),
+          ),
+      );
     }
+
+    const added = outcomes.filter((o) => o.ok).length;
+    const switched = switchedOutcomes.length;
+    const failures = outcomes.filter((o) => !o.ok);
+
     return data({
       ok: failures.length === 0,
       added,
       switched,
       skipped: ids.length - toAdd.length,
+      // Named, with their gids, so the modal can offer a retry for exactly
+      // the ones that failed rather than making the merchant start over.
+      failed: failures.map((f) => ({ gid: f.gid, title: f.title, error: f.error ?? "Unknown error" })),
       error:
         failures.length > 0
-          ? `Couldn't switch ${failures.join(", ")} to Manual sort. ${added} other collection${added === 1 ? "" : "s"} added.`
+          ? `Couldn't switch ${failures.map((f) => f.title).join(", ")}. ${added} other collection${added === 1 ? "" : "s"} added.`
           : undefined,
     });
   }
@@ -642,12 +701,68 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   if (actionType === "bulk-remove") {
     const ids = formData.getAll("id").map(String);
+    const restore = formData.get("restore") !== "false";
+    const configs = await db.collectionConfig.findMany({ where: { id: { in: ids }, shop } });
+
+    let restoredCount = 0;
+    if (restore) {
+      // Four at a time, same as the add path, and one failure never blocks
+      // the rest — a collection we can't restore is still removed, and the
+      // Activity row says what happened to it.
+      const results = await mapWithLimit(configs, 4, async (config) => ({
+        config,
+        result: await restoreOnRemove(admin, config),
+      }));
+      restoredCount = results.filter((r) => r.result.restoredSort || r.result.restoredOrder).length;
+      await db.$transaction(
+        results.map(({ config, result }) =>
+          db.shuffleRun.create({
+            data: {
+              shop,
+              collectionId: config.id,
+              trigger: "SORT_RESTORED",
+              status: result.error ? "FAILED" : "OK",
+              message: result.error
+                ? `Removed, but couldn't restore: ${result.error}`
+                : result.restoredSort
+                  ? `Removed — sort put back to ${sortOrderLabel(result.restoredSort)}`
+                  : result.restoredOrder
+                    ? "Removed — original product order put back"
+                    : "Removed — order left exactly as it is",
+            },
+          }),
+        ),
+      );
+    }
+
     await db.collectionConfig.deleteMany({ where: { id: { in: ids }, shop } });
-    return data({ ok: true });
+    return data({ ok: true, restored: restoredCount });
   }
 
   if (actionType === "remove") {
     const id = String(formData.get("id"));
+    const restore = formData.get("restore") !== "false";
+    const config = await db.collectionConfig.findFirst({ where: { id, shop } });
+    if (!config) return data({ ok: false }, { status: 404 });
+
+    const result = restore
+      ? await restoreOnRemove(admin, config)
+      : { restoredSort: null, restoredOrder: false, error: undefined as string | undefined };
+    await db.shuffleRun.create({
+      data: {
+        shop,
+        collectionId: config.id,
+        trigger: "SORT_RESTORED",
+        status: result.error ? "FAILED" : "OK",
+        message: result.error
+          ? `Removed, but couldn't restore: ${result.error}`
+          : result.restoredSort
+            ? `Removed — sort put back to ${sortOrderLabel(result.restoredSort)}`
+            : result.restoredOrder
+              ? "Removed — original product order put back"
+              : "Removed — order left exactly as it is",
+      },
+    });
     await db.collectionConfig.deleteMany({ where: { id, shop } });
     return data({ ok: true });
   }
@@ -723,7 +838,14 @@ export default function Collections() {
   const previewFetcher = useFetcher({ key: "shuffle-all-preview" });
   const remainingFetcher = useFetcher({ key: "shuffle-remaining" });
   const switchFetcher = useFetcher<{ ok: boolean; error?: string }>({ key: "switch-to-manual" });
-  const addFetcher = useFetcher<{ ok: boolean; added?: number; switched?: number; skipped?: number; error?: string }>({ key: "add-collections" });
+  const addFetcher = useFetcher<{
+    ok: boolean;
+    added?: number;
+    switched?: number;
+    skipped?: number;
+    failed?: Array<{ gid: string; title: string; error: string }>;
+    error?: string;
+  }>({ key: "add-collections" });
   const bulkFetcher = useFetcher<{ ok: boolean; moved?: number; collections?: number }>({ key: "bulk-action" });
 
   // ---- client-side search / filter / sort / page (spec: no server round-trip) ----
@@ -787,6 +909,10 @@ export default function Collections() {
   const [switchTarget, setSwitchTarget] = useState<SwitchToManualTarget | null>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- showOverlay/hideOverlay are imperative methods not on the typed public props
   const addAllModalRef = useRef<any>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- showOverlay/hideOverlay are imperative methods not on the typed public props
+  const sortConfirmModalRef = useRef<any>(null);
+  // The picker's submission, parked while the batch confirmation is open.
+  const [pendingAdd, setPendingAdd] = useState<{ formData: FormData; targets: SortSwitchTarget[] } | null>(null);
   const [awaitingAddModal, setAwaitingAddModal] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const shuffleWasActive = useRef(false);
@@ -820,22 +946,58 @@ export default function Collections() {
   }, [awaitingAddModal, picker.state, picker.data]);
 
   function submitAddCollections(formData: FormData) {
+    // Which of the selected collections actually need a sort change. Ones
+    // already on Manual are skipped silently and never appear in the dialog.
+    const selectedGids = new Set(formData.getAll("collectionGid").map(String));
+    const targets: SortSwitchTarget[] = (picker.data?.addable ?? [])
+      .filter((c) => selectedGids.has(c.id) && c.needsManual)
+      .map((c) => ({ gid: c.id, title: c.title, sortOrderLabel: c.sortOrderLabel }));
+
+    // Nothing to switch, or standing consent already recorded: straight
+    // through, no dialog, no extra step.
+    if (targets.length === 0 || picker.data?.autoSwitchToManual) {
+      addFetcher.submit(formData, { method: "post" });
+      return;
+    }
+
+    closeModal(addModalRef.current);
+    setPendingAdd({ formData, targets });
+    sortConfirmModalRef.current?.showOverlay();
+  }
+
+  function confirmSortSwitch(rememberChoice: boolean) {
+    if (!pendingAdd) return;
+    const formData = pendingAdd.formData;
+    // Consent travels with the submission that acts on it, so the preference
+    // is never written without a switch actually happening.
+    if (rememberChoice) formData.set("rememberAutoSwitch", "true");
+    closeModal(sortConfirmModalRef.current);
+    setPendingAdd(null);
     addFetcher.submit(formData, { method: "post" });
+  }
+
+  function cancelSortSwitch() {
+    closeModal(sortConfirmModalRef.current);
+    setPendingAdd(null);
   }
 
   useEffect(() => {
     if (addFetcher.state === "idle" && addFetcher.data) {
-      closeModal(addModalRef.current);
+      if (addFetcher.data.ok) closeModal(addModalRef.current);
       const { added = 0, switched = 0, skipped = 0, error } = addFetcher.data;
       if (addFetcher.data.ok) {
         const parts = [`${added} collection${added === 1 ? "" : "s"} added`];
-        // Say so when we changed a merchant's sort order — it happened
-        // because they confirmed it, and it should still be acknowledged.
-        if (switched > 0) parts.push(`${switched} switched to Manual sort`);
+        // Say so when we changed a merchant's sort order, even under standing
+        // consent — especially then, since no dialog appeared.
+        if (switched > 0) parts.push("sort changed to Manual");
         if (skipped > 0) parts.push(`${skipped} skipped (plan limit)`);
-        shopify.toast.show(parts.join(" — "));
+        shopify.toast.show(`${parts.join(". ")}.`);
       } else {
+        // Partial success: the ones that worked are already added and
+        // enabled. Only the failures are named, and the picker stays open so
+        // they can be retried without starting over.
         shopify.toast.show(error ?? "Couldn't add that just now", { isError: true });
+        if ((addFetcher.data.failed?.length ?? 0) > 0) openAddModal();
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- fires only on fetcher settle
@@ -1275,6 +1437,14 @@ export default function Collections() {
         busy={switchFetcher.state !== "idle"}
         onConfirm={confirmSwitch}
         onCancel={() => closeModal(switchModalRef.current)}
+      />
+
+      <SwitchSortConfirmModal
+        ref={sortConfirmModalRef}
+        targets={pendingAdd?.targets ?? []}
+        busy={addFetcher.state !== "idle"}
+        onConfirm={confirmSortSwitch}
+        onCancel={cancelSortSwitch}
       />
 
       <AddAllUntrackedModal

@@ -85,12 +85,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   const defaultRunTime = normalizeHhMm(String(formData.get("defaultRunTime") ?? "06:00"));
   const neverMoveTags = String(formData.get("neverMoveTags") ?? "");
+  const autoSwitchToManual = formData.get("autoSwitchToManual") === "on";
 
   await db.shopSettings.update({
     where: { shop },
     data: {
       defaultRunTime,
       neverMoveTags,
+      autoSwitchToManual,
     },
   });
 
@@ -109,6 +111,7 @@ export default function Settings() {
   const busy = fetcher.state !== "idle";
 
   const [defaultRunTime, setDefaultRunTime] = useState(settings.defaultRunTime);
+  const [autoSwitchToManual, setAutoSwitchToManual] = useState(settings.autoSwitchToManual);
   const [tags, setTags] = useState<string[]>(() =>
     parseTags(settings.neverMoveTags),
   );
@@ -138,6 +141,7 @@ export default function Settings() {
 
   function handleDiscard() {
     setDefaultRunTime(settings.defaultRunTime);
+    setAutoSwitchToManual(settings.autoSwitchToManual);
     setTags(parseTags(settings.neverMoveTags));
     setAddingTag(false);
     setNewTag("");
@@ -150,6 +154,7 @@ export default function Settings() {
       {
         defaultRunTime,
         neverMoveTags: tags.join(","),
+        autoSwitchToManual: autoSwitchToManual ? "on" : "",
       },
       { method: "post" },
     );
@@ -295,6 +300,30 @@ export default function Settings() {
           </s-stack>
 
           <s-stack direction="block" gap="base">
+            <SettingsCard icon="apps" tone="info" title="Adding collections">
+              <s-stack direction="block" gap="small-200">
+                <s-switch
+                  label="Switch collections to Manual sort without asking"
+                  checked={autoSwitchToManual || undefined}
+                  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- currentTarget.checked isn't in the typed event map
+                  onChange={(e: any) => {
+                    setAutoSwitchToManual(Boolean(e.currentTarget?.checked));
+                    markDirty();
+                  }}
+                />
+                <s-text color="subdued">
+                  Shuffly can only set the order on a collection that uses Manual sort. With this on,
+                  adding an automated collection switches it straight away instead of asking first.
+                </s-text>
+              </s-stack>
+              <CardFooterStrip>
+                <s-text color="subdued">
+                  You can always put a collection&apos;s original sort back when you remove it from
+                  Shuffly.
+                </s-text>
+              </CardFooterStrip>
+            </SettingsCard>
+
             <SettingsCard icon="email" tone="info" title="Support">
               <s-stack direction="block" gap="small-200">
                 <s-paragraph>

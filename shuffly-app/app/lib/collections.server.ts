@@ -604,3 +604,103 @@ async function pollJob(admin: AdminApiContext, jobId: string, maxWaitMs = 15_000
   }
   return false;
 }
+
+// ---------------------------------------------------------------------------
+// Adding any collection: capturing what it looked like first, restoring it
+// afterwards, and doing a batch of them without hammering Shopify.
+// ---------------------------------------------------------------------------
+
+/** Product ids are stored without the "gid://shopify/Product/" prefix — a
+ * quarter of the bytes on a large collection, and the prefix is a constant. */
+const PRODUCT_GID_PREFIX = "gid://shopify/Product/";
+
+export function packProductIds(gids: string[]): string {
+  return JSON.stringify(gids.map((gid) => gid.replace(PRODUCT_GID_PREFIX, "")));
+}
+
+export function unpackProductIds(packed: string | null): string[] {
+  if (!packed) return [];
+  try {
+    const ids: unknown = JSON.parse(packed);
+    if (!Array.isArray(ids)) return [];
+    return ids.map((id) => `${PRODUCT_GID_PREFIX}${id}`);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * The order a collection had at the moment it was added to Shuffly.
+ *
+ * Deliberately separate from ShuffleRun.previousOrder: that one is a per-run
+ * snapshot which pruneExpiredUndoSnapshots deletes after the plan's retention
+ * window (one day on Free), so it can't back a "put it back how it was before
+ * Shuffly" promise months later. This is captured once and never pruned.
+ *
+ * Returns null when the order can't be read — the caller stores nothing
+ * rather than a partial list, and the remove dialog then says it has no
+ * snapshot instead of offering a restore it can't perform.
+ */
+export async function captureOriginalOrder(
+  admin: AdminApiContext,
+  collectionGid: string,
+): Promise<{ packed: string; count: number } | null> {
+  try {
+    const { products } = await getCollectionProductsInOrder(admin, collectionGid);
+    if (products.length === 0) return null;
+    return { packed: packProductIds(products.map((p) => p.id)), count: products.length };
+  } catch (err) {
+    console.error(`[collections] couldn't snapshot ${collectionGid} before switching:`, err);
+    return null;
+  }
+}
+
+/** Put a collection's sortOrder back to what it was before Shuffly switched
+ * it. Restoring an automatic sort makes product positions irrelevant —
+ * Shopify recomputes the order — which is why the remove flow offers the sort
+ * restore and the product-order restore as one choice, not two. */
+export async function restoreCollectionSort(
+  admin: AdminApiContext,
+  collectionGid: string,
+  sortOrder: string,
+): Promise<{ ok: boolean; error?: string }> {
+  const res = await admin.graphql(
+    `#graphql
+    mutation RestoreCollectionSort($id: ID!, $sortOrder: CollectionSortOrder!) {
+      collectionUpdate(collection: {id: $id, sortOrder: $sortOrder}) {
+        collection { id sortOrder }
+        userErrors { field message }
+      }
+    }`,
+    { variables: { id: collectionGid, sortOrder } },
+  );
+  const json = await res.json();
+  const errors = json.data?.collectionUpdate?.userErrors ?? [];
+  if (errors.length) return { ok: false, error: errors.map((e: { message: string }) => e.message).join("; ") };
+  return { ok: true };
+}
+
+/**
+ * Run `task` over `items` with at most `limit` in flight, preserving result
+ * order. Adding twenty collections shouldn't fire twenty concurrent mutations
+ * at Shopify's rate limiter, and it shouldn't crawl through them one at a
+ * time either. Hand-rolled because p-map is only an npm override in this
+ * repo, not a dependency — not worth adding one for ten lines.
+ */
+export async function mapWithLimit<T, R>(
+  items: T[],
+  limit: number,
+  task: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let cursor = 0;
+  const workers = Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, async () => {
+    for (;;) {
+      const index = cursor++;
+      if (index >= items.length) return;
+      results[index] = await task(items[index], index);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}

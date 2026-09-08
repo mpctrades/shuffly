@@ -526,6 +526,29 @@ function formatSolo(row: RunRow, timezone: string, now: Date, batchSiblings?: Ru
         movedCount: null,
         restore: null,
       };
+    case "SORT_CHANGED":
+      return {
+        ...base,
+        kind: "setting",
+        iconType: "bolt-filled",
+        iconTone: "info",
+        title: `${collectionTitle} sort changed`,
+        // row.message is already "Best selling → Manual".
+        meta: row.message ?? "Switched to Manual sort so Shuffly can set the order.",
+        movedCount: null,
+        restore: null,
+      };
+    case "SORT_RESTORED":
+      return {
+        ...base,
+        kind: "setting",
+        iconType: "check-circle-filled",
+        iconTone: "success",
+        title: `${collectionTitle} removed from Shuffly`,
+        meta: row.message ?? "Removed.",
+        movedCount: null,
+        restore: null,
+      };
     case "RETRIED":
       return {
         ...base,

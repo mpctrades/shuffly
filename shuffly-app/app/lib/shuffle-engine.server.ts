@@ -5,7 +5,9 @@ import {
   diffToMoves,
   getCollectionProductsInOrder,
   reorderCollectionProducts,
+  restoreCollectionSort,
   setCollectionManualSort,
+  unpackProductIds,
 } from "./collections.server";
 import { bumpTurnCounts, computeShuffledOrder, type ShuffleProductInput } from "./shuffle-algorithm.server";
 import { nextRunFor, type ScheduleType } from "./schedule.server";
@@ -302,4 +304,53 @@ export async function undoRun(
 
 export async function ensureManualSort(admin: AdminApiContext, collectionGid: string) {
   return setCollectionManualSort(admin, collectionGid);
+}
+
+export interface RemoveRestoreResult {
+  /** What was actually put back, for the toast — never a promise, always a
+   * report of what happened. */
+  restoredSort: string | null;
+  restoredOrder: boolean;
+  error?: string;
+}
+
+/**
+ * Undo Shuffly's footprint on a collection as it's removed.
+ *
+ * The two restores are mutually exclusive by nature, which is why this picks
+ * one rather than offering both:
+ *
+ *  - We switched the sort (previousSortOrder is set). Putting that automatic
+ *    sort back makes product positions irrelevant — Shopify recomputes the
+ *    order from the rule — so restoring the sort IS the restore, and
+ *    reordering products first would be wasted work.
+ *  - It was already Manual when it was added (previousSortOrder is null).
+ *    Then the merchant's own curated order is the thing worth putting back,
+ *    from the never-pruned originalOrder snapshot.
+ *
+ * Anything not present is simply not claimed: no snapshot, no order restore.
+ */
+export async function restoreOnRemove(
+  admin: AdminApiContext,
+  config: CollectionConfig,
+): Promise<RemoveRestoreResult> {
+  if (config.previousSortOrder) {
+    const result = await restoreCollectionSort(admin, config.collectionGid, config.previousSortOrder);
+    if (!result.ok) return { restoredSort: null, restoredOrder: false, error: result.error };
+    return { restoredSort: config.previousSortOrder, restoredOrder: false };
+  }
+
+  const original = unpackProductIds(config.originalOrder);
+  if (original.length === 0) return { restoredSort: null, restoredOrder: false };
+
+  const { products } = await getCollectionProductsInOrder(admin, config.collectionGid);
+  const currentOrder = products.map((p) => p.id);
+  // Only ids still in the collection; anything added since goes to the end,
+  // the same reconciliation undoRun does.
+  const stillPresent = new Set(currentOrder);
+  const target = original.filter((id) => stillPresent.has(id));
+  const appended = currentOrder.filter((id) => !target.includes(id));
+  const result = await reorderCollectionProducts(admin, config.collectionGid, diffToMoves(currentOrder, [...target, ...appended]));
+  if (!result.ok) return { restoredSort: null, restoredOrder: false, error: result.error };
+  return { restoredSort: null, restoredOrder: true };
 }

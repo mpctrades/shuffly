@@ -1,5 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
-import { diffToMoves, reorderCollectionProducts, sortOrderLabel } from "./collections.server";
+import {
+  diffToMoves,
+  mapWithLimit,
+  packProductIds,
+  reorderCollectionProducts,
+  sortOrderLabel,
+  unpackProductIds,
+} from "./collections.server";
 
 /** Apply moves the same way collectionReorderProducts documents: remove
  * then reinsert at newPosition, applied sequentially in order. Used to
@@ -240,5 +247,81 @@ describe("reorderCollectionProducts", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Adding any collection: the snapshot format and the batch limiter.
+// ---------------------------------------------------------------------------
+
+describe("packProductIds / unpackProductIds", () => {
+  it("round-trips product gids", () => {
+    const gids = ["gid://shopify/Product/1", "gid://shopify/Product/22", "gid://shopify/Product/333"];
+    expect(unpackProductIds(packProductIds(gids))).toEqual(gids);
+  });
+
+  it("preserves order, which is the entire point of the snapshot", () => {
+    const gids = ["gid://shopify/Product/9", "gid://shopify/Product/3", "gid://shopify/Product/7"];
+    expect(unpackProductIds(packProductIds(gids))).toEqual(gids);
+  });
+
+  it("stores bare numeric ids, not the full gid", () => {
+    expect(packProductIds(["gid://shopify/Product/42"])).toBe('["42"]');
+  });
+
+  it("is dramatically smaller than storing gids", () => {
+    const gids = Array.from({ length: 500 }, (_, i) => `gid://shopify/Product/${1000000 + i}`);
+    expect(packProductIds(gids).length).toBeLessThan(JSON.stringify(gids).length / 3);
+  });
+
+  it("treats a missing or corrupt snapshot as no snapshot, never throwing", () => {
+    expect(unpackProductIds(null)).toEqual([]);
+    expect(unpackProductIds("")).toEqual([]);
+    expect(unpackProductIds("not json")).toEqual([]);
+    expect(unpackProductIds('{"not":"an array"}')).toEqual([]);
+  });
+});
+
+describe("mapWithLimit", () => {
+  it("returns results in input order regardless of completion order", async () => {
+    const out = await mapWithLimit([30, 10, 20, 0], 2, async (ms) => {
+      await new Promise((r) => setTimeout(r, ms));
+      return ms;
+    });
+    expect(out).toEqual([30, 10, 20, 0]);
+  });
+
+  it("never exceeds the concurrency limit", async () => {
+    let inFlight = 0;
+    let peak = 0;
+    await mapWithLimit(Array.from({ length: 12 }, (_, i) => i), 4, async () => {
+      inFlight++;
+      peak = Math.max(peak, inFlight);
+      await new Promise((r) => setTimeout(r, 3));
+      inFlight--;
+    });
+    expect(peak).toBeLessThanOrEqual(4);
+  });
+
+  it("actually runs concurrently rather than serially", async () => {
+    const started = Date.now();
+    await mapWithLimit(Array.from({ length: 8 }, (_, i) => i), 4, async () => {
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    // Eight 20ms tasks, four at a time: ~40ms, not the ~160ms of a serial run.
+    expect(Date.now() - started).toBeLessThan(140);
+  });
+
+  it("handles an empty batch without spawning workers", async () => {
+    expect(await mapWithLimit([], 4, async () => 1)).toEqual([]);
+  });
+
+  it("propagates a rejection so a caller can report the failure by name", async () => {
+    await expect(
+      mapWithLimit([1, 2], 2, async (n) => {
+        if (n === 2) throw new Error("switch failed");
+        return n;
+      }),
+    ).rejects.toThrow("switch failed");
   });
 });
