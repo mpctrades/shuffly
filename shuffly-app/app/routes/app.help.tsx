@@ -169,7 +169,7 @@ export default function Help() {
   const [openId, setOpenId] = useState<string | null>(null);
 
   function contactSupport() {
-    window.location.href = "mailto:support@mpctrades.com?subject=Shuffly%20support";
+    window.location.href = "mailto:team@mapetitecoree.com?subject=Shuffly%20support";
   }
 
   function copyDetails() {
@@ -423,7 +423,7 @@ export default function Help() {
                 </s-stack>
 
                 <s-stack direction="inline" gap="small">
-                  <s-button variant="primary" href="mailto:support@mpctrades.com">
+                  <s-button variant="primary" href="mailto:team@mapetitecoree.com">
                     {t["help.contactSupport.emailButton"]}
                   </s-button>
                   <s-button onClick={copyDetails}>

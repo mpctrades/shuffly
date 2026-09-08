@@ -10,12 +10,14 @@ import { PrismaSessionStorage } from "@shopify/shopify-app-session-storage-prism
 import prisma from "./db.server";
 import { startInProcessSchedulerOnce } from "./lib/scheduler.server";
 
-// Billing plan names double as the values stored in ShopSettings.plan (the
-// *_ANNUAL variants still resolve back to the same plan — see
-// app/lib/billing.server.ts). The Free tier isn't listed here — it's just
-// "no active subscription".
-// Keep amounts in sync with app/lib/plans.server.ts — annual = 10x the
-// monthly amount ("2 months free"), via plans.server.ts's annualPrice().
+// Shuffly is on **Shopify managed pricing**: the plans merchants actually
+// see and buy are defined in the Partner Dashboard, and Shopify refuses
+// `appSubscriptionCreate` for this app ("Cannot use the Billing API (to
+// create charges) when on Shopify App Pricing"). So nothing below ever
+// creates a charge — it stays only to keep `billing.check()` configured and
+// typed, which is how the Plan page reads the active subscription back
+// (app/lib/billing.server.ts). Amounts must still match the Partner
+// Dashboard plans, since the Plan page displays prices from plans.ts.
 export const BILLING_PLANS = {
   STARTER: {
     replacementBehavior: BillingReplacementBehavior.ApplyImmediately,
