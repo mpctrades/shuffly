@@ -96,22 +96,69 @@ export function annualMonthlyEquivalent(monthly: number): number {
   return Math.round((annualPrice(monthly) / 12) * 100) / 100;
 }
 
-/** One plain line describing what a plan actually gives you, derived from
- * that plan's own `allowedSchedules` rather than written out separately —
- * so the dashboard's plan card can't drift out of sync with what the app
- * really enforces. */
-export function planSummaryLine(planId: string | null | undefined): string {
-  const plan = planOf(planId);
-  if (plan.allowedSchedules.includes("TWICE_DAILY")) return "Up to 2 shuffles a day";
-  if (plan.allowedSchedules.includes("DAILY")) return "1 shuffle a day, you pick the time";
-  return "Weekly shuffle";
+/**
+ * Every plan in tier order, cheapest first — derived from PLANS by price so
+ * a new tier shows up in the plan ladder and in `nextPlanOf` on its own,
+ * with nothing to keep in step by hand.
+ */
+export const PLAN_TIERS: PlanDefinition[] = Object.values(PLANS).sort((a, b) => a.price - b.price);
+
+/**
+ * The tier directly above `planId`, or null when there isn't one. Derived
+ * from PLAN_TIERS rather than stored on each plan, so it can never point at
+ * a plan that was repriced, reordered or removed.
+ */
+export function nextPlanOf(planId: string | null | undefined): PlanDefinition | null {
+  const current = planOf(planId);
+  const index = PLAN_TIERS.findIndex((plan) => plan.id === current.id);
+  return index >= 0 && index < PLAN_TIERS.length - 1 ? PLAN_TIERS[index + 1] : null;
 }
 
 /** Whether no plan offers more than this one — i.e. whether to hide the
- * Upgrade button. Decided by price across PLANS rather than by hardcoding a
- * plan id, so adding a tier above the current top one doesn't silently
- * leave Upgrade hidden for the tier below it. */
+ * Upgrade affordance. Just "there is no tier above you", so it can't
+ * disagree with the button the plan bar renders from `nextPlanOf`. */
 export function isTopPlan(planId: string | null | undefined): boolean {
+  return nextPlanOf(planId) === null;
+}
+
+/**
+ * How often this plan is allowed to shuffle, read off its own
+ * `allowedSchedules` — the very field the scheduler enforces. So the copy
+ * can never promise a cadence the app won't actually run. Free's
+ * ["WEEKLY", "MANUAL"] is why Free reads "Weekly shuffle" and not a daily
+ * figure.
+ */
+export function cadenceLabel(planId: string | null | undefined): string {
   const plan = planOf(planId);
-  return !Object.values(PLANS).some((other) => other.price > plan.price);
+  if (plan.allowedSchedules.includes("TWICE_DAILY")) return "2 shuffles a day";
+  if (plan.allowedSchedules.includes("DAILY")) return "1 shuffle a day";
+  if (plan.allowedSchedules.includes("WEEKLY")) return "Weekly shuffle";
+  return "Manual only";
+}
+
+/**
+ * How many merchant-picked shuffle times a collection gets on this plan.
+ * This is the single gate for the second time slot: the collection
+ * Workspace's picker and the plan bar's "N time slots" both call it, so the
+ * UI that offers the slot and the copy that advertises it cannot disagree.
+ */
+export function timeSlots(planId: string | null | undefined): number {
+  return planOf(planId).allowedSchedules.includes("TWICE_DAILY") ? 2 : 1;
+}
+
+/** "25 collections" / "Unlimited collections". The noun is part of the
+ * label so an uncapped plan doesn't have to read "Unlimited 25 collections". */
+export function collectionCapLabel(planId: string | null | undefined): string {
+  const cap = planOf(planId).maxCollections;
+  return cap === Infinity ? "Unlimited collections" : `${cap} collections`;
+}
+
+/** How many tracked collections sit beyond this plan's cap; 0 when inside
+ * it, and always 0 on an uncapped plan. */
+export function overLimitCount(
+  planId: string | null | undefined,
+  trackedCount: number,
+): number {
+  const cap = planOf(planId).maxCollections;
+  return cap === Infinity ? 0 : Math.max(0, trackedCount - cap);
 }

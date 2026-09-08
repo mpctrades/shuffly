@@ -3,10 +3,15 @@ import {
   PLANS,
   annualMonthlyEquivalent,
   annualPrice,
+  PLAN_TIERS,
+  cadenceLabel,
+  collectionCapLabel,
   defaultScheduleForPlan,
   isTopPlan,
+  nextPlanOf,
+  overLimitCount,
   planOf,
-  planSummaryLine,
+  timeSlots,
   undoRetentionCutoff,
 } from "./plans";
 
@@ -94,27 +99,6 @@ describe("PLANS catalogue sanity", () => {
   });
 });
 
-describe("planSummaryLine", () => {
-  it("describes each plan from its own entitlements", () => {
-    expect(planSummaryLine("FREE")).toBe("Weekly shuffle");
-    expect(planSummaryLine("STARTER")).toBe("1 shuffle a day, you pick the time");
-    expect(planSummaryLine("PRO")).toBe("Up to 2 shuffles a day");
-    expect(planSummaryLine("AGENCY")).toBe("Up to 2 shuffles a day");
-  });
-
-  it("falls back to the Free line for an unknown plan", () => {
-    expect(planSummaryLine("SOMETHING_ELSE")).toBe("Weekly shuffle");
-    expect(planSummaryLine(null)).toBe("Weekly shuffle");
-  });
-
-  it("stays in step with allowedSchedules rather than being written twice", () => {
-    for (const plan of Object.values(PLANS)) {
-      const line = planSummaryLine(plan.id);
-      expect(plan.allowedSchedules.includes("TWICE_DAILY")).toBe(line === "Up to 2 shuffles a day");
-    }
-  });
-});
-
 describe("isTopPlan", () => {
   it("only treats the most expensive plan as the top one", () => {
     expect(isTopPlan("FREE")).toBe(false);
@@ -130,5 +114,119 @@ describe("isTopPlan", () => {
 
   it("shows Upgrade on an unknown plan rather than hiding it", () => {
     expect(isTopPlan("SOMETHING_ELSE")).toBe(false);
+  });
+});
+
+describe("cadenceLabel", () => {
+  it("describes each plan from the schedules it actually allows", () => {
+    // Free's allowedSchedules are ["WEEKLY", "MANUAL"] — it cannot pick a
+    // daily shuffle, so the copy must not claim one.
+    expect(cadenceLabel("FREE")).toBe("Weekly shuffle");
+    expect(cadenceLabel("STARTER")).toBe("1 shuffle a day");
+    expect(cadenceLabel("PRO")).toBe("2 shuffles a day");
+    expect(cadenceLabel("AGENCY")).toBe("2 shuffles a day");
+  });
+
+  it("never claims a cadence the plan doesn't allow", () => {
+    for (const plan of Object.values(PLANS)) {
+      const label = cadenceLabel(plan.id);
+      if (label === "2 shuffles a day") expect(plan.allowedSchedules).toContain("TWICE_DAILY");
+      if (label === "1 shuffle a day") expect(plan.allowedSchedules).toContain("DAILY");
+      if (label === "Weekly shuffle") expect(plan.allowedSchedules).toContain("WEEKLY");
+    }
+  });
+
+  it("falls back to the Free line for an unknown plan", () => {
+    expect(cadenceLabel("SOMETHING_ELSE")).toBe("Weekly shuffle");
+    expect(cadenceLabel(null)).toBe("Weekly shuffle");
+  });
+});
+
+describe("timeSlots", () => {
+  it("gives two slots only to plans that allow a twice-daily schedule", () => {
+    expect(timeSlots("FREE")).toBe(1);
+    expect(timeSlots("STARTER")).toBe(1);
+    expect(timeSlots("PRO")).toBe(2);
+    expect(timeSlots("AGENCY")).toBe(2);
+  });
+
+  it("agrees with the entitlement the schedule picker gates on", () => {
+    for (const plan of Object.values(PLANS)) {
+      expect(timeSlots(plan.id) === 2).toBe(plan.allowedSchedules.includes("TWICE_DAILY"));
+    }
+  });
+});
+
+describe("PLAN_TIERS", () => {
+  it("lists every plan exactly once", () => {
+    expect(PLAN_TIERS).toHaveLength(Object.keys(PLANS).length);
+    expect(new Set(PLAN_TIERS.map((p) => p.id)).size).toBe(PLAN_TIERS.length);
+  });
+
+  it("is ordered cheapest first", () => {
+    const prices = PLAN_TIERS.map((p) => p.price);
+    expect(prices).toEqual([...prices].sort((a, b) => a - b));
+  });
+
+  it("puts Free first and Agency last, matching the ladder the bar renders", () => {
+    expect(PLAN_TIERS[0].id).toBe("FREE");
+    expect(PLAN_TIERS[PLAN_TIERS.length - 1].id).toBe("AGENCY");
+  });
+});
+
+describe("nextPlanOf", () => {
+  it("returns the tier directly above each plan", () => {
+    expect(nextPlanOf("FREE")?.id).toBe("STARTER");
+    expect(nextPlanOf("STARTER")?.id).toBe("PRO");
+    expect(nextPlanOf("PRO")?.id).toBe("AGENCY");
+  });
+
+  it("returns null on the top plan, so no dead upgrade button is rendered", () => {
+    expect(nextPlanOf("AGENCY")).toBeNull();
+  });
+
+  it("agrees with isTopPlan for every plan", () => {
+    for (const plan of Object.values(PLANS)) {
+      expect(isTopPlan(plan.id)).toBe(nextPlanOf(plan.id) === null);
+    }
+  });
+});
+
+describe("collectionCapLabel", () => {
+  it("states the cap the app actually enforces", () => {
+    expect(collectionCapLabel("FREE")).toBe("25 collections");
+    expect(collectionCapLabel("STARTER")).toBe("100 collections");
+  });
+
+  it("reads as Unlimited rather than a number for an uncapped plan", () => {
+    expect(collectionCapLabel("PRO")).toBe("Unlimited collections");
+    expect(collectionCapLabel("AGENCY")).toBe("Unlimited collections");
+  });
+
+  it("matches maxCollections for every plan", () => {
+    for (const plan of Object.values(PLANS)) {
+      const label = collectionCapLabel(plan.id);
+      expect(label).toBe(
+        plan.maxCollections === Infinity ? "Unlimited collections" : `${plan.maxCollections} collections`,
+      );
+    }
+  });
+});
+
+describe("overLimitCount", () => {
+  it("is zero while inside the cap", () => {
+    expect(overLimitCount("FREE", 25)).toBe(0);
+    expect(overLimitCount("FREE", 7)).toBe(0);
+  });
+
+  it("counts only the collections beyond the cap", () => {
+    expect(overLimitCount("FREE", 27)).toBe(2);
+    expect(overLimitCount("FREE", 26)).toBe(1);
+    expect(overLimitCount("STARTER", 101)).toBe(1);
+  });
+
+  it("is always zero on an uncapped plan", () => {
+    expect(overLimitCount("PRO", 5000)).toBe(0);
+    expect(overLimitCount("AGENCY", 5000)).toBe(0);
   });
 });

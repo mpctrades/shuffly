@@ -13,7 +13,7 @@ import {
 import { runShuffleForCollection } from "../lib/shuffle-engine.server";
 import { previewShuffleAll } from "../lib/shuffle-preview.server";
 import { formatActivityTimestamp, nextRunFor, scheduleWriteFields, type ScheduleType } from "../lib/schedule.server";
-import { defaultScheduleForPlan, isTopPlan, planOf, planSummaryLine, pruneExpiredUndoSnapshots } from "../lib/plans.server";
+import { cadenceLabel, defaultScheduleForPlan, isTopPlan, planOf, pruneExpiredUndoSnapshots } from "../lib/plans.server";
 import { closeModal } from "../lib/polaris-modal";
 import { CollectionRow, type CollectionRowData } from "../components/CollectionRow";
 import {
@@ -25,6 +25,7 @@ import { ShuffleAllConfirmModal } from "../components/ShuffleAllConfirmModal";
 import { AddCollectionsModal, type AddCollectionsPickerData } from "../components/AddCollectionsModal";
 import { SwitchToManualModal, type SwitchToManualTarget } from "../components/SwitchToManualModal";
 import { BulkRemoveConfirmModal } from "../components/BulkRemoveConfirmModal";
+import { PlanBar } from "../components/PlanBar";
 import { AddAllUntrackedModal } from "../components/AddAllUntrackedModal";
 
 const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
@@ -284,7 +285,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     // whatever billing.check() last reported (see billing.server.ts) and
     // this loader already reads it for the collection cap — so the card
     // adds no query here and no Billing API call on any dashboard render.
-    planSummary: planSummaryLine(settings.plan),
+    // The bar and the stat card below it both read plan facts from this one
+    // value, so the two can never show different plans on one screen.
+    planId: plan.id,
+    planSummary: cadenceLabel(settings.plan),
     canUpgrade: !isTopPlan(settings.plan),
     undoRetentionDays: plan.undoRetentionDays,
   };
@@ -694,6 +698,7 @@ export default function Collections() {
     lastBatch,
     planName,
     planLimit,
+    planId,
     planSummary,
     canUpgrade,
     undoRetentionDays,
@@ -1053,6 +1058,11 @@ export default function Collections() {
           Shuffle all now
         </s-button>
       )}
+
+      {/* Above the stat row, below the page header. Rendered whether or not
+          anything is tracked yet — a merchant with no collections still needs
+          to see which plan they're on. */}
+      <PlanBar planId={planId} trackedCount={trackedTotal} loading={isLoading} />
 
       {hasAnythingTracked && !hydrationFailed && (
         <StatusRow

@@ -21,7 +21,7 @@ import { defaultSecondSlot, timeOptionsIncluding } from "../lib/time-slots";
 import { SwitchToManualModal, type SwitchToManualTarget } from "../components/SwitchToManualModal";
 import { ReorderDelayNote } from "../components/ManualSortWarning";
 import { closeModal, useModalDismissWorkaround } from "../lib/polaris-modal";
-import { planOf, pruneExpiredUndoSnapshots } from "../lib/plans.server";
+import { planOf, pruneExpiredUndoSnapshots, timeSlots } from "../lib/plans.server";
 
 const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 const RULES_SAVE_BAR_ID = "collection-rules-save-bar";
@@ -83,7 +83,9 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     timezoneLabel: `${settings.timezone} (${timezoneOffsetLabel(settings.timezone)})`,
     nextRunLabel: formatNextRun(config.nextRunAt, settings.timezone),
     allowedSchedules: plan.allowedSchedules,
-    canPickSecondSlot: plan.allowedSchedules.includes(SECOND_SLOT_SCHEDULE),
+    // Same helper the plan bar composes "N time slots" from — so the picker
+    // that offers the slot and the copy that advertises it cannot disagree.
+    canPickSecondSlot: timeSlots(plan.id) >= 2,
     canPin: plan.canPin,
     undoRetentionDays: plan.undoRetentionDays,
   };
