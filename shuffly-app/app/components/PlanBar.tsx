@@ -9,9 +9,11 @@ import {
   timeSlots,
 } from "../lib/plans";
 
-/** Shuffly orange. The one hardcoded colour in this component, and only on
- * the accent stripe — everything else is a Polaris token so the bar follows
- * the admin's light and dark themes. */
+/** Shuffly orange — the one hardcoded colour in this component. It appears
+ * only as the accent: the left stripe and the current rung's dot, which are
+ * driven by the same `accent` value so they can't drift apart. Every other
+ * surface, border and text colour is a Polaris token, so the bar follows the
+ * admin's light and dark themes. */
 const BRAND_ORANGE = "#FF4B1F";
 
 const PLAN_PAGE = "/app/plan";
@@ -49,17 +51,14 @@ export function PlanBar({ planId, trackedCount, loading = false }: PlanBarProps)
   const slots = timeSlots(planId);
   const over = overLimitCount(planId, trackedCount);
   const isTop = next === null;
+  // One accent for the stripe and the current rung's dot: Shuffly orange
+  // while there's a tier above, the success token once there isn't.
+  const accent = isTop ? "var(--p-color-icon-success, #008060)" : BRAND_ORANGE;
 
   return (
     <>
       <div className="shuffly-plan-bar">
-        <div
-          className="shuffly-plan-bar-stripe"
-          aria-hidden="true"
-          // Green on the top plan: nothing left to sell, so the accent stops
-          // being a nudge and becomes a confirmation.
-          style={{ background: isTop ? "var(--p-color-icon-success, #008060)" : BRAND_ORANGE }}
-        />
+        <div className="shuffly-plan-bar-stripe" aria-hidden="true" style={{ background: accent }} />
         <div className="shuffly-plan-bar-inner">
           <span className="shuffly-plan-bar-label">Your plan</span>
 
@@ -79,7 +78,16 @@ export function PlanBar({ planId, trackedCount, loading = false }: PlanBarProps)
                   aria-disabled={isCurrent || undefined}
                   onClick={isCurrent ? undefined : () => navigate(PLAN_PAGE)}
                 >
-                  {isCurrent && <span className="shuffly-plan-rung-dot" aria-hidden="true" />}
+                  {isCurrent && (
+                    <span
+                      className="shuffly-plan-rung-dot"
+                      aria-hidden="true"
+                      // Same accent as the stripe, for the same reason: a
+                      // nudge while there's a tier above, a confirmation
+                      // once there isn't.
+                      style={{ background: accent }}
+                    />
+                  )}
                   {tier.name}
                 </button>
               );
@@ -100,7 +108,7 @@ export function PlanBar({ planId, trackedCount, loading = false }: PlanBarProps)
             {isTop ? (
               <s-text tone="success">✓ You&apos;re on the top plan</s-text>
             ) : (
-              <s-button variant="secondary" onClick={() => navigate(PLAN_PAGE)}>
+              <s-button variant="primary" onClick={() => navigate(PLAN_PAGE)}>
                 Upgrade to {next.name}
               </s-button>
             )}
@@ -149,7 +157,8 @@ function PlanBarStyles() {
         overflow: hidden;
         margin: 20px 0 0;
         border: 1px solid var(--p-color-border, #e3e3e3);
-        border-radius: 12px;
+        border-radius: 11px;
+        box-shadow: var(--p-shadow-100, 0 1px 2px rgba(23, 24, 24, 0.07));
         background: var(--p-color-bg-surface, #ffffff);
       }
       .shuffly-plan-bar-stripe {
@@ -163,11 +172,12 @@ function PlanBarStyles() {
         display: flex;
         flex-wrap: wrap;
         align-items: center;
-        gap: 8px 16px;
-        padding: 12px 16px 12px 19px;
+        gap: 10px 16px;
+        padding: 11px 14px;
       }
       .shuffly-plan-bar-label {
         flex: none;
+        padding-left: 4px;
         font-size: 11px;
         font-weight: 600;
         letter-spacing: 0.06em;
@@ -179,20 +189,20 @@ function PlanBarStyles() {
         display: flex;
         align-items: center;
         gap: 2px;
-        padding: 2px;
-        border-radius: 9px;
+        padding: 3px;
+        border-radius: 8px;
         background: var(--p-color-bg-surface-secondary, #f1f1f1);
       }
       .shuffly-plan-rung {
         display: inline-flex;
         align-items: center;
         gap: 6px;
-        padding: 4px 10px;
+        padding: 4px 13px;
         border: 0;
-        border-radius: 7px;
+        border-radius: 6px;
         background: transparent;
-        font-size: 12px;
-        font-weight: 500;
+        font-size: 12.5px;
+        font-weight: 600;
         color: var(--p-color-text-secondary, #6b6b6b);
         cursor: pointer;
       }
@@ -203,7 +213,6 @@ function PlanBarStyles() {
       .shuffly-plan-rung.is-current {
         background: var(--p-color-bg-surface, #ffffff);
         color: var(--p-color-text, #303030);
-        font-weight: 600;
         box-shadow: var(--p-shadow-100, 0 1px 2px rgba(23, 24, 24, 0.07));
         cursor: default;
       }
@@ -215,12 +224,11 @@ function PlanBarStyles() {
         width: 6px;
         height: 6px;
         border-radius: 50%;
-        background: var(--p-color-icon-success, #008060);
       }
       .shuffly-plan-bar-detail {
         margin: 0;
         min-width: 0;
-        font-size: 13px;
+        font-size: 12.5px;
         color: var(--p-color-text-secondary, #6b6b6b);
       }
       .shuffly-plan-bar-detail strong {
@@ -232,7 +240,7 @@ function PlanBarStyles() {
       .shuffly-plan-bar-actions {
         display: flex;
         align-items: center;
-        gap: 8px;
+        gap: 10px;
         margin-left: auto;
       }
       .shuffly-plan-skeleton {
