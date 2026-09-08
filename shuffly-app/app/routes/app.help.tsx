@@ -6,6 +6,7 @@ import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { getOrCreateShopSettings } from "../lib/shop-context.server";
 import { planOf } from "../lib/plans";
+import { SUPPORT_EMAIL, SUPPORT_MAILTO, WEBSITE_URL } from "../lib/app-config";
 import { KeyValueRows } from "../components/KeyValueRows";
 import en from "../locales/en.json";
 import fr from "../locales/fr.json";
@@ -169,7 +170,7 @@ export default function Help() {
   const [openId, setOpenId] = useState<string | null>(null);
 
   function contactSupport() {
-    window.location.href = "mailto:team@mapetitecoree.com?subject=Shuffly%20support";
+    window.location.href = SUPPORT_MAILTO;
   }
 
   function copyDetails() {
@@ -203,7 +204,7 @@ export default function Help() {
       <s-button
         slot="primary-action"
         variant="primary"
-        href="https://shuffly.mpctrades.com"
+        href={WEBSITE_URL}
         target="_blank"
       >
         Website
@@ -406,6 +407,9 @@ export default function Help() {
                 </s-stack>
 
                 <s-text color="subdued">{t["help.contactSupport.body"]}</s-text>
+                <s-paragraph>
+                  <s-link href={SUPPORT_MAILTO}>{SUPPORT_EMAIL}</s-link>
+                </s-paragraph>
 
                 <s-stack direction="block" gap="small-200">
                   <s-text type="strong">{t["help.contactSupport.listHeading"]}</s-text>
@@ -423,7 +427,7 @@ export default function Help() {
                 </s-stack>
 
                 <s-stack direction="inline" gap="small">
-                  <s-button variant="primary" href="mailto:team@mapetitecoree.com">
+                  <s-button variant="primary" href={SUPPORT_MAILTO}>
                     {t["help.contactSupport.emailButton"]}
                   </s-button>
                   <s-button onClick={copyDetails}>

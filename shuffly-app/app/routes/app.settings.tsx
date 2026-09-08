@@ -10,6 +10,7 @@ import { getShopTimezone } from "../lib/collections.server";
 import { timezoneOffsetLabel } from "../lib/schedule.server";
 // Client-safe (see time-slots.ts) — the component below renders these.
 import { normalizeHhMm, timeOptionsIncluding } from "../lib/time-slots";
+import { SUPPORT_EMAIL, SUPPORT_MAILTO, WEBSITE_URL } from "../lib/app-config";
 
 const SAVE_BAR_ID = "settings-save-bar";
 
@@ -396,6 +397,28 @@ export default function Settings() {
                 <s-text color="subdued">
                   If another app also sets collection order, Shuffly tells you
                   instead of fighting it.
+                </s-text>
+              </CardFooterStrip>
+            </SettingsCard>
+
+            <SettingsCard icon="email" tone="info" title="Support">
+              <s-stack direction="block" gap="small-200">
+                <s-paragraph>
+                  Email us about anything — a collection that didn&apos;t shuffle, a run you want undone, or a
+                  feature you need.
+                </s-paragraph>
+                <s-paragraph>
+                  <s-link href={SUPPORT_MAILTO}>{SUPPORT_EMAIL}</s-link>
+                </s-paragraph>
+                <s-paragraph>
+                  <s-link href={WEBSITE_URL} target="_blank">
+                    Shuffly website
+                  </s-link>
+                </s-paragraph>
+              </s-stack>
+              <CardFooterStrip>
+                <s-text color="subdued">
+                  The Help page has the same address, plus a button that copies your shop details for us.
                 </s-text>
               </CardFooterStrip>
             </SettingsCard>

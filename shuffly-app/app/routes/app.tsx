@@ -5,6 +5,7 @@ import { boundary } from "@shopify/shopify-app-react-router/server";
 import { AppProvider } from "@shopify/shopify-app-react-router/react";
 
 import { authenticate } from "../shopify.server";
+import { WEBSITE_URL } from "../lib/app-config";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   await authenticate.admin(request);
@@ -39,7 +40,7 @@ export default function App() {
         <s-link href="/app/plan">Plan</s-link>
         <s-link href="/app/settings">Settings</s-link>
         <s-link href="/app/help">Help</s-link>
-        <s-link href="https://shuffly.mpctrades.com" target="_blank">Website</s-link>
+        <s-link href={WEBSITE_URL} target="_blank">Website</s-link>
       </s-app-nav>
       <Outlet />
     </EmbeddedAppProvider>
