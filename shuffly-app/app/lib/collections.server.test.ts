@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { diffToMoves, sortOrderLabel } from "./collections.server";
+import { describe, expect, it, vi } from "vitest";
+import { diffToMoves, reorderCollectionProducts, sortOrderLabel } from "./collections.server";
 
 /** Apply moves the same way collectionReorderProducts documents: remove
  * then reinsert at newPosition, applied sequentially in order. Used to
@@ -65,5 +65,180 @@ describe("sortOrderLabel", () => {
 
   it("falls back to the raw value for an unrecognized sort order instead of throwing", () => {
     expect(sortOrderLabel("SOME_FUTURE_VALUE")).toBe("SOME_FUTURE_VALUE");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// reorderCollectionProducts: 250-move chunking, per-collection serialization,
+// and the TOO_MANY_ATTEMPTS_TO_REORDER_PRODUCTS retry.
+// ---------------------------------------------------------------------------
+
+interface FakeCall {
+  kind: "reorder" | "poll";
+  moveCount: number;
+}
+
+/** Minimal stand-in for AdminApiContext — just enough `graphql` to drive the
+ * reorder path, recording what it was actually asked to send. */
+function fakeAdmin(options: { userErrors?: () => Array<{ message: string; code?: string }> } = {}) {
+  const calls: FakeCall[] = [];
+  let reorderCallCount = 0;
+  const admin = {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- a hand-rolled test double for one method of AdminApiContext
+    graphql: async (query: string, opts?: any): Promise<any> => {
+      if (query.includes("collectionReorderProducts")) {
+        reorderCallCount++;
+        calls.push({ kind: "reorder", moveCount: opts?.variables?.moves?.length ?? 0 });
+        const userErrors = options.userErrors?.() ?? [];
+        return {
+          json: async () => ({
+            data: { collectionReorderProducts: { job: { id: "gid://shopify/Job/1", done: true }, userErrors } },
+          }),
+        };
+      }
+      calls.push({ kind: "poll", moveCount: 0 });
+      return { json: async () => ({ data: { job: { id: "gid://shopify/Job/1", done: true } } }) };
+    },
+  };
+  return { admin, calls, reorderCalls: () => reorderCallCount };
+}
+
+function movesOfLength(n: number): Array<{ id: string; newPosition: string }> {
+  return Array.from({ length: n }, (_, i) => ({ id: `gid://shopify/Product/${i}`, newPosition: String(i) }));
+}
+
+describe("reorderCollectionProducts", () => {
+  it("sends nothing at all when there are no moves", async () => {
+    const { admin, calls } = fakeAdmin();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test double
+    const result = await reorderCollectionProducts(admin as any, "gid://shopify/Collection/1", []);
+    expect(result.ok).toBe(true);
+    expect(calls).toEqual([]);
+  });
+
+  it("sends a sub-250 reorder as a single call", async () => {
+    const { admin, reorderCalls } = fakeAdmin();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test double
+    const result = await reorderCollectionProducts(admin as any, "gid://shopify/Collection/1", movesOfLength(250));
+    expect(result.ok).toBe(true);
+    expect(reorderCalls()).toBe(1);
+  });
+
+  it("chunks a reorder larger than Shopify's 250-move cap", async () => {
+    const { admin, calls } = fakeAdmin();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test double
+    const result = await reorderCollectionProducts(admin as any, "gid://shopify/Collection/1", movesOfLength(600));
+    expect(result.ok).toBe(true);
+    expect(calls.filter((c) => c.kind === "reorder").map((c) => c.moveCount)).toEqual([250, 250, 100]);
+  });
+
+  it("serializes two concurrent reorders of the same collection", async () => {
+    const order: string[] = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test double
+    const admin: any = {
+      graphql: async (query: string) => {
+        if (query.includes("collectionReorderProducts")) {
+          order.push("start");
+          await new Promise((r) => setTimeout(r, 5));
+          order.push("end");
+          return {
+            json: async () => ({
+              data: { collectionReorderProducts: { job: { id: "j", done: true }, userErrors: [] } },
+            }),
+          };
+        }
+        return { json: async () => ({ data: { job: { id: "j", done: true } } }) };
+      },
+    };
+    await Promise.all([
+      reorderCollectionProducts(admin, "gid://shopify/Collection/1", movesOfLength(1)),
+      reorderCollectionProducts(admin, "gid://shopify/Collection/1", movesOfLength(1)),
+    ]);
+    // Never interleaved: each reorder finishes before the next one starts.
+    expect(order).toEqual(["start", "end", "start", "end"]);
+  });
+
+  it("lets reorders of different collections overlap", async () => {
+    const order: string[] = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test double
+    const admin: any = {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test double
+      graphql: async (query: string, opts?: any) => {
+        if (query.includes("collectionReorderProducts")) {
+          const tag = opts.variables.id.slice(-1);
+          order.push(`start${tag}`);
+          await new Promise((r) => setTimeout(r, 5));
+          order.push(`end${tag}`);
+          return {
+            json: async () => ({
+              data: { collectionReorderProducts: { job: { id: "j", done: true }, userErrors: [] } },
+            }),
+          };
+        }
+        return { json: async () => ({ data: { job: { id: "j", done: true } } }) };
+      },
+    };
+    await Promise.all([
+      reorderCollectionProducts(admin, "gid://shopify/Collection/1", movesOfLength(1)),
+      reorderCollectionProducts(admin, "gid://shopify/Collection/2", movesOfLength(1)),
+    ]);
+    expect(order.slice(0, 2)).toEqual(["start1", "start2"]);
+  });
+
+  it("surfaces Shopify's error code, and does not retry a non-transient one", async () => {
+    const { admin, reorderCalls } = fakeAdmin({
+      userErrors: () => [
+        { message: "Can't reorder products unless collection is manually sorted.", code: "MANUALLY_SORTED_COLLECTION" },
+      ],
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test double
+    const result = await reorderCollectionProducts(admin as any, "gid://shopify/Collection/1", movesOfLength(1));
+    expect(result.ok).toBe(false);
+    expect(result.code).toBe("MANUALLY_SORTED_COLLECTION");
+    expect(reorderCalls()).toBe(1);
+  });
+
+  it("retries TOO_MANY_ATTEMPTS_TO_REORDER_PRODUCTS and succeeds once the earlier job clears", async () => {
+    vi.useFakeTimers();
+    try {
+      let attempts = 0;
+      const { admin, reorderCalls } = fakeAdmin({
+        userErrors: () => {
+          attempts++;
+          return attempts === 1
+            ? [{ message: "Products are currently being reordered. Please try again later.", code: "TOO_MANY_ATTEMPTS_TO_REORDER_PRODUCTS" }]
+            : [];
+        },
+      });
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test double
+      const pending = reorderCollectionProducts(admin as any, "gid://shopify/Collection/1", movesOfLength(1));
+      await vi.advanceTimersByTimeAsync(2_000);
+      const result = await pending;
+      expect(result.ok).toBe(true);
+      expect(reorderCalls()).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("gives up after exhausting the retry budget", async () => {
+    vi.useFakeTimers();
+    try {
+      const { admin, reorderCalls } = fakeAdmin({
+        userErrors: () => [
+          { message: "Products are currently being reordered. Please try again later.", code: "TOO_MANY_ATTEMPTS_TO_REORDER_PRODUCTS" },
+        ],
+      });
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test double
+      const pending = reorderCollectionProducts(admin as any, "gid://shopify/Collection/1", movesOfLength(1));
+      await vi.advanceTimersByTimeAsync(20_000);
+      const result = await pending;
+      expect(result.ok).toBe(false);
+      expect(result.code).toBe("TOO_MANY_ATTEMPTS_TO_REORDER_PRODUCTS");
+      // Initial attempt + three backoff retries.
+      expect(reorderCalls()).toBe(4);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

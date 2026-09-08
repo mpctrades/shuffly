@@ -457,18 +457,102 @@ export function diffToMoves(
   return moves;
 }
 
+/** Shopify's documented cap for a single collectionReorderProducts call. A
+ * bigger reorder has to go out as several calls, and because moves are
+ * applied *sequentially* each chunk has to wait for the previous job to
+ * finish — otherwise the later chunks' newPosition values are computed
+ * against an order that's still shifting underneath them. */
+const MAX_MOVES_PER_CALL = 250;
+
+/** Two overlapping reorder jobs on one collection make Shopify answer
+ * TOO_MANY_ATTEMPTS_TO_REORDER_PRODUCTS ("Products are currently being
+ * reordered. Please try again later."), so every reorder for a given
+ * collection queues behind the one before it. Keyed by collection gid, so
+ * different collections still run concurrently — which is what the cron
+ * sweep and "Shuffle all now" actually do.
+ *
+ * In-process only: it covers the single always-on container this app
+ * deploys as (see scheduler.server.ts). The retry in sendMovesWithRetry is
+ * the backstop for anything this map can't see — another replica, or a
+ * merchant dragging products in Shopify admin at the same moment. */
+const reorderChains = new Map<string, Promise<unknown>>();
+
+function serializePerCollection<T>(collectionGid: string, task: () => Promise<T>): Promise<T> {
+  const previous = reorderChains.get(collectionGid) ?? Promise.resolve();
+  // Run `task` whether the previous reorder resolved *or* rejected — one
+  // thrown error must not wedge this collection's queue forever.
+  const result = previous.then(task, task);
+  const settled = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  reorderChains.set(collectionGid, settled);
+  void settled.then(() => {
+    // Only drop the entry if nothing else queued behind us meanwhile.
+    if (reorderChains.get(collectionGid) === settled) reorderChains.delete(collectionGid);
+  });
+  return result;
+}
+
+/** Backoff for TOO_MANY_ATTEMPTS_TO_REORDER_PRODUCTS. Three tries over ~11s:
+ * long enough to outlast a reorder job started a moment earlier, short
+ * enough that a cron sweep of many collections doesn't stall on one. */
+const REORDER_RETRY_DELAYS_MS = [1_000, 3_000, 7_000];
+
+export interface ReorderResult {
+  ok: boolean;
+  error?: string;
+  /** Shopify's own CollectionReorderProductsUserErrorCode, when it gave one —
+   * so callers can tell "currently being reordered" apart from "this
+   * collection isn't manually sorted". */
+  code?: string;
+}
+
 export async function reorderCollectionProducts(
   admin: AdminApiContext,
   collectionGid: string,
   moves: Array<{ id: string; newPosition: string }>,
-): Promise<{ ok: boolean; error?: string }> {
+): Promise<ReorderResult> {
   if (moves.length === 0) return { ok: true };
+
+  return serializePerCollection(collectionGid, async () => {
+    for (let offset = 0; offset < moves.length; offset += MAX_MOVES_PER_CALL) {
+      const chunk = moves.slice(offset, offset + MAX_MOVES_PER_CALL);
+      const isLastChunk = offset + MAX_MOVES_PER_CALL >= moves.length;
+      const result = await sendMovesWithRetry(admin, collectionGid, chunk, !isLastChunk);
+      if (!result.ok) return result;
+    }
+    return { ok: true };
+  });
+}
+
+async function sendMovesWithRetry(
+  admin: AdminApiContext,
+  collectionGid: string,
+  moves: Array<{ id: string; newPosition: string }>,
+  mustWaitForJob: boolean,
+): Promise<ReorderResult> {
+  for (let attempt = 0; ; attempt++) {
+    const result = await sendMoves(admin, collectionGid, moves, mustWaitForJob);
+    if (result.ok || result.code !== "TOO_MANY_ATTEMPTS_TO_REORDER_PRODUCTS") return result;
+    const delay = REORDER_RETRY_DELAYS_MS[attempt];
+    if (delay == null) return result;
+    await new Promise((resolve) => setTimeout(resolve, delay));
+  }
+}
+
+async function sendMoves(
+  admin: AdminApiContext,
+  collectionGid: string,
+  moves: Array<{ id: string; newPosition: string }>,
+  mustWaitForJob: boolean,
+): Promise<ReorderResult> {
   const res = await admin.graphql(
     `#graphql
     mutation ReorderCollectionProducts($id: ID!, $moves: [MoveInput!]!) {
       collectionReorderProducts(id: $id, moves: $moves) {
         job { id done }
-        userErrors { field message }
+        userErrors { field message code }
       }
     }`,
     { variables: { id: collectionGid, moves } },
@@ -477,16 +561,36 @@ export async function reorderCollectionProducts(
   const payload = json.data?.collectionReorderProducts;
   const errors = payload?.userErrors ?? [];
   if (errors.length) {
-    return { ok: false, error: errors.map((e: { message: string }) => e.message).join("; ") };
+    return {
+      ok: false,
+      error: errors.map((e: { message: string }) => e.message).join("; "),
+      code: errors[0]?.code ?? undefined,
+    };
   }
+
   const jobId = payload?.job?.id as string | undefined;
-  if (jobId && payload?.job?.done === false) {
-    await pollJob(admin, jobId);
+  if (jobId && payload?.job?.done !== true) {
+    // An intermediate chunk MUST land before the next one is computed, so
+    // give it longer and treat a timeout as a real failure. For the final
+    // chunk a timeout isn't one: the job is asynchronous by design and
+    // Shopify finishes it on its own — which is exactly why the UI says
+    // "changes can take a few minutes to appear on your store".
+    const done = await pollJob(admin, jobId, mustWaitForJob ? 60_000 : 15_000);
+    if (!done && mustWaitForJob) {
+      return {
+        ok: false,
+        error: "Shopify is still applying an earlier part of this reorder. Try again in a few minutes.",
+        code: "JOB_TIMEOUT",
+      };
+    }
   }
   return { ok: true };
 }
 
-async function pollJob(admin: AdminApiContext, jobId: string, maxWaitMs = 15_000): Promise<void> {
+/** Resolves true once Shopify reports the job done, false if `maxWaitMs`
+ * elapsed first (the job usually still completes — it just outlived our
+ * willingness to hold a request open for it). */
+async function pollJob(admin: AdminApiContext, jobId: string, maxWaitMs = 15_000): Promise<boolean> {
   const start = Date.now();
   while (Date.now() - start < maxWaitMs) {
     const res = await admin.graphql(
@@ -495,7 +599,8 @@ async function pollJob(admin: AdminApiContext, jobId: string, maxWaitMs = 15_000
       { variables: { id: jobId } },
     );
     const json = await res.json();
-    if (json.data?.job?.done) return;
+    if (json.data?.job?.done) return true;
     await new Promise((r) => setTimeout(r, 500));
   }
+  return false;
 }
