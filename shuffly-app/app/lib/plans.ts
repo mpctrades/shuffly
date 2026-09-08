@@ -10,7 +10,7 @@
 // These are wired to Shopify's Billing API in billing.server.ts. Amounts
 // here MUST stay in sync with `BILLING_PLANS` in shopify.server.ts.
 
-export type PlanId = "FREE" | "STARTER" | "PRO" | "AGENCY";
+export type PlanId = "FREE" | "STARTER" | "PRO";
 
 export interface PlanDefinition {
   id: PlanId;
@@ -48,16 +48,6 @@ export const PLANS: Record<PlanId, PlanDefinition> = {
     id: "PRO",
     name: "Pro",
     price: 7.99,
-    maxCollections: Infinity,
-    allowedSchedules: ["DAILY", "TWICE_DAILY", "WEEKLY", "MANUAL"],
-    undoRetentionDays: 30,
-    insights: true,
-    canPin: true,
-  },
-  AGENCY: {
-    id: "AGENCY",
-    name: "Agency",
-    price: 49,
     maxCollections: Infinity,
     allowedSchedules: ["DAILY", "TWICE_DAILY", "WEEKLY", "MANUAL"],
     undoRetentionDays: 30,

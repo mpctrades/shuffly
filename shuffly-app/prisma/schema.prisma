@@ -51,7 +51,7 @@ model ShopSettings {
                                               // API has no way to read this, so it's a manual setting with
                                               // 24 (Shopify's common default) as the fallback. Drives every
                                               // "page 1" Insights metric.
-  plan                String    @default("FREE") // FREE | STARTER | PRO | AGENCY
+  plan                String    @default("FREE") // FREE | STARTER | PRO
   planUpdatedAt       DateTime?
   activeSubscriptionId String? // gid://shopify/AppSubscription/... — set once billing.check() confirms it
   createdAt           DateTime  @default(now())
@@ -75,7 +75,7 @@ model CollectionConfig {
   scheduleType   String    @default("DAILY") // DAILY | TWICE_DAILY | WEEKLY | MANUAL
   scheduleTime   String    @default("06:00") // "HH:MM" local time — the first (or only) time slot
   scheduleTime2  String?   // "HH:MM" local time for the SECOND slot, used only when
-                           // scheduleType=TWICE_DAILY (a Pro/Agency entitlement). Before
+                           // scheduleType=TWICE_DAILY (a Pro entitlement). Before
                            // merchants could pick it, the second slot was derived as
                            // scheduleTime + 12h; existing rows were backfilled to that
                            // same value so nobody's schedule moved.

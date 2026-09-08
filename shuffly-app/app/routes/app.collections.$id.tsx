@@ -27,8 +27,8 @@ const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Frida
 const RULES_SAVE_BAR_ID = "collection-rules-save-bar";
 
 /** The second slot is a top-tier entitlement. Gate on the entitlement, not
- * on a plan id: Agency has TWICE_DAILY too, and hardcoding "PRO" would lock
- * the feature for the most expensive plan in production. */
+ * on a plan id, so a re-tiering can't quietly lock the feature for the plan
+ * that pays for it. */
 const SECOND_SLOT_SCHEDULE: ScheduleType = "TWICE_DAILY";
 
 export const loader = async ({ request, params }: LoaderFunctionArgs) => {

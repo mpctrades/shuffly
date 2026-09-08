@@ -20,7 +20,10 @@ import db from "../db.server";
 import { planOf, type PlanId } from "./plans";
 
 // Keyed by *normalized* plan name (see normalizeSubscriptionName) so the
-// exact spelling Shopify reports doesn't matter. Today it happens to match
+// exact spelling Shopify reports doesn't matter. Anything not listed here
+// falls through to FREE (see planIdFromSubscriptionName), so a plan name this
+// app doesn't know can never silently grant paid entitlements. Today it
+// happens to match
 // anyway — the Partner Dashboard's "Plan name for merchant invoices", which
 // is what `billing.check()` reports, is `STARTER`, `PRO` and `Free` (the
 // plans' *display* names on the pricing page are different fields: "Free",
@@ -32,7 +35,6 @@ const SUBSCRIPTION_NAME_TO_PLAN: Record<string, PlanId> = {
   FREE: "FREE",
   STARTER: "STARTER",
   PRO: "PRO",
-  AGENCY: "AGENCY",
 };
 
 /** Case, spacing, punctuation and a trailing billing-cycle word are all

@@ -74,7 +74,7 @@ describe("plan entitlements", () => {
 
 describe("PLANS catalogue sanity", () => {
   it("keeps every plan's schedule/price/limits internally consistent with plan tier ordering", () => {
-    const order: Array<keyof typeof PLANS> = ["FREE", "STARTER", "PRO", "AGENCY"];
+    const order: Array<keyof typeof PLANS> = ["FREE", "STARTER", "PRO"];
     for (let i = 1; i < order.length; i++) {
       const prev = PLANS[order[i - 1]];
       const cur = PLANS[order[i]];
@@ -88,14 +88,12 @@ describe("PLANS catalogue sanity", () => {
     expect(PLANS.FREE.allowedSchedules).not.toContain("DAILY");
     expect(PLANS.STARTER.allowedSchedules).toContain("DAILY");
     expect(PLANS.PRO.allowedSchedules).toContain("DAILY");
-    expect(PLANS.AGENCY.allowedSchedules).toContain("DAILY");
   });
 
-  it("only Pro and Agency unlock TWICE_DAILY", () => {
+  it("only Pro unlocks TWICE_DAILY", () => {
     expect(PLANS.FREE.allowedSchedules).not.toContain("TWICE_DAILY");
     expect(PLANS.STARTER.allowedSchedules).not.toContain("TWICE_DAILY");
     expect(PLANS.PRO.allowedSchedules).toContain("TWICE_DAILY");
-    expect(PLANS.AGENCY.allowedSchedules).toContain("TWICE_DAILY");
   });
 });
 
@@ -103,8 +101,7 @@ describe("isTopPlan", () => {
   it("only treats the most expensive plan as the top one", () => {
     expect(isTopPlan("FREE")).toBe(false);
     expect(isTopPlan("STARTER")).toBe(false);
-    expect(isTopPlan("PRO")).toBe(false);
-    expect(isTopPlan("AGENCY")).toBe(true);
+    expect(isTopPlan("PRO")).toBe(true);
   });
 
   it("hides Upgrade for exactly one plan, whatever the tiers are", () => {
@@ -124,7 +121,6 @@ describe("cadenceLabel", () => {
     expect(cadenceLabel("FREE")).toBe("Weekly shuffle");
     expect(cadenceLabel("STARTER")).toBe("1 shuffle a day");
     expect(cadenceLabel("PRO")).toBe("2 shuffles a day");
-    expect(cadenceLabel("AGENCY")).toBe("2 shuffles a day");
   });
 
   it("never claims a cadence the plan doesn't allow", () => {
@@ -147,7 +143,6 @@ describe("timeSlots", () => {
     expect(timeSlots("FREE")).toBe(1);
     expect(timeSlots("STARTER")).toBe(1);
     expect(timeSlots("PRO")).toBe(2);
-    expect(timeSlots("AGENCY")).toBe(2);
   });
 
   it("agrees with the entitlement the schedule picker gates on", () => {
@@ -168,9 +163,8 @@ describe("PLAN_TIERS", () => {
     expect(prices).toEqual([...prices].sort((a, b) => a - b));
   });
 
-  it("puts Free first and Agency last, matching the ladder the bar renders", () => {
-    expect(PLAN_TIERS[0].id).toBe("FREE");
-    expect(PLAN_TIERS[PLAN_TIERS.length - 1].id).toBe("AGENCY");
+  it("puts Free first and Pro last, matching the ladder the bar renders", () => {
+    expect(PLAN_TIERS.map((p) => p.id)).toEqual(["FREE", "STARTER", "PRO"]);
   });
 });
 
@@ -178,11 +172,10 @@ describe("nextPlanOf", () => {
   it("returns the tier directly above each plan", () => {
     expect(nextPlanOf("FREE")?.id).toBe("STARTER");
     expect(nextPlanOf("STARTER")?.id).toBe("PRO");
-    expect(nextPlanOf("PRO")?.id).toBe("AGENCY");
   });
 
   it("returns null on the top plan, so no dead upgrade button is rendered", () => {
-    expect(nextPlanOf("AGENCY")).toBeNull();
+    expect(nextPlanOf("PRO")).toBeNull();
   });
 
   it("agrees with isTopPlan for every plan", () => {
@@ -200,7 +193,6 @@ describe("collectionCapLabel", () => {
 
   it("reads as Unlimited rather than a number for an uncapped plan", () => {
     expect(collectionCapLabel("PRO")).toBe("Unlimited collections");
-    expect(collectionCapLabel("AGENCY")).toBe("Unlimited collections");
   });
 
   it("matches maxCollections for every plan", () => {
@@ -227,6 +219,27 @@ describe("overLimitCount", () => {
 
   it("is always zero on an uncapped plan", () => {
     expect(overLimitCount("PRO", 5000)).toBe(0);
-    expect(overLimitCount("AGENCY", 5000)).toBe(0);
+  });
+});
+
+describe("a retired plan id", () => {
+  it("is no longer a known plan", () => {
+    expect(Object.keys(PLANS)).toEqual(["FREE", "STARTER", "PRO"]);
+    expect("AGENCY" in PLANS).toBe(false);
+  });
+
+  it("degrades to Free rather than granting paid entitlements", () => {
+    // If a stored ShopSettings.plan or a Shopify subscription name ever says
+    // AGENCY again, it must fall through to the least-privileged plan — not
+    // hand out unlimited collections on a plan the app no longer sells.
+    expect(planOf("AGENCY").id).toBe("FREE");
+    expect(cadenceLabel("AGENCY")).toBe("Weekly shuffle");
+    expect(timeSlots("AGENCY")).toBe(1);
+    expect(collectionCapLabel("AGENCY")).toBe("25 collections");
+  });
+
+  it("still gets an upgrade path rather than being stranded at the top", () => {
+    expect(isTopPlan("AGENCY")).toBe(false);
+    expect(nextPlanOf("AGENCY")?.id).toBe("STARTER");
   });
 });
