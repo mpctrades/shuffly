@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
-  DUE_LOOKBACK_MS,
+  GRACE_WINDOW_MS,
   activityDayAndTime,
   computeNextRun,
   dueSlots,
+  slotsFarEnoughApart,
   formatActivityTimestamp,
   formatNextRun,
   getLocalHour,
@@ -15,7 +16,7 @@ import {
   startOfLocalDay,
   timezoneOffsetLabel,
   type SlotSchedule,
-} from "./schedule.server";
+} from "./schedule-core";
 
 const UTC = "UTC";
 const NY = "America/New_York"; // UTC-5 (EST) / UTC-4 (EDT) — good DST coverage
@@ -241,6 +242,17 @@ describe("slotTimesFor", () => {
   });
 });
 
+/** dueSlots returns { due, missed }; most cases below only care about `due`. */
+function dueNow(
+  now: Date,
+  timezone: string,
+  schedule: SlotSchedule,
+  scheduleUpdatedAt: Date | null = null,
+  graceMs?: number,
+) {
+  return dueSlots(now, timezone, schedule, scheduleUpdatedAt, graceMs).due;
+}
+
 describe("dueSlots", () => {
   const daily = (time: string): SlotSchedule => ({
     scheduleType: "DAILY",
@@ -251,35 +263,35 @@ describe("dueSlots", () => {
 
   it("reports nothing due before the chosen time", () => {
     // 08:00 UTC = 04:00 EDT, before a 09:00 local slot.
-    expect(dueSlots(new Date("2026-08-25T08:00:00Z"), NY, daily("09:00"))).toEqual([]);
+    expect(dueNow(new Date("2026-08-25T08:00:00Z"), NY, daily("09:00"))).toEqual([]);
   });
 
   it("reports the slot due just after the chosen time", () => {
     // 09:00 EDT = 13:00 UTC.
-    const due = dueSlots(new Date("2026-08-25T13:01:00Z"), NY, daily("09:00"));
+    const due = dueNow(new Date("2026-08-25T13:01:00Z"), NY, daily("09:00"));
     expect(due).toHaveLength(1);
     expect(due[0].slot).toBe(0);
     expect(due[0].dateKey).toBe("2026-08-25");
   });
 
-  it("stops reporting a slot once it falls outside the lookback window", () => {
-    const wellPast = new Date("2026-08-25T13:00:00Z").getTime() + DUE_LOOKBACK_MS + 60_000;
-    expect(dueSlots(new Date(wellPast), NY, daily("09:00"))).toEqual([]);
+  it("stops reporting a slot once it falls outside the grace window", () => {
+    const wellPast = new Date("2026-08-25T13:00:00Z").getTime() + GRACE_WINDOW_MS + 60_000;
+    expect(dueNow(new Date(wellPast), NY, daily("09:00"))).toEqual([]);
   });
 
   it("follows a changed time immediately, with nothing left over at the old one", () => {
     const now = new Date("2026-08-25T13:01:00Z"); // 09:01 local
     // Stored as 09:00: due.
-    expect(dueSlots(now, NY, daily("09:00"))).toHaveLength(1);
+    expect(dueNow(now, NY, daily("09:00"))).toHaveLength(1);
     // The merchant moves it to 18:00 — the very same instant now has
     // nothing due, because the sweep reads the stored time rather than a
     // job queued when they saved.
-    expect(dueSlots(now, NY, daily("18:00"))).toEqual([]);
+    expect(dueNow(now, NY, daily("18:00"))).toEqual([]);
   });
 
   it("still runs a spring-forward-skipped time once that day", () => {
     // 02:30 local doesn't exist on 8 Mar; it resolves to 07:00 UTC.
-    const due = dueSlots(new Date("2026-03-08T07:01:00Z"), NY, daily("02:30"));
+    const due = dueNow(new Date("2026-03-08T07:01:00Z"), NY, daily("02:30"));
     expect(due).toHaveLength(1);
     expect(due[0].resolution).toBe("skipped");
     expect(due[0].dateKey).toBe("2026-03-08");
@@ -290,8 +302,8 @@ describe("dueSlots", () => {
     // Both must produce the same (dateKey, slot) so the unique constraint on
     // ShuffleSlotClaim rejects the second one — that's what stops a double
     // run, rather than relying on the timing working out.
-    const first = dueSlots(new Date("2026-11-01T05:31:00Z"), NY, daily("01:30"));
-    const second = dueSlots(new Date("2026-11-01T06:31:00Z"), NY, daily("01:30"));
+    const first = dueNow(new Date("2026-11-01T05:31:00Z"), NY, daily("01:30"));
+    const second = dueNow(new Date("2026-11-01T06:31:00Z"), NY, daily("01:30"));
     expect(first).toHaveLength(1);
     expect(second).toHaveLength(1);
     expect(second[0].dateKey).toBe(first[0].dateKey);
@@ -299,23 +311,36 @@ describe("dueSlots", () => {
     expect(first[0].dateKey).toBe("2026-11-01");
   });
 
-  it("reports both twice-daily slots when a sweep comes back after an outage", () => {
-    // 09:00 and 12:00 local, checked at 14:00 local (18:00 UTC) — both
-    // inside the lookback window.
-    const due = dueSlots(new Date("2026-08-25T18:00:00Z"), NY, {
-      scheduleType: "TWICE_DAILY",
-      scheduleTime: "09:00",
-      scheduleTime2: "12:00",
-      scheduleWeekday: null,
-    });
+  it("reports both twice-daily slots when both are inside the grace window", () => {
+    // 09:00 and 10:00 local, checked at 11:00 local (15:00 UTC) — 2h and 1h
+    // old, so both still catchable.
+    const due = dueNow(
+      new Date("2026-08-25T15:00:00Z"),
+      NY,
+      { scheduleType: "TWICE_DAILY", scheduleTime: "09:00", scheduleTime2: "10:00", scheduleWeekday: null },
+      new Date("2026-08-24T00:00:00Z"),
+    );
     expect(due.map((d) => d.slot)).toEqual([0, 1]);
+  });
+
+  it("runs only the still-catchable slot when the other aged out", () => {
+    // 09:00 and 12:00 local, checked at 14:00 local: 09:00 is 5h old (missed),
+    // 12:00 is 2h old (due). The old 6h lookback would have run both.
+    const { due, missed } = dueSlots(
+      new Date("2026-08-25T18:00:00Z"),
+      NY,
+      { scheduleType: "TWICE_DAILY", scheduleTime: "09:00", scheduleTime2: "12:00", scheduleWeekday: null },
+      new Date("2026-08-24T00:00:00Z"),
+    );
+    expect(due.map((d) => d.slot)).toEqual([1]);
+    expect(missed.map((m) => m.slot)).toEqual([0]);
   });
 
   it("keeps a late-evening slot due just after local midnight rolls the date", () => {
     // 23:30 local on 25 Aug = 03:30 UTC on 26 Aug. At 04:00 UTC the local
     // date is still 25 Aug (00:00 EDT), so this also proves the dateKey is
     // the slot's own local day.
-    const due = dueSlots(new Date("2026-08-26T04:00:00Z"), NY, daily("23:30"));
+    const due = dueNow(new Date("2026-08-26T04:00:00Z"), NY, daily("23:30"));
     expect(due).toHaveLength(1);
     expect(due[0].dateKey).toBe("2026-08-25");
   });
@@ -328,14 +353,14 @@ describe("dueSlots", () => {
       scheduleWeekday: 2, // Tuesday
     };
     // 25 Aug 2026 is a Tuesday.
-    expect(dueSlots(new Date("2026-08-25T13:01:00Z"), NY, weekly)).toHaveLength(1);
+    expect(dueNow(new Date("2026-08-25T13:01:00Z"), NY, weekly)).toHaveLength(1);
     // 26 Aug is a Wednesday.
-    expect(dueSlots(new Date("2026-08-26T13:01:00Z"), NY, weekly)).toEqual([]);
+    expect(dueNow(new Date("2026-08-26T13:01:00Z"), NY, weekly)).toEqual([]);
   });
 
   it("reports nothing for a manual schedule, whatever the time", () => {
     expect(
-      dueSlots(new Date("2026-08-25T13:01:00Z"), NY, {
+      dueNow(new Date("2026-08-25T13:01:00Z"), NY, {
         scheduleType: "MANUAL",
         scheduleTime: "09:00",
         scheduleTime2: null,
@@ -437,5 +462,113 @@ describe("scheduleWriteFields", () => {
       "PAUSED",
     );
     expect(fields.nextRunAt).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The two change-the-time cases, the grace window, and the slot-gap rule.
+// ---------------------------------------------------------------------------
+
+describe("changing the time", () => {
+  const daily = (time: string): SlotSchedule => ({
+    scheduleType: "DAILY",
+    scheduleTime: time,
+    scheduleTime2: null,
+    scheduleWeekday: null,
+  });
+
+  it("does not back-fire when a slot is moved to a time that already passed", () => {
+    // 09:00 local (13:00Z). The merchant moves an un-run 18:00 slot to 06:00,
+    // which was three hours ago. That slot was never scheduled for 06:00
+    // today, so it must NOT run now — the next run is tomorrow's 06:00.
+    const now = new Date("2026-08-25T13:00:00Z");
+    const justChanged = new Date("2026-08-25T12:59:00Z");
+    const { due, missed } = dueSlots(now, NY, daily("06:00"), justChanged);
+    expect(due).toEqual([]);
+    // And it is not reported as a missed run either — nothing was missed.
+    expect(missed).toEqual([]);
+  });
+
+  it("still runs a slot late when the schedule was NOT touched — the outage case", () => {
+    // Same instant and same 06:00 slot, but the schedule was last changed
+    // yesterday. This time the slot really was due and the worker missed it,
+    // so it runs inside the grace window and is marked late.
+    const now = new Date("2026-08-25T11:30:00Z"); // 07:30 local, 1.5h after 06:00
+    const changedYesterday = new Date("2026-08-24T00:00:00Z");
+    const { due } = dueSlots(now, NY, daily("06:00"), changedYesterday);
+    expect(due).toHaveLength(1);
+    expect(due[0].late).toBe(true);
+  });
+
+  it("treats a run inside the sweep interval as on time, not late", () => {
+    const now = new Date("2026-08-25T10:01:00Z"); // 06:01 local
+    const { due } = dueSlots(now, NY, daily("06:00"), new Date("2026-08-24T00:00:00Z"));
+    expect(due).toHaveLength(1);
+    expect(due[0].late).toBe(false);
+  });
+});
+
+describe("the grace window", () => {
+  const daily = (time: string): SlotSchedule => ({
+    scheduleType: "DAILY",
+    scheduleTime: time,
+    scheduleTime2: null,
+    scheduleWeekday: null,
+  });
+  const changedYesterday = new Date("2026-08-24T00:00:00Z");
+
+  it("runs a slot late right up to the window's edge", () => {
+    const at = new Date("2026-08-25T10:00:00Z"); // 06:00 local
+    const now = new Date(at.getTime() + GRACE_WINDOW_MS - 60_000);
+    const { due, missed } = dueSlots(now, NY, daily("06:00"), changedYesterday);
+    expect(due).toHaveLength(1);
+    expect(missed).toEqual([]);
+  });
+
+  it("reports the slot as missed past the window instead of running backlog", () => {
+    const at = new Date("2026-08-25T10:00:00Z");
+    const now = new Date(at.getTime() + GRACE_WINDOW_MS + 60_000);
+    const { due, missed } = dueSlots(now, NY, daily("06:00"), changedYesterday);
+    expect(due).toEqual([]);
+    expect(missed).toHaveLength(1);
+    expect(missed[0].dateKey).toBe("2026-08-25");
+  });
+
+  it("never fires a whole day of backlog after long downtime", () => {
+    // Twice daily, and the worker has been down for eight hours.
+    const now = new Date("2026-08-25T22:00:00Z"); // 18:00 local
+    const { due, missed } = dueSlots(
+      now,
+      NY,
+      { scheduleType: "TWICE_DAILY", scheduleTime: "06:00", scheduleTime2: "09:00", scheduleWeekday: null },
+      changedYesterday,
+    );
+    expect(due).toEqual([]);
+    expect(missed).toHaveLength(2);
+  });
+
+  it("is two hours", () => {
+    expect(GRACE_WINDOW_MS).toBe(2 * 3_600_000);
+  });
+});
+
+describe("slotsFarEnoughApart", () => {
+  it("rejects identical times", () => {
+    expect(slotsFarEnoughApart("09:00", "09:00")).toBe(false);
+  });
+
+  it("rejects times closer than an hour", () => {
+    expect(slotsFarEnoughApart("09:00", "09:30")).toBe(false);
+    expect(slotsFarEnoughApart("09:00", "08:30")).toBe(false);
+  });
+
+  it("accepts times exactly an hour apart", () => {
+    expect(slotsFarEnoughApart("09:00", "10:00")).toBe(true);
+  });
+
+  it("measures the gap across midnight, not just numerically", () => {
+    // 23:30 and 00:15 are 45 minutes apart, not 23h15m.
+    expect(slotsFarEnoughApart("23:30", "00:15")).toBe(false);
+    expect(slotsFarEnoughApart("23:00", "00:30")).toBe(true);
   });
 });

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { data, useLoaderData, useNavigation, useFetcher, Form, redirect } from "react-router";
 import { useAppBridge } from "@shopify/app-bridge-react";
@@ -13,9 +13,10 @@ import {
   nextRunFor,
   normalizeHhMm,
   scheduleWriteFields,
+  slotsFarEnoughApart,
   timezoneOffsetLabel,
   type ScheduleType,
-} from "../lib/schedule.server";
+} from "../lib/schedule-core";
 // Client-safe (see time-slots.ts) — the component below renders these.
 import { defaultSecondSlot, timeOptionsIncluding } from "../lib/time-slots";
 import { SwitchToManualModal, type SwitchToManualTarget } from "../components/SwitchToManualModal";
@@ -81,6 +82,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     runs,
     timezone: settings.timezone,
     timezoneLabel: `${settings.timezone} (${timezoneOffsetLabel(settings.timezone)})`,
+    timezoneName: settings.timezone,
     nextRunLabel: formatNextRun(config.nextRunAt, settings.timezone),
     allowedSchedules: plan.allowedSchedules,
     // Same helper the plan bar composes "N time slots" from — so the picker
@@ -125,12 +127,18 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
       scheduleType === SECOND_SLOT_SCHEDULE && scheduleTime2Raw != null && scheduleTime2Raw !== ""
         ? String(scheduleTime2Raw)
         : null;
-    if (scheduleTime2 != null && normalizeHhMm(scheduleTime2) === normalizeHhMm(scheduleTime)) {
+    if (scheduleTime2 != null && !slotsFarEnoughApart(scheduleTime, scheduleTime2)) {
       return data(
-        { ok: false, error: "Pick two different times for a twice-daily shuffle." },
+        { ok: false, error: "Keep the two shuffle times at least an hour apart." },
         { status: 400 },
       );
     }
+
+    const scheduleChanged =
+      scheduleType !== config.scheduleType ||
+      normalizeHhMm(scheduleTime) !== config.scheduleTime ||
+      (scheduleTime2 == null ? null : normalizeHhMm(scheduleTime2)) !== config.scheduleTime2 ||
+      scheduleWeekday !== config.scheduleWeekday;
 
     await db.collectionConfig.update({
       where: { id: config.id },
@@ -139,6 +147,10 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
         pushSoldOutToEnd,
         boostNewArrivals,
         giveEveryoneATurn,
+        // Stamped only when a schedule field actually moved. The sweep uses
+        // it to tell "the worker was down, run this late" apart from "the
+        // merchant just moved this slot into the past, don't back-fire".
+        ...(scheduleChanged ? { scheduleUpdatedAt: new Date() } : {}),
         // One helper derives every schedule field *and* nextRunAt together,
         // so the stored countdown can never disagree with the stored time —
         // and the cron sweep re-reads the time each pass anyway, so this
@@ -152,6 +164,21 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
         ),
       },
     });
+
+    // Schedule changes show up in Activity the way pause/resume already do —
+    // a merchant asking "why did this run at a different time?" can see when
+    // it was changed and to what.
+    if (scheduleChanged) {
+      await db.shuffleRun.create({
+        data: {
+          shop,
+          collectionId: config.id,
+          trigger: "SCHEDULE_CHANGED",
+          status: "OK",
+          message: `Schedule changed to ${scheduleSummary(scheduleType, scheduleTime, scheduleTime2, scheduleWeekday)}`,
+        },
+      });
+    }
     return data({ ok: true });
   }
 
@@ -227,6 +254,7 @@ export default function Workspace() {
     runs,
     nextRunLabel,
     timezoneLabel,
+    timezoneName,
     allowedSchedules,
     canPickSecondSlot,
     canPin,
@@ -265,11 +293,29 @@ export default function Workspace() {
   const [scheduleWeekday, setScheduleWeekday] = useState(config.scheduleWeekday ?? 1);
   const [rulesDirty, setRulesDirty] = useState(false);
 
+  // Recomputed in the browser from the controlled state, not read back from
+  // the loader — the whole point is that the merchant sees what their choice
+  // means *before* they save it. Same nextRunFor the sweep and the loader
+  // use, so the preview can't disagree with what actually happens.
+  const previewNextRunLabel = useMemo(() => {
+    if (config.status !== "RUNNING") return "—";
+    const next = nextRunFor(new Date(), timezoneName, {
+      scheduleType: scheduleType as ScheduleType,
+      scheduleTime,
+      scheduleTime2: scheduleType === SECOND_SLOT_SCHEDULE && canPickSecondSlot ? scheduleTime2 : null,
+      scheduleWeekday: scheduleType === "WEEKLY" ? scheduleWeekday : null,
+    });
+    return formatNextRun(next, timezoneName);
+  }, [config.status, timezoneName, scheduleType, scheduleTime, scheduleTime2, scheduleWeekday, canPickSecondSlot]);
+
   const showSecondSlot = scheduleType === SECOND_SLOT_SCHEDULE || canPickSecondSlot;
   const secondSlotLocked = !canPickSecondSlot;
   const firstSlotOptions = timeOptionsIncluding(config.scheduleTime, scheduleTime);
   const secondSlotOptions = timeOptionsIncluding(config.scheduleTime2, scheduleTime2);
-  const slotsClash = scheduleType === SECOND_SLOT_SCHEDULE && scheduleTime2 === scheduleTime;
+  const slotsClash =
+    scheduleType === SECOND_SLOT_SCHEDULE &&
+    canPickSecondSlot &&
+    !slotsFarEnoughApart(scheduleTime, scheduleTime2);
 
   function markRulesDirty() {
     if (!rulesDirty) {
@@ -527,7 +573,7 @@ export default function Workspace() {
                   )}
                   {slotsClash && !secondSlotLocked && (
                     <s-paragraph>
-                      <s-text tone="critical">Pick two different times for a twice-daily shuffle.</s-text>
+                      <s-text tone="critical">Keep the two shuffle times at least an hour apart.</s-text>
                     </s-paragraph>
                   )}
                 </>
@@ -551,7 +597,13 @@ export default function Workspace() {
             ))}
           </s-select>
           <s-paragraph>
-            Next run <s-text type="strong">{config.status === "RUNNING" ? nextRunLabel : "—"}</s-text>
+            Next run <s-text type="strong">{previewNextRunLabel}</s-text>
+            {rulesDirty && previewNextRunLabel !== nextRunLabel && (
+              <>
+                {" "}
+                <s-text color="subdued">(once you save)</s-text>
+              </>
+            )}
           </s-paragraph>
         </s-stack>
       </s-section>
@@ -697,5 +749,26 @@ function triggerLabel(trigger: string) {
       return "Restock reaction";
     default:
       return trigger;
+  }
+}
+
+/** The same sentence the Collections list's Schedule column composes, reused
+ * for the Activity record so the two never describe one schedule differently. */
+function scheduleSummary(
+  scheduleType: string,
+  scheduleTime: string,
+  scheduleTime2: string | null,
+  scheduleWeekday: number | null,
+): string {
+  const time = normalizeHhMm(scheduleTime);
+  switch (scheduleType) {
+    case "DAILY":
+      return `daily at ${time}`;
+    case "TWICE_DAILY":
+      return `twice daily at ${[time, scheduleTime2 ? normalizeHhMm(scheduleTime2) : null].filter(Boolean).sort().join(" and ")}`;
+    case "WEEKLY":
+      return `weekly, ${WEEKDAYS[scheduleWeekday ?? 1]} at ${time}`;
+    default:
+      return "manual only";
   }
 }

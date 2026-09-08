@@ -36,7 +36,7 @@ import { randomUUID } from "node:crypto";
 import db from "../db.server";
 import { unauthenticated } from "../shopify.server";
 import { runShuffleForCollection } from "./shuffle-engine.server";
-import { dueSlots, nextRunFor, type DueSlot, type ScheduleType } from "./schedule.server";
+import { dueSlots, nextRunFor, type MissedSlot, type ScheduleType } from "./schedule.server";
 
 export interface CronSweepResult {
   checked: number;
@@ -45,6 +45,9 @@ export interface CronSweepResult {
   /** Slots that were due but already claimed by another sweep — the
    * idempotency guard doing its job, not an error. */
   skipped: number;
+  /** Slots whose time passed by more than the grace window. Logged and
+   * skipped, never run as backlog. */
+  missed: number;
   details: Array<{ shop: string; collection: string; ok: boolean; message: string }>;
 }
 
@@ -57,8 +60,12 @@ const CLAIM_RETENTION_MS = 30 * 86_400_000;
  * the ones this process actually won. A unique-constraint violation (P2002)
  * means another sweep got there first, which is the whole point.
  */
-async function claimSlots(shop: string, collectionId: string, slots: DueSlot[]): Promise<DueSlot[]> {
-  const won: DueSlot[] = [];
+async function claimSlots<T extends { slot: number; dateKey: string; at: Date }>(
+  shop: string,
+  collectionId: string,
+  slots: T[],
+): Promise<T[]> {
+  const won: T[] = [];
   for (const slot of slots) {
     try {
       await db.shuffleSlotClaim.create({
@@ -89,7 +96,7 @@ export async function runDueShuffles(now: Date = new Date()): Promise<CronSweepR
     },
   });
 
-  const result: CronSweepResult = { checked: candidates.length, ran: 0, failed: 0, skipped: 0, details: [] };
+  const result: CronSweepResult = { checked: candidates.length, ran: 0, failed: 0, skipped: 0, missed: 0, details: [] };
   if (candidates.length === 0) return result;
 
   const byShop = new Map<string, typeof candidates>();
@@ -106,15 +113,20 @@ export async function runDueShuffles(now: Date = new Date()): Promise<CronSweepR
     // Work out what's due before paying for an admin session: a sweep that
     // only picked these collections up because of a stale nextRunAt has
     // nothing to do, and shouldn't touch Shopify at all.
-    const work = configs.map((config) => ({
-      config,
-      due: dueSlots(now, settings.timezone, {
-        scheduleType: config.scheduleType as ScheduleType,
-        scheduleTime: config.scheduleTime,
-        scheduleTime2: config.scheduleTime2,
-        scheduleWeekday: config.scheduleWeekday,
-      }),
-    }));
+    const work = configs.map((config) => {
+      const { due, missed } = dueSlots(
+        now,
+        settings.timezone,
+        {
+          scheduleType: config.scheduleType as ScheduleType,
+          scheduleTime: config.scheduleTime,
+          scheduleTime2: config.scheduleTime2,
+          scheduleWeekday: config.scheduleWeekday,
+        },
+        config.scheduleUpdatedAt,
+      );
+      return { config, due, missed };
+    });
 
     // Repair the advisory countdown for everything in this sweep, whether or
     // not it runs — this is what stops a stale nextRunAt from persisting.
@@ -128,6 +140,31 @@ export async function runDueShuffles(now: Date = new Date()): Promise<CronSweepR
       if (nextRunAt?.getTime() !== config.nextRunAt?.getTime()) {
         await db.collectionConfig.update({ where: { id: config.id }, data: { nextRunAt } });
       }
+    }
+
+    // A slot whose time passed by more than the grace window is recorded and
+    // dropped — never run as backlog hours later. The claim goes in too, so
+    // a later sweep doesn't reconsider it.
+    for (const { config, missed } of work) {
+      if (missed.length === 0) continue;
+      const claimed = await claimSlots(shop, config.id, missed);
+      if (claimed.length === 0) continue;
+      result.missed += claimed.length;
+      await db.shuffleRun.create({
+        data: {
+          shop,
+          collectionId: config.id,
+          trigger: "SCHEDULED",
+          status: "FAILED",
+          message: `Missed — Shuffly wasn't running at ${formatSlotTimes(claimed, settings.timezone)}`,
+        },
+      });
+      result.details.push({
+        shop,
+        collection: config.title,
+        ok: false,
+        message: `Missed ${claimed.length} slot(s) outside the grace window`,
+      });
     }
 
     const withWork = work.filter((item) => item.due.length > 0);
@@ -166,6 +203,8 @@ export async function runDueShuffles(now: Date = new Date()): Promise<CronSweepR
         continue;
       }
 
+      const ranLate = won.some((slot) => slot.late);
+
       try {
         const summary = await runShuffleForCollection(
           admin,
@@ -179,6 +218,14 @@ export async function runDueShuffles(now: Date = new Date()): Promise<CronSweepR
         );
         if (summary.ok) result.ran++;
         else result.failed++;
+        if (summary.ok && ranLate) {
+          // The shuffle happened, just not on the minute — worth saying in
+          // Activity so a merchant who notices isn't left guessing.
+          await db.shuffleRun.updateMany({
+            where: { shop, collectionId: config.id, batchId, status: "OK" },
+            data: { message: `${summary.message} · ran late (Shuffly was catching up)` },
+          });
+        }
         result.details.push({ shop, collection: config.title, ok: summary.ok, message: summary.message });
       } catch (err) {
         result.failed++;
@@ -189,4 +236,13 @@ export async function runDueShuffles(now: Date = new Date()): Promise<CronSweepR
 
   await pruneOldSlotClaims(now);
   return result;
+}
+
+/** "06:00" / "06:00 and 18:00", in the shop's own timezone — for a missed-run
+ * message that names the times the merchant actually chose. */
+function formatSlotTimes(slots: MissedSlot[], timeZone: string): string {
+  const times = slots.map((slot) =>
+    new Intl.DateTimeFormat("en-US", { timeZone, hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(slot.at),
+  );
+  return times.length <= 1 ? (times[0] ?? "its scheduled time") : `${times.slice(0, -1).join(", ")} and ${times[times.length - 1]}`;
 }

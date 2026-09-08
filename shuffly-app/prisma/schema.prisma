@@ -80,6 +80,11 @@ model CollectionConfig {
                            // scheduleTime + 12h; existing rows were backfilled to that
                            // same value so nobody's schedule moved.
   scheduleWeekday Int?     // 0=Sunday..6=Saturday, used when scheduleType=WEEKLY
+  scheduleUpdatedAt DateTime? // when the merchant last changed any schedule field. The sweep's
+                              // grace window is only honoured for slots due AFTER this instant,
+                              // which is what tells "the worker was down, run it late" apart
+                              // from "the merchant just moved this slot into the past, don't
+                              // back-fire". Without it those two are indistinguishable.
   lastRunAt      DateTime?
   lastSoldOutCount Int?    // sold-out products pushed to the end on the most recent run — real, not estimated
   lastKnownOrder String?  // JSON array of product GIDs — exactly what we last wrote to Shopify, so the next
@@ -130,7 +135,7 @@ model ShuffleRun {
   shop          String
   collectionId  String
   collection    CollectionConfig @relation(fields: [collectionId], references: [id], onDelete: Cascade)
-  trigger       String // SCHEDULED | MANUAL | SOLD_OUT_REACTION | RESTOCK_REACTION | EXTERNAL_REORDER_DETECTED | PAUSED | RESUMED
+  trigger       String // SCHEDULED | MANUAL | SOLD_OUT_REACTION | RESTOCK_REACTION | EXTERNAL_REORDER_DETECTED | PAUSED | RESUMED | SCHEDULE_CHANGED
   status        String // OK | FAILED
   movedCount    Int       @default(0)
   pinnedCount   Int       @default(0)

@@ -513,6 +513,19 @@ function formatSolo(row: RunRow, timezone: string, now: Date, batchSiblings?: Ru
         movedCount: null,
         restore: null,
       };
+    case "SCHEDULE_CHANGED":
+      return {
+        ...base,
+        kind: "setting",
+        iconType: "bolt-filled",
+        iconTone: "info",
+        title: `${collectionTitle} schedule changed`,
+        // The message already reads "Schedule changed to daily at 09:00", so
+        // strip the redundant lead-in for the meta line under the title.
+        meta: (row.message ?? "").replace(/^Schedule changed to /, "Now ") || "Runs on its new schedule from now on.",
+        movedCount: null,
+        restore: null,
+      };
     case "RETRIED":
       return {
         ...base,
