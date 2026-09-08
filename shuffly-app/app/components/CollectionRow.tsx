@@ -29,6 +29,11 @@ export interface CollectionRowData {
   /** Raw target instant, RUNNING collections only — this component ticks
    * its own countdown from it every second, client-side only, no polling. */
   nextRunAt: Date | null;
+  /** The sort Shuffly switched this collection away from, as a label, or null.
+   * Only read by the bulk-remove dialog — the row itself doesn't render it. */
+  restorableSort?: string | null;
+  /** True when the collection was already Manual and we captured its order. */
+  hasOrderSnapshot?: boolean;
   lastRun: { moved: number; whenLabel: string; failed: boolean; at: Date } | null;
   /** Last 7 runs, oldest first; null = no run in that slot. Renders as a
    * tiny bar chart under the last-run figures. */

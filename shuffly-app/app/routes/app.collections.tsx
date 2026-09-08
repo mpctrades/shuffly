@@ -265,6 +265,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       nextRunAt: c.status === "RUNNING" ? c.nextRunAt : null,
       lastRun,
       sparkline,
+      // Whether removing this one has anything to put back — drives the bulk
+      // remove dialog's copy so it can't claim "nothing changes" while
+      // silently restoring sorts.
+      restorableSort: c.previousSortOrder ? sortOrderLabel(c.previousSortOrder) : null,
+      hasOrderSnapshot: Boolean(c.originalOrder) && !c.previousSortOrder,
     };
   });
 
@@ -1093,14 +1098,23 @@ export default function Collections() {
   // the settle effect below needs to know what just ran).
   const [lastBulkAction, setLastBulkAction] = useState<string | null>(null);
 
-  function runBulk(actionName: "bulk-pause" | "bulk-resume" | "bulk-shuffle" | "bulk-remove") {
+  function runBulk(
+    actionName: "bulk-pause" | "bulk-resume" | "bulk-shuffle" | "bulk-remove",
+    extra: Record<string, string> = {},
+  ) {
     setLastBulkAction(actionName);
-    bulkFetcher.submit(formDataOf({ _action: actionName, id: Array.from(selected) }), { method: "post" });
+    bulkFetcher.submit(
+      formDataOf({ _action: actionName, id: Array.from(selected), ...extra }),
+      { method: "post" },
+    );
   }
 
-  function confirmBulkRemove() {
+  function confirmBulkRemove(restore: boolean) {
     closeModal(bulkRemoveModalRef.current);
-    runBulk("bulk-remove");
+    // The choice travels with the submission. The action reads
+    // `restore !== "false"`, so sending it explicitly is what stops a bulk
+    // removal from restoring sorts without the merchant having said so.
+    runBulk("bulk-remove", { restore: String(restore) });
   }
 
   useEffect(() => {
@@ -1458,6 +1472,9 @@ export default function Collections() {
       <BulkRemoveConfirmModal
         ref={bulkRemoveModalRef}
         titles={selectedRows.map((r) => r.title)}
+        restorable={selectedRows
+          .filter((r) => r.restorableSort || r.hasOrderSnapshot)
+          .map((r) => ({ title: r.title, sortOrderLabel: r.restorableSort ?? null }))}
         busy={bulkFetcher.state !== "idle"}
         onConfirm={confirmBulkRemove}
         onCancel={() => closeModal(bulkRemoveModalRef.current)}
