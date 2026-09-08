@@ -5,7 +5,6 @@ import { useAppBridge } from "@shopify/app-bridge-react";
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { getOrCreateShopSettings } from "../lib/shop-context.server";
-import { KeyValueRows } from "../components/KeyValueRows";
 import { getShopTimezone } from "../lib/collections.server";
 import { timezoneOffsetLabel } from "../lib/schedule.server";
 // Client-safe (see time-slots.ts) — the component below renders these.
@@ -296,111 +295,6 @@ export default function Settings() {
           </s-stack>
 
           <s-stack direction="block" gap="base">
-            <SettingsCard
-              icon="shield-person"
-              tone="success"
-              title="What Shuffly can access"
-            >
-              <KeyValueRows
-                rows={[
-                  {
-                    label: "Read your products",
-                    value: <AccessValue text="Yes" tone="neutral" />,
-                  },
-                  {
-                    label: "Change collection order",
-                    value: <AccessValue text="Yes" tone="neutral" />,
-                  },
-                  {
-                    label: "Read inventory status",
-                    value: <AccessValue text="Yes" tone="neutral" />,
-                  },
-                  {
-                    label: "Customer data",
-                    value: <AccessValue text="No access" tone="success" />,
-                  },
-                  {
-                    label: "Orders",
-                    value: <AccessValue text="No access" tone="success" />,
-                  },
-                  {
-                    label: "Your theme",
-                    value: <AccessValue text="No access" tone="success" />,
-                  },
-                ]}
-              />
-            </SettingsCard>
-
-            <SettingsCard icon="gauge" tone="success" title="Your store speed">
-              <div
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "repeat(3, 1fr)",
-                  gap: 16,
-                }}
-              >
-                {[
-                  { value: "0 KB", label: "Page weight" },
-                  { value: "0", label: "Theme files" },
-                  { value: "0", label: "Scripts" },
-                ].map((stat) => (
-                  <div key={stat.label} style={{ textAlign: "center" }}>
-                    <div
-                      style={{
-                        fontSize: 22,
-                        fontWeight: 700,
-                        color: "var(--p-color-text-success, #008060)",
-                      }}
-                    >
-                      {stat.value}
-                    </div>
-                    <div style={{ marginTop: 4, fontSize: 12 }}>
-                      <s-text color="subdued">{stat.label}</s-text>
-                    </div>
-                  </div>
-                ))}
-              </div>
-              <CardFooterStrip>
-                <s-text color="subdued">
-                  Shuffly changes the real product order in Shopify. Nothing
-                  runs in your customers&apos; browsers.
-                </s-text>
-              </CardFooterStrip>
-            </SettingsCard>
-
-            <SettingsCard icon="apps" tone="info" title="Works alongside">
-              <KeyValueRows
-                rows={[
-                  {
-                    label: "Judge.me Reviews",
-                    value: <AccessValue text="No conflict" tone="success" />,
-                  },
-                  // Shopify's own Flow and Search & Discovery are covered by
-                  // a real compatibility statement, not live detection —
-                  // there's no signal yet for whether a shop actually has
-                  // them installed. That's why these read as fixed facts
-                  // ("no conflict with how Shuffly writes order") rather
-                  // than a connected/disconnected status. If a row like
-                  // this is ever added WITHOUT that backing fact being
-                  // true, hide it instead of shipping a guess.
-                  {
-                    label: "Shopify Flow",
-                    value: <AccessValue text="No conflict" tone="success" />,
-                  },
-                  {
-                    label: "Search & Discovery",
-                    value: <AccessValue text="No conflict" tone="success" />,
-                  },
-                ]}
-              />
-              <CardFooterStrip>
-                <s-text color="subdued">
-                  If another app also sets collection order, Shuffly tells you
-                  instead of fighting it.
-                </s-text>
-              </CardFooterStrip>
-            </SettingsCard>
-
             <SettingsCard icon="email" tone="info" title="Support">
               <s-stack direction="block" gap="small-200">
                 <s-paragraph>
@@ -421,13 +315,6 @@ export default function Settings() {
                   The Help page has the same address, plus a button that copies your shop details for us.
                 </s-text>
               </CardFooterStrip>
-            </SettingsCard>
-
-            <SettingsCard icon="info" tone="neutral" title="If you uninstall">
-              <s-paragraph>
-                Your collections keep the order they have. Nothing to clean up.
-                Shopify sends the deletion request 48 hours after uninstall; Shuffly deletes its stored shop data when it arrives.
-              </s-paragraph>
             </SettingsCard>
           </s-stack>
         </div>
@@ -464,33 +351,6 @@ function CardFooterStrip({ children }: { children: React.ReactNode }) {
  * products, changing collection order — look identically reassuring to
  * the actual "No access" rows below them, on a card whose whole point is
  * that distinction. */
-function AccessValue({
-  text,
-  tone,
-}: {
-  text: string;
-  tone: "neutral" | "success";
-}) {
-  const color =
-    tone === "success" ? "var(--p-color-icon-success, #008060)" : "var(--p-color-icon-secondary, #6b6b6b)";
-  return (
-    <s-stack direction="inline" gap="small-200" alignItems="center">
-      <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
-        <path
-          d="M2.5 7.3L5.6 10.4L11.5 3.6"
-          stroke={color}
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-      </svg>
-      <s-text type="strong" tone={tone === "success" ? "success" : undefined}>
-        {text}
-      </s-text>
-    </s-stack>
-  );
-}
-
 /** The card shell shared by every card on this page — and matching the one
  * on Insights/Help: white surface, 1px border, 12px radius, subtle shadow,
  * a 3px accent bar on top, and a 32px icon chip beside the heading. */
@@ -591,15 +451,13 @@ function SettingsSkeleton() {
         ))}
       </s-stack>
       <s-stack direction="block" gap="base">
-        {[0, 1, 2, 3].map((i) => (
-          <s-box key={i} padding="base" borderWidth="base" borderRadius="base">
-            <s-stack direction="block" gap="small">
-              <Bar width={140} />
-              <Bar width={140} />
-              <Bar width={140} />
-            </s-stack>
-          </s-box>
-        ))}
+        <s-box padding="base" borderWidth="base" borderRadius="base">
+          <s-stack direction="block" gap="small">
+            <Bar width={140} />
+            <Bar width={140} />
+            <Bar width={140} />
+          </s-stack>
+        </s-box>
       </s-stack>
     </div>
   );
