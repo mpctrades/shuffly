@@ -4,7 +4,9 @@ import {
   annualMonthlyEquivalent,
   annualPrice,
   defaultScheduleForPlan,
+  isTopPlan,
   planOf,
+  planSummaryLine,
   undoRetentionCutoff,
 } from "./plans";
 
@@ -89,5 +91,44 @@ describe("PLANS catalogue sanity", () => {
     expect(PLANS.STARTER.allowedSchedules).not.toContain("TWICE_DAILY");
     expect(PLANS.PRO.allowedSchedules).toContain("TWICE_DAILY");
     expect(PLANS.AGENCY.allowedSchedules).toContain("TWICE_DAILY");
+  });
+});
+
+describe("planSummaryLine", () => {
+  it("describes each plan from its own entitlements", () => {
+    expect(planSummaryLine("FREE")).toBe("Weekly shuffle");
+    expect(planSummaryLine("STARTER")).toBe("1 shuffle a day, you pick the time");
+    expect(planSummaryLine("PRO")).toBe("Up to 2 shuffles a day");
+    expect(planSummaryLine("AGENCY")).toBe("Up to 2 shuffles a day");
+  });
+
+  it("falls back to the Free line for an unknown plan", () => {
+    expect(planSummaryLine("SOMETHING_ELSE")).toBe("Weekly shuffle");
+    expect(planSummaryLine(null)).toBe("Weekly shuffle");
+  });
+
+  it("stays in step with allowedSchedules rather than being written twice", () => {
+    for (const plan of Object.values(PLANS)) {
+      const line = planSummaryLine(plan.id);
+      expect(plan.allowedSchedules.includes("TWICE_DAILY")).toBe(line === "Up to 2 shuffles a day");
+    }
+  });
+});
+
+describe("isTopPlan", () => {
+  it("only treats the most expensive plan as the top one", () => {
+    expect(isTopPlan("FREE")).toBe(false);
+    expect(isTopPlan("STARTER")).toBe(false);
+    expect(isTopPlan("PRO")).toBe(false);
+    expect(isTopPlan("AGENCY")).toBe(true);
+  });
+
+  it("hides Upgrade for exactly one plan, whatever the tiers are", () => {
+    const tops = Object.values(PLANS).filter((p) => isTopPlan(p.id));
+    expect(tops).toHaveLength(1);
+  });
+
+  it("shows Upgrade on an unknown plan rather than hiding it", () => {
+    expect(isTopPlan("SOMETHING_ELSE")).toBe(false);
   });
 });

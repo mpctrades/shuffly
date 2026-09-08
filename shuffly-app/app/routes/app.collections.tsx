@@ -13,7 +13,7 @@ import {
 import { runShuffleForCollection } from "../lib/shuffle-engine.server";
 import { previewShuffleAll } from "../lib/shuffle-preview.server";
 import { formatActivityTimestamp, nextRunFor, scheduleWriteFields, type ScheduleType } from "../lib/schedule.server";
-import { defaultScheduleForPlan, planOf, pruneExpiredUndoSnapshots } from "../lib/plans.server";
+import { defaultScheduleForPlan, isTopPlan, planOf, planSummaryLine, pruneExpiredUndoSnapshots } from "../lib/plans.server";
 import { closeModal } from "../lib/polaris-modal";
 import { CollectionRow, type CollectionRowData } from "../components/CollectionRow";
 import {
@@ -278,6 +278,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     lastBatch,
     planName: plan.name,
     planLimit: plan.maxCollections === Infinity ? null : plan.maxCollections,
+    // The plan card's data. ShopSettings.plan is already a local cache of
+    // whatever billing.check() last reported (see billing.server.ts) and
+    // this loader already reads it for the collection cap — so the card
+    // adds no query here and no Billing API call on any dashboard render.
+    planSummary: planSummaryLine(settings.plan),
+    canUpgrade: !isTopPlan(settings.plan),
     undoRetentionDays: plan.undoRetentionDays,
   };
 };
@@ -624,6 +630,8 @@ export default function Collections() {
     lastBatch,
     planName,
     planLimit,
+    planSummary,
+    canUpgrade,
     undoRetentionDays,
   } = useLoaderData<typeof loader>();
   const revalidator = useRevalidator();
@@ -958,6 +966,9 @@ export default function Collections() {
           productsActuallyMoving={productsActuallyMoving}
           trackedTotal={trackedTotal}
           totalStoreCollections={totalStoreCollections}
+          planName={planName}
+          planSummary={planSummary}
+          canUpgrade={canUpgrade}
         />
       )}
 
@@ -1168,7 +1179,7 @@ export default function Collections() {
       <style>{`
         .shuffly-status-row {
           display: grid;
-          grid-template-columns: repeat(3, 1fr);
+          grid-template-columns: repeat(4, 1fr);
           gap: 16px;
           margin: 20px 0;
         }
@@ -1193,7 +1204,12 @@ export default function Collections() {
         .shuffly-status-label { font-size: 12px; color: var(--p-color-text-secondary, #6b6b6b); }
         .shuffly-status-value { font-size: 15px; font-weight: 700; color: var(--p-color-text, #131110); margin-top: 1px; }
         .shuffly-status-detail { font-size: 12px; color: var(--p-color-text-secondary, #6b6b6b); margin-top: 2px; }
-        @container shuffly-status (max-width: 640px) {
+        /* Four cards need a two-up step before stacking, or each one is too
+           narrow to read at tablet widths. */
+        @container shuffly-status (max-width: 1000px) {
+          .shuffly-status-row { grid-template-columns: repeat(2, 1fr); }
+        }
+        @container shuffly-status (max-width: 560px) {
           .shuffly-status-row { grid-template-columns: 1fr; }
         }
         /* Amber, not brand orange — "attention" is a semantic tone, and
@@ -1641,6 +1657,14 @@ function AlertCircleGlyph({ color }: { color: string }) {
   );
 }
 
+function PlanGlyph({ color }: { color: string }) {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M12 2l2.9 6.3 6.9.8-5 4.7 1.3 6.8L12 17.4 5.9 20.6 7.2 13.8l-5-4.7 6.9-.8z" />
+    </svg>
+  );
+}
+
 function GridGlyph({ color }: { color: string }) {
   return (
     <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
@@ -1666,6 +1690,9 @@ function StatusRow({
   productsActuallyMoving,
   trackedTotal,
   totalStoreCollections,
+  planName,
+  planSummary,
+  canUpgrade,
 }: {
   runningCount: number;
   nextRunLabel: string | null;
@@ -1675,6 +1702,9 @@ function StatusRow({
   productsActuallyMoving: number;
   trackedTotal: number;
   totalStoreCollections: number | null;
+  planName: string;
+  planSummary: string;
+  canUpgrade: boolean;
 }) {
   const [nowMs, setNowMs] = useState(() => Date.now());
   useEffect(() => {
@@ -1743,6 +1773,27 @@ function StatusRow({
               ? `across ${trackedTotal} tracked collection${trackedTotal === 1 ? "" : "s"}`
               : `across ${trackedTotal} of your ${totalStoreCollections} collections`}
           </div>
+        </div>
+      </div>
+      <div className="shuffly-status-card">
+        <div className="shuffly-status-chip" style={{ background: TONE_TOKENS.success.tint }}>
+          <PlanGlyph color={TONE_TOKENS.success.accent} />
+        </div>
+        <div style={{ minWidth: 0, flex: "1 1 0%" }}>
+          <div className="shuffly-status-label">Your plan</div>
+          <div className="shuffly-status-value">{planName}</div>
+          <div className="shuffly-status-detail">{planSummary}</div>
+          {canUpgrade && (
+            <div style={{ marginTop: 8 }}>
+              {/* Links to the in-app Plan page rather than straight to
+                  Shopify's pricing page: that URL needs the app handle,
+                  which would mean an extra Admin API call in this loader on
+                  every dashboard render. /app/plan already has it. */}
+              <s-button variant="secondary" href="/app/plan">
+                Upgrade
+              </s-button>
+            </div>
+          )}
         </div>
       </div>
     </div>

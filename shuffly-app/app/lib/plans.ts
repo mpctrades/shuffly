@@ -95,3 +95,23 @@ export function annualPrice(monthly: number): number {
 export function annualMonthlyEquivalent(monthly: number): number {
   return Math.round((annualPrice(monthly) / 12) * 100) / 100;
 }
+
+/** One plain line describing what a plan actually gives you, derived from
+ * that plan's own `allowedSchedules` rather than written out separately —
+ * so the dashboard's plan card can't drift out of sync with what the app
+ * really enforces. */
+export function planSummaryLine(planId: string | null | undefined): string {
+  const plan = planOf(planId);
+  if (plan.allowedSchedules.includes("TWICE_DAILY")) return "Up to 2 shuffles a day";
+  if (plan.allowedSchedules.includes("DAILY")) return "1 shuffle a day, you pick the time";
+  return "Weekly shuffle";
+}
+
+/** Whether no plan offers more than this one — i.e. whether to hide the
+ * Upgrade button. Decided by price across PLANS rather than by hardcoding a
+ * plan id, so adding a tier above the current top one doesn't silently
+ * leave Upgrade hidden for the tier below it. */
+export function isTopPlan(planId: string | null | undefined): boolean {
+  const plan = planOf(planId);
+  return !Object.values(PLANS).some((other) => other.price > plan.price);
+}
