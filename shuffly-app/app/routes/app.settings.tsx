@@ -342,15 +342,6 @@ function CardFooterStrip({ children }: { children: React.ReactNode }) {
   );
 }
 
-/** A "Yes"/"No access" style value with a small check icon before it —
- * `tone="success"` for the reassuring cases (no access, no conflict),
- * `tone="neutral"` for a plain fact that isn't good or bad news. A custom
- * SVG, not `s-icon type="check"`: that icon doesn't honor `tone` and
- * always renders green (same issue found on the Plan page's trust row),
- * which would make the "neutral" rows here — "Yes" to reading your
- * products, changing collection order — look identically reassuring to
- * the actual "No access" rows below them, on a card whose whole point is
- * that distinction. */
 /** The card shell shared by every card on this page — and matching the one
  * on Insights/Help: white surface, 1px border, 12px radius, subtle shadow,
  * a 3px accent bar on top, and a 32px icon chip beside the heading. */
