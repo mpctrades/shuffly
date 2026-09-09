@@ -487,26 +487,30 @@ export default function Settings() {
         </div>
       )}
 
-      {/* Layout only. The annotated two-column grid and the stat-tile row
-          this replaced are both gone, along with all of their rules. */}
+      {/* Layout only, and every value is a Polaris token with a same-value
+          px fallback — a missing token falls back rather than collapsing the
+          layout. The two exceptions are genuine layout measures with no
+          token behind them: the column's max-width and the wrap breakpoint. */}
       <style>{`
         .shuffly-settings-column {
           display: flex;
           flex-direction: column;
-          gap: 24px;
-          max-width: 640px;
+          gap: var(--p-space-800, 32px);
+          /* A reading measure, not a spacing step. Past ~840px the run
+             between a label and its control gets long enough that the two
+             stop reading as one row, which is the whole point of the shared
+             right edge. */
+          max-width: 800px;
           margin: 0 auto;
-          padding: 4px 0 24px;
+          padding: var(--p-space-100, 4px) 0 var(--p-space-600, 24px);
         }
-        /* The group label sits ABOVE its card, small and uppercase, which is
-           what let the side column go — and with it the dead space that sat
-           next to every short annotation. */
+        /* Signposts, not headings — the smallest step on the scale. */
         .shuffly-settings-grouplabel {
           display: flex;
           align-items: center;
-          gap: 8px;
-          margin: 0 0 8px 2px;
-          font-size: 12px;
+          gap: var(--p-space-200, 8px);
+          margin: 0 0 var(--p-space-300, 12px) var(--p-space-050, 2px);
+          font-size: var(--p-font-size-275, 11px);
           font-weight: 700;
           letter-spacing: 0.06em;
           text-transform: uppercase;
@@ -514,7 +518,8 @@ export default function Settings() {
         }
         .shuffly-icon-chip {
           flex: none;
-          border-radius: 6px;
+          /* Same radius as the Collections bento chips. */
+          border-radius: var(--p-border-radius-200, 8px);
           display: inline-flex;
           align-items: center;
           justify-content: center;
@@ -523,38 +528,49 @@ export default function Settings() {
         .shuffly-settings-row {
           display: grid;
           grid-template-columns: minmax(0, 1fr) auto;
-          gap: 16px;
+          gap: var(--p-space-500, 20px);
           align-items: center;
-          min-height: 54px;
-          padding: 12px 16px;
+          min-height: var(--p-space-1600, 64px);
+          padding: var(--p-space-400, 16px) var(--p-space-500, 20px);
         }
-        .shuffly-settings-rowpad { padding: 12px 16px; }
+        .shuffly-settings-rowpad { padding: var(--p-space-400, 16px) var(--p-space-500, 20px); }
         .shuffly-settings-rowlabel { min-width: 0; }
         .shuffly-settings-labelline {
           display: flex;
           align-items: center;
-          gap: 8px;
+          gap: var(--p-space-200, 8px);
           flex-wrap: wrap;
         }
-        .shuffly-settings-label { font-weight: 600; color: var(--p-color-text, #131110); }
+        .shuffly-settings-label {
+          font-size: var(--p-font-size-350, 14px);
+          font-weight: 600;
+          color: var(--p-color-text, #131110);
+        }
+        /* Help and the value's sub-line share one secondary step, so the two
+           kinds of supporting text don't disagree about their own weight. */
         .shuffly-settings-help {
           display: block;
-          margin-top: 2px;
-          font-size: 12px;
+          margin-top: var(--p-space-100, 4px);
+          font-size: var(--p-font-size-325, 13px);
           color: var(--p-color-text-secondary, #6b6b6b);
         }
         .shuffly-settings-control {
           display: flex;
           align-items: center;
           justify-content: flex-end;
-          gap: 12px;
+          gap: var(--p-space-400, 16px);
           flex-wrap: wrap;
         }
         .shuffly-settings-valuebox { text-align: right; }
-        .shuffly-settings-value { display: block; font-weight: 600; color: var(--p-color-text, #131110); }
+        .shuffly-settings-value {
+          display: block;
+          font-size: var(--p-font-size-350, 14px);
+          font-weight: 600;
+          color: var(--p-color-text, #131110);
+        }
         .shuffly-settings-subvalue {
           display: block;
-          font-size: 12px;
+          font-size: var(--p-font-size-325, 13px);
           color: var(--p-color-text-secondary, #6b6b6b);
         }
         /* Controls wrap beneath their label rather than squeezing. */
