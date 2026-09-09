@@ -14,8 +14,16 @@ import {
 } from "../lib/collections.server";
 import { restoreOnRemove, runShuffleForCollection } from "../lib/shuffle-engine.server";
 import { previewShuffleAll } from "../lib/shuffle-preview.server";
-import { formatActivityTimestamp, nextRunFor, scheduleWriteFields, type ScheduleType } from "../lib/schedule.server";
-import { cadenceLabel, defaultScheduleForPlan, isTopPlan, planOf, pruneExpiredUndoSnapshots } from "../lib/plans.server";
+import {
+  formatActivityTimestamp,
+  nextRunFor,
+  normalizeHhMm,
+  scheduleWriteFields,
+  slotsFarEnoughApart,
+  type ScheduleType,
+  type SlotSchedule,
+} from "../lib/schedule.server";
+import { cadenceLabel, defaultScheduleForPlan, isTopPlan, planOf, pruneExpiredUndoSnapshots, timeSlots } from "../lib/plans.server";
 import { closeModal } from "../lib/polaris-modal";
 import { CollectionRow, type CollectionRowData } from "../components/CollectionRow";
 import {
@@ -26,7 +34,9 @@ import {
 import { ShuffleAllConfirmModal } from "../components/ShuffleAllConfirmModal";
 import { AddCollectionsModal, type AddCollectionsPickerData } from "../components/AddCollectionsModal";
 import { SwitchToManualModal, type SwitchToManualTarget } from "../components/SwitchToManualModal";
+import { ScheduleModal, type ScheduleTarget } from "../components/ScheduleModal";
 import { noMoveReasonLabel } from "../lib/run-reason";
+import { isOverridden, overrideWriteFields, resolveSchedule, shopDefaultSchedule } from "../lib/schedule-resolve";
 import { BulkRemoveConfirmModal } from "../components/BulkRemoveConfirmModal";
 import { PlanBar } from "../components/PlanBar";
 import { AddAllUntrackedModal } from "../components/AddAllUntrackedModal";
@@ -234,7 +244,13 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     if (c.pins > 0 && pinsVaries) settingsBadges.push(`${c.pins} pin${c.pins === 1 ? "" : "s"}`);
     if (c.giveEveryoneATurn && giveEveryoneATurnVaries) settingsBadges.push("Fair rotation");
 
-    const scheduleLine = c.status === "PAUSED" ? "Paused" : scheduleLabel(c.scheduleType, c.scheduleTime, c.scheduleWeekday, c.scheduleTime2);
+    // Resolved, never read raw: a collection with null columns runs on the
+    // shop default, and the cell has to say what it actually does.
+    const effective = resolveSchedule(c, settings);
+    const scheduleLine =
+      c.status === "PAUSED"
+        ? "Paused"
+        : scheduleLabel(effective.scheduleType, effective.scheduleTime, effective.scheduleWeekday, effective.scheduleTime2 ?? null);
     const scheduleSubLine =
       c.status === "PAUSED" ? "Resume to schedule" : c.nextRunAt ? "" : "Shuffles only when you press Shuffle";
 
@@ -276,6 +292,17 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       scheduleLine,
       scheduleSubLine,
       nextRunAt: c.status === "RUNNING" ? c.nextRunAt : null,
+      // Drives the "Custom" marker, and tells the modal whether to preselect
+      // "Use shop default".
+      scheduleIsCustom: isOverridden(c),
+      // The effective values the modal opens on — already resolved, so a
+      // collection that inherits opens showing the default it inherits.
+      schedule: {
+        scheduleType: effective.scheduleType,
+        scheduleTime: effective.scheduleTime,
+        scheduleTime2: effective.scheduleTime2 ?? null,
+        scheduleWeekday: effective.scheduleWeekday ?? null,
+      },
       lastRun,
       sparkline,
       // Whether removing this one has anything to put back — drives the bulk
@@ -303,6 +330,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     // When on, the add dialog is skipped entirely and the switch happens
     // straight away — revocable on the Settings page.
     autoSwitchToManual: settings.autoSwitchToManual,
+    timezone: settings.timezone,
+    // The live shop default every inheriting row follows. Sent as one object
+    // so the modal, the Settings link copy and the "Use shop default" reset
+    // all read the same values.
+    shopDefault: shopDefaultSchedule(settings),
+    // Gated on the entitlement helper, never on `plan === "PRO"` — the plan
+    // matrix is allowed to change without every caller having to.
+    scheduleSlots: timeSlots(settings.plan),
     planName: plan.name,
     planLimit: plan.maxCollections === Infinity ? null : plan.maxCollections,
     // The plan card's data. ShopSettings.plan is already a local cache of
@@ -642,12 +677,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const nextStatus = actionType === "pause" ? "PAUSED" : "RUNNING";
     const nextRunAt =
       nextStatus === "RUNNING"
-        ? nextRunFor(new Date(), settings.timezone, {
-            scheduleType: config.scheduleType as ScheduleType,
-            scheduleTime: config.scheduleTime,
-            scheduleTime2: config.scheduleTime2,
-            scheduleWeekday: config.scheduleWeekday,
-          })
+        ? nextRunFor(new Date(), settings.timezone, resolveSchedule(config, settings))
         : null;
     await db.$transaction([
       db.collectionConfig.update({ where: { id }, data: { status: nextStatus, nextRunAt } }),
@@ -662,6 +692,129 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       }),
     ]);
     return data({ ok: true });
+  }
+
+  // One writer for all three collection entry points (cell, row menu, bulk).
+  // `scheduleMode=default` clears the override so the rows go back to
+  // inheriting; anything else writes explicit values. Either way the sweep
+  // re-reads on its next pass, so the change takes effect immediately with
+  // nothing left queued at the old time.
+  if (actionType === "set-schedule") {
+    const ids = formData.getAll("id").map(String);
+    const toDefault = String(formData.get("scheduleMode") ?? "") === "default";
+    const configs = await db.collectionConfig.findMany({ where: { id: { in: ids }, shop } });
+    if (configs.length === 0) return data({ ok: false, error: "Nothing to update." }, { status: 400 });
+
+    let override: ReturnType<typeof overrideWriteFields>;
+    if (toDefault) {
+      override = overrideWriteFields(null);
+    } else {
+      const scheduleType = String(formData.get("scheduleType") ?? "WEEKLY") as ScheduleType;
+      const scheduleTime = normalizeHhMm(String(formData.get("scheduleTime") ?? "06:00"));
+      const rawTime2 = formData.get("scheduleTime2");
+      const scheduleTime2 =
+        scheduleType === "TWICE_DAILY" && rawTime2 != null && rawTime2 !== ""
+          ? normalizeHhMm(String(rawTime2))
+          : null;
+      // The second slot is a plan entitlement, checked here and not only in
+      // the UI — a hand-rolled POST must not be able to buy it for free.
+      if (scheduleTime2 != null && timeSlots(settings.plan) < 2) {
+        return data({ ok: false, error: "Two shuffles a day is a Pro feature." }, { status: 400 });
+      }
+      if (scheduleTime2 != null && !slotsFarEnoughApart(scheduleTime, scheduleTime2)) {
+        return data({ ok: false, error: "Keep the two shuffle times at least an hour apart." }, { status: 400 });
+      }
+      const rawWeekday = formData.get("scheduleWeekday");
+      override = overrideWriteFields({
+        scheduleType,
+        scheduleTime,
+        scheduleTime2,
+        scheduleWeekday: rawWeekday != null && rawWeekday !== "" ? Number(rawWeekday) : null,
+      });
+    }
+
+    const writes = configs.flatMap((c) => {
+      const before = resolveSchedule(c, settings);
+      const after = resolveSchedule({ ...c, ...override }, settings);
+      const changed = scheduleSummary(before) !== scheduleSummary(after) || isOverridden(c) !== (override.scheduleType != null);
+      const nextRunAt = c.status === "RUNNING" ? nextRunFor(new Date(), settings.timezone, after) : null;
+      return [
+        db.collectionConfig.update({
+          where: { id: c.id },
+          data: {
+            ...override,
+            nextRunAt,
+            // Stamped only on a real move, so the sweep can still tell "the
+            // worker was down" from "the merchant moved this into the past".
+            ...(changed ? { scheduleUpdatedAt: new Date() } : {}),
+          },
+        }),
+        ...(changed
+          ? [
+              db.shuffleRun.create({
+                data: {
+                  shop,
+                  collectionId: c.id,
+                  trigger: "SCHEDULE_CHANGED",
+                  status: "OK",
+                  message: `Schedule changed to ${scheduleSummary(after)}${override.scheduleType == null ? " (shop default)" : ""} — was ${scheduleSummary(before)}`,
+                },
+              }),
+            ]
+          : []),
+      ];
+    });
+    await db.$transaction(writes);
+    return data({ ok: true, count: configs.length, toDefault });
+  }
+
+  // The shop-wide default. Nothing is copied onto collection rows — every
+  // collection with a null override follows these values live — so the only
+  // extra work is repairing the advisory countdown on those rows.
+  if (actionType === "set-shop-default") {
+    const scheduleType = String(formData.get("scheduleType") ?? "WEEKLY") as ScheduleType;
+    const scheduleTime = normalizeHhMm(String(formData.get("scheduleTime") ?? "06:00"));
+    const rawTime2 = formData.get("scheduleTime2");
+    const scheduleTime2 =
+      scheduleType === "TWICE_DAILY" && rawTime2 != null && rawTime2 !== ""
+        ? normalizeHhMm(String(rawTime2))
+        : null;
+    if (scheduleTime2 != null && timeSlots(settings.plan) < 2) {
+      return data({ ok: false, error: "Two shuffles a day is a Pro feature." }, { status: 400 });
+    }
+    if (scheduleTime2 != null && !slotsFarEnoughApart(scheduleTime, scheduleTime2)) {
+      return data({ ok: false, error: "Keep the two shuffle times at least an hour apart." }, { status: 400 });
+    }
+    const rawWeekday = formData.get("scheduleWeekday");
+    const scheduleWeekday = rawWeekday != null && rawWeekday !== "" ? Number(rawWeekday) : null;
+
+    const updated = await db.shopSettings.update({
+      where: { shop },
+      data: {
+        defaultScheduleType: scheduleType,
+        defaultScheduleTime: scheduleTime,
+        defaultScheduleTime2: scheduleTime2,
+        defaultScheduleWeekday: scheduleType === "WEEKLY" ? scheduleWeekday : null,
+      },
+    });
+
+    // Everything inheriting just moved. nextRunAt is only an advisory cache
+    // (the sweep recomputes it anyway), but leaving it stale would show the
+    // merchant the old countdown until the next sweep touched each row.
+    const inheriting = await db.collectionConfig.findMany({ where: { shop, scheduleType: null } });
+    const nextDefault = shopDefaultSchedule(updated);
+    await db.$transaction(
+      inheriting.map((c) =>
+        db.collectionConfig.update({
+          where: { id: c.id },
+          data: {
+            scheduleUpdatedAt: new Date(),
+            nextRunAt: c.status === "RUNNING" ? nextRunFor(new Date(), updated.timezone, nextDefault) : null,
+          },
+        }),
+      ),
+    );
+    return data({ ok: true, moved: inheriting.length });
   }
 
   if (actionType === "pause-all") {
@@ -685,12 +838,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       configs.flatMap((c) => {
         const nextRunAt =
           nextStatus === "RUNNING"
-            ? nextRunFor(new Date(), settings.timezone, {
-                scheduleType: c.scheduleType as ScheduleType,
-                scheduleTime: c.scheduleTime,
-                scheduleTime2: c.scheduleTime2,
-                scheduleWeekday: c.scheduleWeekday,
-              })
+            ? nextRunFor(new Date(), settings.timezone, resolveSchedule(c, settings))
             : null;
         return [
           db.collectionConfig.update({ where: { id: c.id }, data: { status: nextStatus, nextRunAt } }),
@@ -818,6 +966,13 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
 // ============================== component ==============================
 
+/** One-line summary of an effective schedule, for the Activity message that
+ * records old -> new. Built on the same label helper the table cell uses, so
+ * the log and the row can't describe the same schedule differently. */
+function scheduleSummary(s: SlotSchedule): string {
+  return scheduleLabel(s.scheduleType, s.scheduleTime, s.scheduleWeekday, s.scheduleTime2 ?? null);
+}
+
 const PAGE_SIZE = 25;
 
 export default function Collections() {
@@ -835,6 +990,9 @@ export default function Collections() {
     planName,
     planLimit,
     planId,
+    timezone,
+    shopDefault,
+    scheduleSlots,
     planSummary,
     canUpgrade,
     undoRetentionDays,
@@ -933,6 +1091,10 @@ export default function Collections() {
   const [shuffleRunId, setShuffleRunId] = useState<number | null>(null);
   const [pendingRowIds, setPendingRowIds] = useState<Set<string>>(new Set());
   const [switchTarget, setSwitchTarget] = useState<SwitchToManualTarget | null>(null);
+  const [scheduleTarget, setScheduleTarget] = useState<ScheduleTarget | null>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- showOverlay/hideOverlay are imperative methods not on the typed public props
+  const scheduleModalRef = useRef<any>(null);
+  const scheduleFetcher = useFetcher<{ ok?: boolean; error?: string; count?: number; toDefault?: boolean }>();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- showOverlay/hideOverlay are imperative methods not on the typed public props
   const addAllModalRef = useRef<any>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- showOverlay/hideOverlay are imperative methods not on the typed public props
@@ -1059,6 +1221,69 @@ export default function Collections() {
       shopify.toast.show("Shuffle complete");
     }
   }, [pendingRowIds, remainingFetcher.state, shopify]);
+
+  // Every entry point funnels through this one opener, so the cell, the menu
+  // item and the bulk button can't drift into three slightly different
+  // pickers.
+  function openScheduleModal(target: ScheduleTarget) {
+    setScheduleTarget(target);
+    scheduleModalRef.current?.showOverlay();
+  }
+
+  function openScheduleForRow(r: CollectionRowData) {
+    openScheduleModal({
+      mode: "collection",
+      id: r.id,
+      title: r.title,
+      schedule: r.schedule as SlotSchedule,
+      isCustom: r.scheduleIsCustom,
+    });
+  }
+
+  function confirmSchedule(schedule: SlotSchedule | null) {
+    if (!scheduleTarget) return;
+    const ids =
+      scheduleTarget.mode === "collection"
+        ? [scheduleTarget.id]
+        : scheduleTarget.mode === "bulk"
+          ? Array.from(selected)
+          : [];
+    closeModal(scheduleModalRef.current);
+    const fields: Record<string, string | string[]> =
+      schedule == null
+        ? { scheduleMode: "default" }
+        : {
+            scheduleMode: "custom",
+            scheduleType: schedule.scheduleType,
+            scheduleTime: schedule.scheduleTime,
+            scheduleTime2: schedule.scheduleTime2 ?? "",
+            scheduleWeekday: schedule.scheduleWeekday == null ? "" : String(schedule.scheduleWeekday),
+          };
+    if (scheduleTarget.mode === "shop-default") {
+      scheduleFetcher.submit(formDataOf({ _action: "set-shop-default", ...fields }), { method: "post" });
+    } else {
+      scheduleFetcher.submit(formDataOf({ _action: "set-schedule", id: ids, ...fields }), { method: "post" });
+    }
+    setScheduleTarget(null);
+  }
+
+  useEffect(() => {
+    if (scheduleFetcher.state !== "idle" || !scheduleFetcher.data) return;
+    if (scheduleFetcher.data.ok) {
+      setSelected(new Set());
+      const n = scheduleFetcher.data.count ?? 0;
+      shopify.toast.show(
+        scheduleFetcher.data.toDefault
+          ? `${n} collection${n === 1 ? "" : "s"} now follow the shop default`
+          : n > 0
+            ? `Schedule updated for ${n} collection${n === 1 ? "" : "s"}`
+            : "Default schedule updated",
+      );
+    } else {
+      shopify.toast.show(scheduleFetcher.data.error ?? "Couldn't save that schedule", { isError: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- fires only on fetcher settle
+  }, [scheduleFetcher.state, scheduleFetcher.data]);
 
   function openSwitchModal(target: SwitchToManualTarget) {
     setSwitchTarget(target);
@@ -1325,6 +1550,22 @@ export default function Collections() {
                 Shuffle now
               </s-button>
 
+              {/* Third entry point into the same modal. Bulk can set an
+                  explicit schedule or reset the whole selection back to the
+                  shop default — both are one submit to `set-schedule`. */}
+              <s-button
+                onClick={() =>
+                  openScheduleModal({
+                    mode: "bulk",
+                    count: selected.size,
+                    schedule: (selectedRows[0]?.schedule as SlotSchedule) ?? (shopDefault as SlotSchedule),
+                  })
+                }
+                {...(bulkBusy ? { disabled: true } : {})}
+              >
+                Set schedule…
+              </s-button>
+
               {selectionHasRunning && (
                 <s-button onClick={() => runBulk("bulk-pause")} {...(bulkBusy ? { loading: pendingBulkAction === "bulk-pause" || undefined, disabled: true } : {})}>
                   Pause
@@ -1370,6 +1611,7 @@ export default function Collections() {
                     onShuffleSettled={handleRowSettled}
                     selected={selected.has(r.id)}
                     onToggleSelect={toggleSelect}
+                    onEditSchedule={openScheduleForRow}
                     onSwitchToManual={(c) =>
                       openSwitchModal({
                         mode: "tracked",
@@ -1473,6 +1715,20 @@ export default function Collections() {
         undoRetentionDays={undoRetentionDays}
         onConfirm={confirmShuffleAll}
         onCancel={() => closeModal(shuffleAllModalRef.current)}
+      />
+
+      <ScheduleModal
+        ref={scheduleModalRef}
+        target={scheduleTarget}
+        shopDefault={shopDefault as SlotSchedule}
+        timezone={timezone}
+        slots={scheduleSlots}
+        busy={scheduleFetcher.state !== "idle"}
+        onConfirm={confirmSchedule}
+        onCancel={() => {
+          closeModal(scheduleModalRef.current);
+          setScheduleTarget(null);
+        }}
       />
 
       <SwitchToManualModal
@@ -1645,7 +1901,7 @@ export default function Collections() {
           inset: 0;
           z-index: 0;
         }
-        .shuffly-row-select, .shuffly-row-actions { position: relative; z-index: 1; }
+        .shuffly-row-select, .shuffly-row-actions, .shuffly-row-schedule { position: relative; z-index: 1; }
         .shuffly-row:has(> .shuffly-row-link-overlay:focus-visible),
         .shuffly-row:has(> .shuffly-row-actions :focus-visible) {
           outline: 2px solid var(--p-color-border-focus, #005bd3);
@@ -1677,6 +1933,37 @@ export default function Collections() {
           min-width: 0;
         }
         .shuffly-row-title, .shuffly-row-meta { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        /* Badges get their own line under the name rather than competing with
+           it for width — see CollectionRow.tsx for why. Wrapping, so a row
+           with several never pushes the column wider. */
+        .shuffly-row-badges {
+          display: flex;
+          flex-wrap: wrap;
+          align-items: center;
+          gap: 4px;
+          margin-top: 4px;
+        }
+        /* The Schedule cell's text IS the button. No chrome — it should read
+           as the schedule, and only reveal itself as clickable on hover or
+           focus, so the table doesn't turn into a wall of buttons. */
+        .shuffly-schedule-button {
+          display: inline-block;
+          padding: 0;
+          margin: 0;
+          border: none;
+          background: none;
+          font: inherit;
+          text-align: left;
+          color: inherit;
+          cursor: pointer;
+          border-radius: 4px;
+        }
+        .shuffly-schedule-button:hover { text-decoration: underline; }
+        .shuffly-schedule-button:focus-visible {
+          outline: 2px solid var(--p-color-border-focus, #005bd3);
+          outline-offset: 2px;
+        }
+        .shuffly-schedule-custom { margin-left: 6px; font-size: 12px; }
         .shuffly-thumbs { display: flex; align-items: center; gap: 4px; }
         .shuffly-row-schedule, .shuffly-row-lastrun { text-align: left; }
         .shuffly-row-mobile-label { display: none; }

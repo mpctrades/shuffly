@@ -1,3 +1,4 @@
+import { isOverridden, resolveSchedule } from "../lib/schedule-resolve";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { data, useLoaderData, useNavigation, useFetcher, Form, redirect } from "react-router";
@@ -75,7 +76,11 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   const runs = runRows.map((r) => ({ ...r, whenLabel: formatActivityTimestamp(r.createdAt, settings.timezone, new Date(now)) }));
 
   return {
-    config,
+    // The effective schedule is overlaid onto the raw row, so this page's form
+    // seeds from what the collection actually runs on — which is the shop
+    // default whenever the row's own columns are null. `scheduleIsOverridden`
+    // is what tells the two apart for display.
+    config: { ...config, ...resolveSchedule(config, settings), scheduleIsOverridden: isOverridden(config) },
     sortOrder,
     sortOrderLabel: sortOrderLabel(sortOrder),
     productCount: totalCount,
@@ -141,11 +146,17 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
       );
     }
 
+    // Compared against what the collection actually runs on today, which may
+    // be the shop default rather than anything stored on this row. Saving
+    // here always writes an explicit override — editing a single collection's
+    // schedule is what "override" means.
+    const effective = resolveSchedule(config, settings);
     const scheduleChanged =
-      scheduleType !== config.scheduleType ||
-      normalizeHhMm(scheduleTime) !== config.scheduleTime ||
-      (scheduleTime2 == null ? null : normalizeHhMm(scheduleTime2)) !== config.scheduleTime2 ||
-      scheduleWeekday !== config.scheduleWeekday;
+      scheduleType !== effective.scheduleType ||
+      normalizeHhMm(scheduleTime) !== normalizeHhMm(effective.scheduleTime) ||
+      (scheduleTime2 == null ? null : normalizeHhMm(scheduleTime2)) !== effective.scheduleTime2 ||
+      scheduleWeekday !== effective.scheduleWeekday ||
+      !isOverridden(config);
 
     await db.collectionConfig.update({
       where: { id: config.id },
@@ -221,12 +232,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
     const nextStatus = config.status === "RUNNING" ? "PAUSED" : "RUNNING";
     const nextRunAt =
       nextStatus === "RUNNING"
-        ? nextRunFor(new Date(), settings.timezone, {
-            scheduleType: config.scheduleType as ScheduleType,
-            scheduleTime: config.scheduleTime,
-            scheduleTime2: config.scheduleTime2,
-            scheduleWeekday: config.scheduleWeekday,
-          })
+        ? nextRunFor(new Date(), settings.timezone, resolveSchedule(config, settings))
         : null;
     await db.$transaction([
       db.collectionConfig.update({ where: { id: config.id }, data: { status: nextStatus, nextRunAt } }),

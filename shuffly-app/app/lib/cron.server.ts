@@ -32,11 +32,12 @@
 // covers overlapping sweeps, a retried sweep, two replicas racing, and the
 // repeated hour on a DST fall-back day.
 
+import { resolveSchedule } from "./schedule-resolve";
 import { randomUUID } from "node:crypto";
 import db from "../db.server";
 import { unauthenticated } from "../shopify.server";
 import { runShuffleForCollection } from "./shuffle-engine.server";
-import { dueSlots, nextRunFor, type MissedSlot, type ScheduleType } from "./schedule.server";
+import { dueSlots, nextRunFor, type MissedSlot } from "./schedule.server";
 
 export interface CronSweepResult {
   checked: number;
@@ -114,15 +115,13 @@ export async function runDueShuffles(now: Date = new Date()): Promise<CronSweepR
     // only picked these collections up because of a stale nextRunAt has
     // nothing to do, and shouldn't touch Shopify at all.
     const work = configs.map((config) => {
+      // Resolved live against the shop default, so a collection that
+      // inherits picks up a changed default on the very next sweep — no
+      // backfill, nothing queued at the old time.
       const { due, missed } = dueSlots(
         now,
         settings.timezone,
-        {
-          scheduleType: config.scheduleType as ScheduleType,
-          scheduleTime: config.scheduleTime,
-          scheduleTime2: config.scheduleTime2,
-          scheduleWeekday: config.scheduleWeekday,
-        },
+        resolveSchedule(config, settings),
         config.scheduleUpdatedAt,
       );
       return { config, due, missed };
@@ -131,12 +130,7 @@ export async function runDueShuffles(now: Date = new Date()): Promise<CronSweepR
     // Repair the advisory countdown for everything in this sweep, whether or
     // not it runs — this is what stops a stale nextRunAt from persisting.
     for (const { config } of work) {
-      const nextRunAt = nextRunFor(new Date(), settings.timezone, {
-        scheduleType: config.scheduleType as ScheduleType,
-        scheduleTime: config.scheduleTime,
-        scheduleTime2: config.scheduleTime2,
-        scheduleWeekday: config.scheduleWeekday,
-      });
+      const nextRunAt = nextRunFor(new Date(), settings.timezone, resolveSchedule(config, settings));
       if (nextRunAt?.getTime() !== config.nextRunAt?.getTime()) {
         await db.collectionConfig.update({ where: { id: config.id }, data: { nextRunAt } });
       }

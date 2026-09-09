@@ -22,6 +22,11 @@ export interface CollectionRowData {
    * component, not by the caller. */
   preview: Array<{ id: string; initial: string; imageUrl: string | null; soldOut: boolean }>;
   scheduleLine: string; // "Daily at 06:00" or "Paused"
+  /** True when this collection has its own schedule instead of following the
+   * shop default — drives the subdued "Custom" marker in the Schedule cell. */
+  scheduleIsCustom: boolean;
+  /** The effective schedule the modal opens on. */
+  schedule: { scheduleType: string; scheduleTime: string; scheduleTime2: string | null; scheduleWeekday: number | null };
   /** Static fallback sub-line ("Resume to schedule" / "Shuffles only when
    * you press Shuffle") — empty when RUNNING with a real nextRunAt, since
    * that case renders a live ticking countdown instead (see CountdownLine
@@ -61,6 +66,9 @@ interface CollectionRowProps {
   /** Opens the parent's existing confirmation modal — the same one the
    * add-collection flow uses. A sort is never switched without it. */
   onSwitchToManual: (collection: CollectionRowData) => void;
+  /** Opens the shared schedule modal. Same callback behind the Schedule cell
+   * and the menu item, so the two can never diverge. */
+  onEditSchedule: (collection: CollectionRowData) => void;
 }
 
 const THUMB_SIZE = 26;
@@ -73,6 +81,7 @@ export function CollectionRow({
   selected,
   onToggleSelect,
   onSwitchToManual,
+  onEditSchedule,
 }: CollectionRowProps) {
   const shopify = useAppBridge();
   const shuffleFetcher = useFetcher({ key: `shuffle-${t.id}` });
@@ -204,41 +213,24 @@ export function CollectionRow({
         {/* title on a plain element, not s-text — a custom element's prop
            set can't be trusted to forward an arbitrary attribute through
            to the real DOM node it renders. */}
-        <div
-          className="shuffly-row-title"
-          title={t.title}
-          style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0, flexWrap: "nowrap" }}
-        >
-          <span
-            style={{
-              flex: "1 1 auto",
-              // A hard floor, not minWidth: 0 — badges are flexShrink: 0, so
-              // with basis 0 and three of them the title collapsed to
-              // nothing and the row showed badges with no collection name.
-              // It may ellipsis, it may never vanish.
-              minWidth: 84,
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
-            }}
-          >
-            <s-text type="strong">{t.title}</s-text>
-          </span>
-          {t.needsAttention && (
-            <span style={{ flexShrink: 0 }}>
-              <s-badge tone="critical">Not on Manual sort</s-badge>
-            </span>
-          )}
-          {/* Suppressed while the row needs attention: "Not on Manual sort"
-              outranks "Fair rotation", and three badges is what crushed the
-              title in the first place. */}
-          {!t.needsAttention &&
-            t.settingsBadges.map((b) => (
-              <span key={b} style={{ flexShrink: 0 }}>
-                <s-badge tone="neutral">{b}</s-badge>
-              </span>
-            ))}
+        {/* The name gets the whole line to itself. Badges used to sit beside
+            it and, being flexShrink: 0, won every squeeze — "Automated
+            Collection (Copy)" became "Automated Colle…" and once even
+            vanished entirely. The name is this table's primary identifier;
+            it does not compete with a badge for width. */}
+        <div className="shuffly-row-title" title={t.title}>
+          <s-text type="strong">{t.title}</s-text>
         </div>
+        {(t.needsAttention || t.settingsBadges.length > 0) && (
+          <div className="shuffly-row-badges">
+            {t.needsAttention && <s-badge tone="critical">Not on Manual sort</s-badge>}
+            {t.settingsBadges.map((b) => (
+              <s-badge key={b} tone="neutral">
+                {b}
+              </s-badge>
+            ))}
+          </div>
+        )}
         <div className="shuffly-row-meta">
           <s-text color="subdued">{t.factsLine}</s-text>
         </div>
@@ -321,8 +313,25 @@ export function CollectionRow({
          labelled pair instead of sitting under a column header. */}
       <div className="shuffly-row-schedule">
         <span className="shuffly-row-mobile-label">Schedule</span>
+        {/* The primary way into the picker. A merchant who wants to change
+            when something runs clicks the thing that says when it runs — far
+            more discoverable than a menu item, which is kept as the second
+            route. A real button, so keyboard and screen readers get it too;
+            it sits above the row's stretched link like the checkbox does. */}
         <div>
-          <s-text type="strong">{displayStatus === "PAUSED" ? "Paused" : t.scheduleLine}</s-text>
+          <button
+            type="button"
+            className="shuffly-schedule-button"
+            onClick={() => onEditSchedule(t)}
+            aria-label={`Change schedule for ${t.title} — currently ${t.scheduleLine}`}
+          >
+            <s-text type="strong">{displayStatus === "PAUSED" ? "Paused" : t.scheduleLine}</s-text>
+          </button>
+          {t.scheduleIsCustom && (
+            <span className="shuffly-schedule-custom">
+              <s-text color="subdued">Custom</s-text>
+            </span>
+          )}
         </div>
         <div style={{ fontSize: 12 }}>
           {displayStatus === "RUNNING" && t.nextRunAt ? (
@@ -411,6 +420,9 @@ export function CollectionRow({
               Switch to Manual
             </s-button>
           )}
+          <s-button icon="clock" onClick={() => onEditSchedule(t)}>
+            Set schedule…
+          </s-button>
           {displayStatus === "RUNNING" ? (
             <>
               <s-button onClick={shuffleNow} disabled={isShuffling || undefined}>

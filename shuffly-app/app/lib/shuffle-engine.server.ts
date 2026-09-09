@@ -10,10 +10,11 @@ import {
   unpackProductIds,
 } from "./collections.server";
 import { bumpTurnCounts, computeShuffledOrder, type ShuffleProductInput } from "./shuffle-algorithm.server";
-import { nextRunFor, type ScheduleType } from "./schedule.server";
+import { nextRunFor } from "./schedule.server";
 import { recordProductPositions, recordKnownProducts, invalidateInsightsCache } from "./insights.server";
 import { undoRetentionCutoff } from "./plans";
 import { isNotManualSortError, resolveNoMoveReason } from "./run-reason";
+import { resolveSchedule } from "./schedule-resolve";
 
 export interface ShuffleRunSummary {
   ok: boolean;
@@ -217,12 +218,21 @@ export async function runShuffleForCollection(
   // Advisory only — the cron sweep re-derives what's due from the stored
   // schedule (see cron.server.ts). This keeps the countdown honest and the
   // sweep's candidate query index-backed.
-  const nextRunAt = nextRunFor(new Date(), timezone, {
-    scheduleType: config.scheduleType as ScheduleType,
-    scheduleTime: config.scheduleTime,
-    scheduleTime2: config.scheduleTime2,
-    scheduleWeekday: config.scheduleWeekday,
-  });
+  // The collection may be inheriting its schedule, so the shop default is
+  // needed to know when it next runs. One indexed read, negligible beside the
+  // Shopify round trips this function already makes — and reading it here
+  // rather than threading it through eight call sites means it can never be
+  // passed stale.
+  const scheduleDefaults = (await db.shopSettings.findUnique({
+    where: { shop },
+    select: {
+      defaultScheduleType: true,
+      defaultScheduleTime: true,
+      defaultScheduleTime2: true,
+      defaultScheduleWeekday: true,
+    },
+  })) ?? { defaultScheduleType: "WEEKLY", defaultScheduleTime: "06:00", defaultScheduleTime2: null, defaultScheduleWeekday: 1 };
+  const nextRunAt = nextRunFor(new Date(), timezone, resolveSchedule(config, scheduleDefaults));
 
   // A run that moved nothing is not self-explanatory — "0 moved" alone can't
   // tell a merchant whether we worked and had nothing to do or quietly

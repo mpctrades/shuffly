@@ -1,4 +1,9 @@
-import { useEffect, useState } from "react";
+import { closeModal } from "../lib/polaris-modal";
+import { ScheduleModal, type ScheduleTarget } from "../components/ScheduleModal";
+import { shopDefaultSchedule } from "../lib/schedule-resolve";
+import { nextRunFor, slotsFarEnoughApart, type ScheduleType, type SlotSchedule } from "../lib/schedule.server";
+import { timeSlots } from "../lib/plans.server";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { data, useLoaderData, useNavigation, useFetcher } from "react-router";
 import { useAppBridge } from "@shopify/app-bridge-react";
@@ -73,6 +78,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   return {
     settings: { ...settings, timezone },
     timezoneLabel: `${timezone} (${timezoneOffsetLabel(timezone)})`,
+    // The shop-wide default schedule every collection follows unless it has
+    // its own. Same shape the Collections page sends the modal.
+    shopDefault: shopDefaultSchedule(settings),
+    scheduleSlots: timeSlots(settings.plan),
     error,
   };
 };
@@ -82,6 +91,52 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const shop = session.shop;
   await getOrCreateShopSettings(admin, shop);
   const formData = await request.formData();
+
+  // The schedule modal posts here on its own, separately from the settings
+  // form save. Nothing is copied onto collection rows — inheriting
+  // collections read these values live — so the only follow-up is repairing
+  // their advisory countdown.
+  if (String(formData.get("_action") ?? "") === "set-shop-default") {
+    const scheduleType = String(formData.get("scheduleType") ?? "WEEKLY") as ScheduleType;
+    const scheduleTime = normalizeHhMm(String(formData.get("scheduleTime") ?? "06:00"));
+    const rawTime2 = formData.get("scheduleTime2");
+    const settings = await getOrCreateShopSettings(admin, shop);
+    const scheduleTime2 =
+      scheduleType === "TWICE_DAILY" && rawTime2 != null && rawTime2 !== ""
+        ? normalizeHhMm(String(rawTime2))
+        : null;
+    if (scheduleTime2 != null && timeSlots(settings.plan) < 2) {
+      return data({ ok: false, error: "Two shuffles a day is a Pro feature." }, { status: 400 });
+    }
+    if (scheduleTime2 != null && !slotsFarEnoughApart(scheduleTime, scheduleTime2)) {
+      return data({ ok: false, error: "Keep the two shuffle times at least an hour apart." }, { status: 400 });
+    }
+    const rawWeekday = formData.get("scheduleWeekday");
+    const updated = await db.shopSettings.update({
+      where: { shop },
+      data: {
+        defaultScheduleType: scheduleType,
+        defaultScheduleTime: scheduleTime,
+        defaultScheduleTime2: scheduleTime2,
+        defaultScheduleWeekday:
+          scheduleType === "WEEKLY" && rawWeekday != null && rawWeekday !== "" ? Number(rawWeekday) : null,
+      },
+    });
+    const inheriting = await db.collectionConfig.findMany({ where: { shop, scheduleType: null } });
+    const nextDefault = shopDefaultSchedule(updated);
+    await db.$transaction(
+      inheriting.map((c) =>
+        db.collectionConfig.update({
+          where: { id: c.id },
+          data: {
+            scheduleUpdatedAt: new Date(),
+            nextRunAt: c.status === "RUNNING" ? nextRunFor(new Date(), updated.timezone, nextDefault) : null,
+          },
+        }),
+      ),
+    );
+    return data({ ok: true, moved: inheriting.length });
+  }
 
   const defaultRunTime = normalizeHhMm(String(formData.get("defaultRunTime") ?? "06:00"));
   const neverMoveTags = String(formData.get("neverMoveTags") ?? "");
@@ -99,8 +154,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   return data({ ok: true });
 };
 
+const WEEKDAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+
 export default function Settings() {
-  const { settings, timezoneLabel, error } =
+  const { settings, timezoneLabel, shopDefault, scheduleSlots, error } =
     useLoaderData<typeof loader>();
   const navigation = useNavigation();
   const shopify = useAppBridge();
@@ -110,7 +167,38 @@ export default function Settings() {
     navigation.location?.pathname === "/app/settings";
   const busy = fetcher.state !== "idle";
 
+  // Same label the Collections table shows, from the same values, so the two
+  // screens can't describe the shop default differently.
+  const shopDefaultLabel = useMemo(() => {
+    const day = shopDefault.scheduleWeekday != null ? WEEKDAY_NAMES[shopDefault.scheduleWeekday] : null;
+    if (shopDefault.scheduleType === "WEEKLY" && day) return `Weekly, ${day} at ${shopDefault.scheduleTime}`;
+    if (shopDefault.scheduleType === "TWICE_DAILY")
+      return `Twice daily at ${shopDefault.scheduleTime} and ${shopDefault.scheduleTime2 ?? "—"}`;
+    if (shopDefault.scheduleType === "DAILY") return `Daily at ${shopDefault.scheduleTime}`;
+    return "Only when you press Shuffle";
+  }, [shopDefault]);
+
+
   const [defaultRunTime, setDefaultRunTime] = useState(settings.defaultRunTime);
+  const [scheduleTarget, setScheduleTarget] = useState<ScheduleTarget | null>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- showOverlay/hideOverlay are imperative methods not on the typed public props
+  const scheduleModalRef = useRef<any>(null);
+  const scheduleFetcher = useFetcher<{ ok?: boolean; error?: string; moved?: number }>();
+
+  useEffect(() => {
+    if (scheduleFetcher.state !== "idle" || !scheduleFetcher.data) return;
+    if (scheduleFetcher.data.ok) {
+      const n = scheduleFetcher.data.moved ?? 0;
+      shopify.toast.show(
+        n > 0
+          ? `Default schedule saved — ${n} collection${n === 1 ? "" : "s"} moved with it`
+          : "Default schedule saved",
+      );
+    } else {
+      shopify.toast.show(scheduleFetcher.data.error ?? "Couldn't save that schedule", { isError: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- fires only on fetcher settle
+  }, [scheduleFetcher.state, scheduleFetcher.data]);
   const [autoSwitchToManual, setAutoSwitchToManual] = useState(settings.autoSwitchToManual);
   const [tags, setTags] = useState<string[]>(() =>
     parseTags(settings.neverMoveTags),
@@ -220,6 +308,29 @@ export default function Settings() {
                 >
                   <s-option value={settings.timezone}>{timezoneLabel}</s-option>
                 </s-select>
+                {/* The shop default schedule. Says plainly what it governs,
+                    because "default" on its own doesn't tell a merchant that
+                    a per-collection time wins over it. */}
+                <div>
+                  <s-text type="strong">Default schedule</s-text>
+                  <div style={{ marginTop: 2 }}>
+                    <s-text color="subdued">
+                      All collections use this unless you set a different time on the collection itself.
+                    </s-text>
+                  </div>
+                  <div style={{ marginTop: 8, display: "flex", alignItems: "center", gap: 10 }}>
+                    <s-text type="strong">{shopDefaultLabel}</s-text>
+                    <s-button
+                      onClick={() => {
+                        setScheduleTarget({ mode: "shop-default", schedule: shopDefault as SlotSchedule });
+                        scheduleModalRef.current?.showOverlay();
+                      }}
+                    >
+                      Change
+                    </s-button>
+                  </div>
+                </div>
+
                 <s-select
                   label="Default run time"
                   value={defaultRunTime}
@@ -354,7 +465,35 @@ export default function Settings() {
           .shuffly-settings-grid { grid-template-columns: 1fr !important; }
         }
       `}</style>
-    </s-page>
+          <ScheduleModal
+        ref={scheduleModalRef}
+        target={scheduleTarget}
+        shopDefault={shopDefault as SlotSchedule}
+        timezone={settings.timezone}
+        slots={scheduleSlots}
+        busy={scheduleFetcher.state !== "idle"}
+        onConfirm={(schedule) => {
+          closeModal(scheduleModalRef.current);
+          setScheduleTarget(null);
+          if (!schedule) return;
+          scheduleFetcher.submit(
+            {
+              _action: "set-shop-default",
+              scheduleType: schedule.scheduleType,
+              scheduleTime: schedule.scheduleTime,
+              scheduleTime2: schedule.scheduleTime2 ?? "",
+              scheduleWeekday: schedule.scheduleWeekday == null ? "" : String(schedule.scheduleWeekday),
+            },
+            { method: "post" },
+          );
+        }}
+        onCancel={() => {
+          closeModal(scheduleModalRef.current);
+          setScheduleTarget(null);
+        }}
+      />
+
+</s-page>
   );
 }
 
