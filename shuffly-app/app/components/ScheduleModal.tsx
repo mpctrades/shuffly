@@ -1,9 +1,8 @@
 import { forwardRef, useEffect, useMemo, useState } from "react";
 import { useModalDismissWorkaround } from "../lib/polaris-modal";
 import { nextRunFor, type ScheduleType, type SlotSchedule } from "../lib/schedule-core";
-import { defaultSecondSlot, normalizeHhMm, timeOptionsIncluding } from "../lib/time-slots";
-
-const WEEKDAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+import { defaultSecondSlot, normalizeHhMm } from "../lib/time-slots";
+import { DayOfWeekPicker, TimePicker } from "./TimePicker";
 
 /** What the modal was opened for. One component, four entry points: the
  * Schedule cell, the row's "···" menu, the table's bulk selection, and the
@@ -105,15 +104,6 @@ export const ScheduleModal = forwardRef<any, ScheduleModalProps>(function Schedu
     return `${label} (in ${away})`;
   }, [effective, timezone]);
 
-  // A select that still holds focus can keep its dropdown open, and while it
-  // is open the browser spends the next click closing it instead of
-  // delivering it to the page — so the merchant's first click on "Save
-  // schedule" does nothing and the app looks broken. Dropping focus the
-  // moment a value is committed means the next click is a normal click.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- currentTarget isn't in the typed event map for custom elements
-  function commit(e: any) {
-    e?.currentTarget?.blur?.();
-  }
 
   const heading = !target
     ? "Schedule"
@@ -160,69 +150,35 @@ export const ScheduleModal = forwardRef<any, ScheduleModalProps>(function Schedu
         </s-box>
 
         {cadence === "WEEKLY" && (
-          <s-select
-            label="Day of week"
-            value={String(weekday)}
-            disabled={useDefault || undefined}
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any -- currentTarget.value isn't in the typed event map
-            onChange={(e: any) => {
-              setWeekday(Number(e.currentTarget?.value ?? 1));
-              commit(e);
-            }}
-          >
-            {WEEKDAY_NAMES.map((name, i) => (
-              <s-option key={name} value={String(i)}>
-                {name}
-              </s-option>
-            ))}
-          </s-select>
+          <DayOfWeekPicker value={weekday} onChange={setWeekday} disabled={useDefault} />
         )}
 
-        {/* The timezone is named out loud next to the time. Without it
+        {/* The timezone is still named out loud beside the time — without it
             merchants read "18:00" as UTC and file a bug. */}
-        <s-select
+        <TimePicker
           label="Time"
           value={time}
-          disabled={useDefault || undefined}
-          details={`${time} · ${timezone} (your store's timezone)`}
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any -- currentTarget.value isn't in the typed event map
-          onChange={(e: any) => {
-            setTime(e.currentTarget?.value ?? "06:00");
-            commit(e);
-          }}
-        >
-          {timeOptionsIncluding(time).map((t) => (
-            <s-option key={t} value={t}>
-              {t}
-            </s-option>
-          ))}
-        </s-select>
+          timezone={timezone}
+          disabled={useDefault}
+          onChange={setTime}
+        />
 
-        {/* Slot two is always visible so the upgrade is discoverable, but
-            disabled below the entitlement. */}
-        <s-select
+        {/* Slot two stays visible so the upgrade is discoverable, disabled
+            below the entitlement. */}
+        <TimePicker
           label="Second shuffle at"
           value={time2}
-          disabled={!canPickSecondSlot || !wantsSecondSlot || useDefault || undefined}
+          timezone={timezone}
+          disabled={!canPickSecondSlot || !wantsSecondSlot || useDefault}
+          onChange={setTime2}
           details={
             !canPickSecondSlot
               ? "Two shuffles a day is a Pro feature."
               : !wantsSecondSlot
                 ? "Your plan's cadence runs once a day."
-                : `${time2} · ${timezone}`
+                : `${normalizeHhMm(time2)} · ${timezone}`
           }
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any -- currentTarget.value isn't in the typed event map
-          onChange={(e: any) => {
-            setTime2(e.currentTarget?.value ?? "18:00");
-            commit(e);
-          }}
-        >
-          {timeOptionsIncluding(time2).map((t) => (
-            <s-option key={t} value={t}>
-              {t}
-            </s-option>
-          ))}
-        </s-select>
+        />
         {!canPickSecondSlot && (
           <s-paragraph>
             <s-text color="subdued">Shuffle twice a day on Pro. </s-text>
