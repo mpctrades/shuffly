@@ -1314,14 +1314,7 @@
           </ul>
         </div>
 
-        <form class="contact-form" id="contact-form" action="https://api.web3forms.com/submit" method="POST">
-          <!-- Web3Forms delivers this form to team@mpctrades.com.
-               The access key is tied to that inbox and is safe to expose publicly;
-               it only ever grants permission to send mail TO that address.
-               Get/rotate it at https://web3forms.com (enter team@mpctrades.com). -->
-          <input type="hidden" name="access_key" value="REPLACE_WITH_WEB3FORMS_ACCESS_KEY">
-          <input type="hidden" name="subject" value="Shuffly — new message from the website">
-          <input type="hidden" name="from_name" value="Shuffly website">
+        <form class="contact-form" id="contact-form" action="/api/contact" method="POST">
           <div class="contact-hp" aria-hidden="true">
             <label for="cf-bot">Leave this field empty</label>
             <input type="checkbox" id="cf-bot" name="botcheck" tabindex="-1" autocomplete="off">
@@ -1510,14 +1503,18 @@
 </script>
 
 <script>
-  // Contact form -> Web3Forms -> team@mpctrades.com.
-  // Posts over fetch so the visitor never leaves the page. If the key is
-  // still a placeholder, or the request fails (offline, blocked, service
-  // down), we fall back to the visitor's own mail client so a message that
+  // Contact form -> /api/contact (same origin) -> emailed to team@mpctrades.com.
+  //
+  // Posts JSON over fetch so the visitor never leaves the page. The endpoint
+  // is the small express service in contact-api/, proxied by nginx on this
+  // same host, so there's no third-party form relay and no CORS.
+  //
+  // If the request fails (offline, service down), we fall back to the
+  // visitor's own mail client with the message pre-filled, so something
   // someone took the trouble to write never just disappears.
   (function () {
     var SUPPORT_EMAIL = 'team@mpctrades.com';
-    var ENDPOINT = 'https://api.web3forms.com/submit';
+    var ENDPOINT = '/api/contact';
 
     var form = document.getElementById('contact-form');
     if (!form) return;
@@ -1549,8 +1546,7 @@
       button.innerHTML = on ? 'Sending…' : buttonHTML;
     }
 
-    // Hands the message to the visitor's own mail client, pre-filled, as a
-    // last resort when we couldn't deliver it ourselves.
+    // Last resort: hand the message to the visitor's own mail client.
     function mailtoFallback() {
       var store = val('cf-store');
       var topic = val('cf-topic');
@@ -1573,37 +1569,35 @@
       e.preventDefault();
       if (button && button.disabled) return;
       clearStatus();
-
-      var keyField = form.querySelector('input[name="access_key"]');
-      var key = keyField ? keyField.value.trim() : '';
-      if (!key || key.indexOf('REPLACE_WITH') === 0) {
-        failed('This form isn’t connected yet.');
-        return;
-      }
-
-      var data = new FormData(form);
-      // Give the notification email a subject line that says who it's from.
-      var store = val('cf-store');
-      data.set('subject', 'Shuffly — ' + val('cf-topic')
-        + (store ? ' — ' + store : '') + ' — ' + val('cf-name'));
-      // So hitting reply in the inbox goes back to the merchant, not to us.
-      data.set('replyto', val('cf-email'));
-
       busy(true);
+
+      var payload = {
+        name: val('cf-name'),
+        email: val('cf-email'),
+        store: val('cf-store'),
+        topic: val('cf-topic'),
+        message: val('cf-message'),
+        botcheck: document.getElementById('cf-bot') && document.getElementById('cf-bot').checked
+      };
 
       fetch(ENDPOINT, {
         method: 'POST',
-        body: data,
-        headers: { Accept: 'application/json' }
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify(payload)
       })
         .then(function (res) {
-          return res.json().then(function (body) { return { ok: res.ok, body: body }; });
+          return res.json()
+            .catch(function () { return {}; })
+            .then(function (body) { return { ok: res.ok, body: body }; });
         })
         .then(function (r) {
-          if (r.ok && r.body && r.body.success) {
+          if (r.ok && r.body && r.body.ok) {
             form.reset();
             say('ok', 'Thanks — your message is on its way to us. '
               + 'We usually reply within one business day.');
+          } else if (r.body && r.body.error) {
+            // A validation or rate-limit message from our own endpoint.
+            failed(r.body.error);
           } else {
             failed('Sorry, that didn’t go through.');
           }
