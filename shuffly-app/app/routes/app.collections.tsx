@@ -26,6 +26,7 @@ import {
 import { ShuffleAllConfirmModal } from "../components/ShuffleAllConfirmModal";
 import { AddCollectionsModal, type AddCollectionsPickerData } from "../components/AddCollectionsModal";
 import { SwitchToManualModal, type SwitchToManualTarget } from "../components/SwitchToManualModal";
+import { noMoveReasonLabel } from "../lib/run-reason";
 import { BulkRemoveConfirmModal } from "../components/BulkRemoveConfirmModal";
 import { PlanBar } from "../components/PlanBar";
 import { AddAllUntrackedModal } from "../components/AddAllUntrackedModal";
@@ -146,7 +147,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   const fullRows = tracked.map((c) => {
     const live = liveByGid.get(c.collectionGid);
-    const needsAttention = !hydrationFailed && live != null && live.sortOrder !== "MANUAL";
+    // Live sortOrder is the primary signal. sortOrderIssueAt is the fallback
+    // for exactly the window the live read can't cover: hydration failed, or
+    // a run discovered the problem seconds ago and the merchant hasn't
+    // reloaded since.
+    const liveNotManual = !hydrationFailed && live != null && live.sortOrder !== "MANUAL";
+    const needsAttention = liveNotManual || ((hydrationFailed || live == null) && c.sortOrderIssueAt != null);
     const liveCount = live?.productsCount ?? c.productCount;
     // Best-effort, not a live full-catalogue check: "every product sold
     // out" is inferred from the last shuffle run's sold-out count matching
@@ -239,6 +245,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           whenLabel: lastRunLabel(latestRun.createdAt, settings.timezone, now),
           failed: latestRun.status === "FAILED",
           at: latestRun.createdAt,
+          // Null for runs recorded before noMoveReason existed, and for any
+          // run that actually moved something — the row falls back to the
+          // bare count in both cases rather than inventing a reason.
+          noMoveReason: latestRun.movedCount === 0 ? noMoveReasonLabel(latestRun.noMoveReason) : null,
         }
       : null;
 
@@ -256,6 +266,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       title: live?.title ?? c.title,
       status: c.status as "RUNNING" | "PAUSED",
       needsAttention: r.needsAttention,
+      // What Shopify actually has this collection sorted by, only when that
+      // isn't Manual — the row names it so the merchant knows what changed.
+      wrongSortLabel: r.needsAttention ? (live ? sortOrderLabel(live.sortOrder) : null) : null,
       allSoldOut: r.allSoldOut,
       factsLine: factsParts.join(" · "),
       settingsBadges,
@@ -610,7 +623,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
     await db.collectionConfig.update({
       where: { id },
-      data: { status: "RUNNING", previousSortOrder: result.previousSortOrder },
+      // The sort is Manual again, so whatever health problem was recorded
+      // against this collection is resolved — clear it here rather than
+      // waiting for the next successful run to do it.
+      data: { status: "RUNNING", previousSortOrder: result.previousSortOrder, sortOrderIssueAt: null },
     });
 
     if (!keepOrder) {
@@ -881,6 +897,11 @@ export default function Collections() {
       return true;
     });
     const sorted = [...filtered].sort((a, b) => {
+      // Attention beats every sort key. The row that needs a decision is the
+      // one the merchant must not have to hunt for — and without this it can
+      // land on page 2 entirely.
+      const attention = Number(isRowAttention(b)) - Number(isRowAttention(a));
+      if (attention !== 0) return attention;
       switch (sort) {
         case "products": {
           const av = Number(a.factsLine.match(/^(\d+)/)?.[1] ?? 0);
@@ -1216,15 +1237,15 @@ export default function Collections() {
       <s-button slot="secondary-actions" onClick={openAddModal} {...noHydrationWarning}>
         Add collection
       </s-button>
+      {/* Same one-glyph fix as the row menus — a text label on a menu
+          trigger makes Polaris add its own chevron beside it. */}
       <s-button
         slot="secondary-actions"
-        command="--toggle"
+        icon="menu-horizontal"
         commandFor="collections-overflow-menu"
         accessibilityLabel="More actions"
         {...noHydrationWarning}
-      >
-        ···
-      </s-button>
+      ></s-button>
       <s-menu id="collections-overflow-menu" accessibilityLabel="More actions">
         <PauseAllButton />
       </s-menu>
@@ -1349,6 +1370,15 @@ export default function Collections() {
                     onShuffleSettled={handleRowSettled}
                     selected={selected.has(r.id)}
                     onToggleSelect={toggleSelect}
+                    onSwitchToManual={(c) =>
+                      openSwitchModal({
+                        mode: "tracked",
+                        id: c.id,
+                        gid: c.collectionGid,
+                        title: c.title,
+                        sortOrderLabel: c.wrongSortLabel ?? "another sort",
+                      })
+                    }
                   />
                   {i < pageRows.length - 1 && <s-divider />}
                 </div>
@@ -1577,7 +1607,10 @@ export default function Collections() {
           box-sizing: border-box;
           width: 100%;
           display: grid;
-          grid-template-columns: 36px minmax(200px, 1fr) 110px 140px 120px 230px;
+          /* Last column is just the "···" trigger now that the duplicate
+             inline buttons are gone — the 170px it used to reserve went
+             back to Collection (via the 1fr), Schedule and Last run. */
+          grid-template-columns: 36px minmax(220px, 1fr) 110px 160px 190px 48px;
           align-items: center;
           column-gap: 16px;
           padding: 12px 16px;
@@ -1623,6 +1656,12 @@ export default function Collections() {
         .shuffly-row--sold-out {
           box-shadow: inset 3px 0 0 0 var(--p-color-border-caution, #946200);
         }
+        /* Critical, not caution — a wrong sort means shuffles silently do
+           nothing at all, which is a harder failure than "ran, nothing to
+           move". Same 3px bar so the two read as one family. */
+        .shuffly-row--wrong-sort {
+          box-shadow: inset 3px 0 0 0 var(--p-color-border-critical, #8e0b21);
+        }
         /* The selected-row accent bar is one of the four sanctioned uses of
            brand orange — background tint stays the neutral info-blue
            Polaris already uses for "selected", only the bar itself is
@@ -1648,10 +1687,8 @@ export default function Collections() {
           display: flex;
           align-items: center;
           justify-content: flex-end;
-          gap: 4px;
           padding-right: 8px;
         }
-        .shuffly-row-quick-buttons { display: flex; align-items: center; gap: 4px; }
         @container shuffly-collections (max-width: 820px) {
           .shuffly-row--header { display: none; }
           .shuffly-row:not(.shuffly-row--header) {
@@ -1677,42 +1714,6 @@ export default function Collections() {
             color: var(--p-color-text-secondary, #6b6b6b);
             margin-bottom: 2px;
           }
-          .shuffly-row-quick-buttons { display: none; }
-        }
-        .shuffly-row-action-btn {
-          display: inline-flex;
-          align-items: center;
-          justify-content: center;
-          height: 28px;
-          padding: 0 10px;
-          border: 1px solid var(--p-color-border, #e3e3e3);
-          border-radius: 6px;
-          background: var(--p-color-bg-surface, #ffffff);
-          color: var(--p-color-text, #131110);
-          font: inherit;
-          font-size: 12px;
-          font-weight: 600;
-          white-space: nowrap;
-          cursor: pointer;
-          outline: none;
-          box-shadow: none;
-        }
-        .shuffly-row-action-btn:hover:not(:disabled) { background: var(--p-color-bg-surface-secondary, #f6f6f7); }
-        .shuffly-row-action-btn:disabled { opacity: 0.5; cursor: default; }
-        .shuffly-row-action-btn:focus-visible {
-          outline: 2px solid var(--p-color-border-warning, #FF4B1F);
-          outline-offset: 1px;
-        }
-        /* Green (success), not brand orange — resuming is a positive/
-           "turned back on" action, the same semantic as the bulk bar's
-           "Shuffle now"; orange stays reserved for the four spots above. */
-        .shuffly-row-action-btn--primary {
-          border-color: transparent;
-          background: var(--p-color-bg-fill-success, #008060);
-          color: #ffffff;
-        }
-        .shuffly-row-action-btn--primary:hover:not(:disabled) {
-          background: var(--p-color-bg-fill-success-hover, #006e52);
         }
         .shuffly-bulk-bar {
           position: sticky;
@@ -2277,7 +2278,7 @@ function CollectionsSkeletonRows({ count }: { count: number }) {
             <div className="shuffly-thumbs">{bar(96, 32)}</div>
             <div className="shuffly-row-schedule">{bar(80)}</div>
             <div className="shuffly-row-lastrun">{bar(70)}</div>
-            <div className="shuffly-row-actions">{bar(150, 28)}</div>
+            <div className="shuffly-row-actions">{bar(24, 24)}</div>
           </div>
           {i < count - 1 && <s-divider />}
         </div>

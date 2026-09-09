@@ -13,6 +13,7 @@ import { bumpTurnCounts, computeShuffledOrder, type ShuffleProductInput } from "
 import { nextRunFor, type ScheduleType } from "./schedule.server";
 import { recordProductPositions, recordKnownProducts, invalidateInsightsCache } from "./insights.server";
 import { undoRetentionCutoff } from "./plans";
+import { isNotManualSortError, resolveNoMoveReason } from "./run-reason";
 
 export interface ShuffleRunSummary {
   ok: boolean;
@@ -97,6 +98,37 @@ export async function runShuffleForCollection(
   invalidateInsightsCache(shop);
 
   if (sortOrder !== "MANUAL") {
+    // Reachable when a merchant changes the sort back in Shopify admin
+    // after Shuffly switched it. The Collections list and the collection's
+    // own page both offer a one-click switch, so point there rather than
+    // sending them to Shopify admin.
+    const message = `"${config.title}" is no longer on Manual sort, so Shuffly can't set its positions. Open it in Shuffly to switch it back.`;
+    // This used to return without writing anything, which is why a
+    // sort-order failure left no trace at all — no Activity entry, no last
+    // run, nothing on the row until the next hydration happened to notice.
+    // Record it on both the run and the collection so the table can say so
+    // straight away.
+    await db.$transaction([
+      db.collectionConfig.update({
+        where: { id: config.id },
+        data: { sortOrderIssueAt: new Date() },
+      }),
+      db.shuffleRun.create({
+        data: {
+          shop,
+          collectionId: config.id,
+          trigger,
+          batchId,
+          status: "FAILED",
+          movedCount: 0,
+          pinnedCount: 0,
+          soldOutCount: 0,
+          durationMs: Date.now() - started,
+          noMoveReason: "NOT_MANUAL",
+          message,
+        },
+      }),
+    ]);
     return {
       ok: false,
       error: "NOT_MANUAL",
@@ -104,11 +136,7 @@ export async function runShuffleForCollection(
       pinnedCount: 0,
       soldOutCount: 0,
       durationMs: Date.now() - started,
-      // Reachable when a merchant changes the sort back in Shopify admin
-      // after Shuffly switched it. The Collections list and the collection's
-      // own page both offer a one-click switch, so point there rather than
-      // sending them to Shopify admin.
-      message: `"${config.title}" is no longer on Manual sort, so Shuffly can't set its positions. Open it in Shuffly to switch it back.`,
+      message,
     };
   }
 
@@ -149,20 +177,31 @@ export async function runShuffleForCollection(
   const durationMs = Date.now() - started;
 
   if (!reorderResult.ok) {
-    await db.shuffleRun.create({
-      data: {
-        shop,
-        collectionId: config.id,
-        trigger,
-        batchId,
-        status: "FAILED",
-        movedCount: 0,
-        pinnedCount: result.pinnedCount,
-        soldOutCount: result.soldOutCount,
-        durationMs,
-        message: reorderResult.error ?? "Unknown error",
-      },
-    });
+    // Shopify can reject the reorder for the same reason the pre-flight
+    // check above catches — the sort was changed between our read and our
+    // write. Same code, same collection stamp, so the row reads the same
+    // either way.
+    const sortRejected = isNotManualSortError(reorderResult.error);
+    await db.$transaction([
+      ...(sortRejected
+        ? [db.collectionConfig.update({ where: { id: config.id }, data: { sortOrderIssueAt: new Date() } })]
+        : []),
+      db.shuffleRun.create({
+        data: {
+          shop,
+          collectionId: config.id,
+          trigger,
+          batchId,
+          status: "FAILED",
+          movedCount: 0,
+          pinnedCount: result.pinnedCount,
+          soldOutCount: result.soldOutCount,
+          durationMs,
+          noMoveReason: sortRejected ? "NOT_MANUAL" : "FAILED",
+          message: reorderResult.error ?? "Unknown error",
+        },
+      }),
+    ]);
     return {
       ok: false,
       error: reorderResult.error,
@@ -185,6 +224,18 @@ export async function runShuffleForCollection(
     scheduleWeekday: config.scheduleWeekday,
   });
 
+  // A run that moved nothing is not self-explanatory — "0 moved" alone can't
+  // tell a merchant whether we worked and had nothing to do or quietly
+  // failed. Every zero-move run carries the reason from here on.
+  const noMoveReason =
+    moves.length === 0
+      ? resolveNoMoveReason({
+          productCount: products.length,
+          soldOutCount: result.soldOutCount,
+          shuffledCount: result.shuffledCount,
+        })
+      : null;
+
   const writes = [
     db.collectionConfig.update({
       where: { id: config.id },
@@ -195,6 +246,9 @@ export async function runShuffleForCollection(
         lastKnownOrder: JSON.stringify(result.order),
         nextRunAt,
         productCount: products.length,
+        // This run reached Shopify, so whatever sort problem we last
+        // recorded is over.
+        sortOrderIssueAt: null,
         // One-time boost, consumed — it only ever leads a single run.
         priorityBoostIds: "[]",
       },
@@ -210,7 +264,8 @@ export async function runShuffleForCollection(
         pinnedCount: result.pinnedCount,
         soldOutCount: result.soldOutCount,
         durationMs,
-        message: `Shuffled — ${moves.length} products moved`,
+        noMoveReason,
+        message: `Shuffled — ${moves.length} product${moves.length === 1 ? "" : "s"} moved`,
         previousOrder: JSON.stringify(fetchedOrder),
       },
     }),
@@ -248,7 +303,7 @@ export async function runShuffleForCollection(
     pinnedCount: result.pinnedCount,
     soldOutCount: result.soldOutCount,
     durationMs,
-    message: `Shuffled — ${moves.length} products moved`,
+    message: `Shuffled — ${moves.length} product${moves.length === 1 ? "" : "s"} moved`,
   };
 }
 

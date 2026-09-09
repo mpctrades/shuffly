@@ -9,6 +9,7 @@
 // row with the individual rows attached as `children`, for the feed's
 // expand/collapse UI. Every day's pause/resume/setting-change rows are
 // additionally collapsed into one muted line per day, for the same reason.
+import { noMoveReasonLabel } from "./run-reason";
 import db from "../db.server";
 import { activityDayAndTime, getLocalHour, startOfLocalDay } from "./schedule.server";
 
@@ -438,7 +439,15 @@ function formatSolo(row: RunRow, timezone: string, now: Date, batchSiblings?: Ru
           iconType: "alert-circle",
           iconTone: "critical",
           title: `${collectionTitle} couldn't be shuffled`,
-          meta: row.message ?? "Something went wrong on this run.",
+          // The coded reason first when we have one ("not on Manual sort"),
+          // with the raw error kept after it — the detail still lives here,
+          // which is what the Collections table points at.
+          meta: (() => {
+            const reason = noMoveReasonLabel(row.noMoveReason);
+            if (reason && row.message) return `0 moved — ${reason} · ${row.message}`;
+            if (reason) return `0 moved — ${reason}`;
+            return row.message ?? "Something went wrong on this run.";
+          })(),
           movedCount: null,
           restore: null,
         };
@@ -449,7 +458,13 @@ function formatSolo(row: RunRow, timezone: string, now: Date, batchSiblings?: Ru
       // "nothing failed" on every single row. Scheduled runs additionally
       // name the trigger, since "why did this happen" matters more for an
       // automatic event than a button the merchant just clicked themself.
-      const meta = row.trigger === "SCHEDULED" ? `${formatSeconds(durationMs)} · on schedule` : formatSeconds(durationMs);
+      const timing = row.trigger === "SCHEDULED" ? `${formatSeconds(durationMs)} · on schedule` : formatSeconds(durationMs);
+      // Same clause the Collections table shows, from the same column, so a
+      // merchant reading both never sees them disagree. Only a single run
+      // can carry one — a collapsed batch sums several collections, whose
+      // reasons may differ.
+      const zeroReason = !batchSiblings && movedCount === 0 ? noMoveReasonLabel(row.noMoveReason) : null;
+      const meta = zeroReason ? `0 moved — ${zeroReason} · ${timing}` : timing;
       return {
         ...base,
         kind: "run",

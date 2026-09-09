@@ -98,6 +98,11 @@ model CollectionConfig {
                               // which is what tells "the worker was down, run it late" apart
                               // from "the merchant just moved this slot into the past, don't
                               // back-fire". Without it those two are indistinguishable.
+  // Set the moment a run discovers this collection is no longer on Manual
+  // sort, cleared by a successful run or by switching it back. The live
+  // sortOrder from the Admin API is the primary signal; this is what keeps
+  // the row honest between page loads and when hydration fails.
+  sortOrderIssueAt DateTime?
   lastRunAt      DateTime?
   lastSoldOutCount Int?    // sold-out products pushed to the end on the most recent run — real, not estimated
   lastKnownOrder String?  // JSON array of product GIDs — exactly what we last wrote to Shopify, so the next
@@ -155,6 +160,11 @@ model ShuffleRun {
   soldOutCount  Int       @default(0)
   durationMs    Int       @default(0)
   message       String? // human-readable summary line, or error detail
+  // Why a run ended with movedCount 0, as a stable code (see lib/run-reason.ts)
+  // — never English, so the merchant-facing copy can change without a
+  // migration. Null on older runs and on any run that actually moved
+  // something, which is what lets those keep rendering as they always did.
+  noMoveReason  String? // BALANCED | ALL_SOLD_OUT | NONE_ELIGIBLE | TOO_FEW | NOT_MANUAL | FAILED
   previousOrder String? // JSON array of product GIDs, in order, before this run — used to Undo
   batchId       String? // shared by every collection shuffled in the same sweep (a cron tick, or one "Shuffle all now"), so the Activity feed can show them as a single entry
   createdAt     DateTime  @default(now())
