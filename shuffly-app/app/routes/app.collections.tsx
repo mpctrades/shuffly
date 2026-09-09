@@ -1610,7 +1610,7 @@ export default function Collections() {
           /* Last column is just the "···" trigger now that the duplicate
              inline buttons are gone — the 170px it used to reserve went
              back to Collection (via the 1fr), Schedule and Last run. */
-          grid-template-columns: 36px minmax(220px, 1fr) 110px 160px 190px 48px;
+          grid-template-columns: 36px minmax(250px, 1fr) 110px 150px 175px 48px;
           align-items: center;
           column-gap: 16px;
           padding: 12px 16px;

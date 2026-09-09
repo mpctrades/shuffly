@@ -211,8 +211,12 @@ export function CollectionRow({
         >
           <span
             style={{
-              flex: "1 1 0%",
-              minWidth: 0,
+              flex: "1 1 auto",
+              // A hard floor, not minWidth: 0 — badges are flexShrink: 0, so
+              // with basis 0 and three of them the title collapsed to
+              // nothing and the row showed badges with no collection name.
+              // It may ellipsis, it may never vanish.
+              minWidth: 84,
               overflow: "hidden",
               textOverflow: "ellipsis",
               whiteSpace: "nowrap",
@@ -225,11 +229,15 @@ export function CollectionRow({
               <s-badge tone="critical">Not on Manual sort</s-badge>
             </span>
           )}
-          {t.settingsBadges.map((b) => (
-            <span key={b} style={{ flexShrink: 0 }}>
-              <s-badge tone="neutral">{b}</s-badge>
-            </span>
-          ))}
+          {/* Suppressed while the row needs attention: "Not on Manual sort"
+              outranks "Fair rotation", and three badges is what crushed the
+              title in the first place. */}
+          {!t.needsAttention &&
+            t.settingsBadges.map((b) => (
+              <span key={b} style={{ flexShrink: 0 }}>
+                <s-badge tone="neutral">{b}</s-badge>
+              </span>
+            ))}
         </div>
         <div className="shuffly-row-meta">
           <s-text color="subdued">{t.factsLine}</s-text>
@@ -242,9 +250,7 @@ export function CollectionRow({
               fontSize: 12,
               fontWeight: 600,
               color: "var(--p-color-text-critical, #8e0b21)",
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
+              lineHeight: 1.3,
             }}
           >
             Shuffly can&apos;t reorder this until it&apos;s back on Manual sort
