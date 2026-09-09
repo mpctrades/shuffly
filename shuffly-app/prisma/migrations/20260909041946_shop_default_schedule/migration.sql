@@ -94,10 +94,17 @@ UPDATE "ShopSettings" SET
     SELECT c."scheduleTime2" FROM "CollectionConfig" c WHERE c."shop" = "ShopSettings"."shop"
     GROUP BY c."scheduleType", c."scheduleTime", IFNULL(c."scheduleTime2",''), IFNULL(c."scheduleWeekday",-1)
     ORDER BY COUNT(*) DESC, MIN(c."createdAt") ASC LIMIT 1),
-  "defaultScheduleWeekday" = COALESCE((
+  -- No COALESCE fallback here, unlike the two above: a daily schedule has a
+  -- legitimately NULL weekday, and COALESCE cannot tell that apart from "the
+  -- subquery matched no rows". Defaulting it to Monday made the default
+  -- disagree with the very collections it was derived from, so nothing
+  -- matched in the second statement and nothing inherited. The outer
+  -- WHERE EXISTS already guarantees this shop has collections; a shop with
+  -- none keeps the column's own DEFAULT 1.
+  "defaultScheduleWeekday" = (
     SELECT c."scheduleWeekday" FROM "CollectionConfig" c WHERE c."shop" = "ShopSettings"."shop"
     GROUP BY c."scheduleType", c."scheduleTime", IFNULL(c."scheduleTime2",''), IFNULL(c."scheduleWeekday",-1)
-    ORDER BY COUNT(*) DESC, MIN(c."createdAt") ASC LIMIT 1), 1)
+    ORDER BY COUNT(*) DESC, MIN(c."createdAt") ASC LIMIT 1)
 WHERE EXISTS (SELECT 1 FROM "CollectionConfig" c WHERE c."shop" = "ShopSettings"."shop");
 
 UPDATE "CollectionConfig" SET
