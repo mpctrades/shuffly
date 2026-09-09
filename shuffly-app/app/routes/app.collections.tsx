@@ -6,14 +6,23 @@ import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { getOrCreateShopSettings } from "../lib/shop-context.server";
 import {
+  captureOriginalOrder,
   hydrateTrackedCollections,
+  mapWithLimit,
   setCollectionManualSort,
   sortOrderLabel,
 } from "../lib/collections.server";
-import { runShuffleForCollection } from "../lib/shuffle-engine.server";
+import { restoreOnRemove, runShuffleForCollection } from "../lib/shuffle-engine.server";
 import { previewShuffleAll } from "../lib/shuffle-preview.server";
-import { computeNextRun, formatActivityTimestamp, type ScheduleType } from "../lib/schedule.server";
-import { defaultScheduleForPlan, planOf, pruneExpiredUndoSnapshots } from "../lib/plans.server";
+import {
+  formatActivityTimestamp,
+  nextRunFor,
+  normalizeHhMm,
+  slotsFarEnoughApart,
+  type ScheduleType,
+  type SlotSchedule,
+} from "../lib/schedule.server";
+import { cadenceLabel, isScheduleAllowed, isTopPlan, planOf, pruneExpiredUndoSnapshots, timeSlots } from "../lib/plans.server";
 import { closeModal } from "../lib/polaris-modal";
 import { CollectionRow, type CollectionRowData } from "../components/CollectionRow";
 import {
@@ -24,7 +33,19 @@ import {
 import { ShuffleAllConfirmModal } from "../components/ShuffleAllConfirmModal";
 import { AddCollectionsModal, type AddCollectionsPickerData } from "../components/AddCollectionsModal";
 import { SwitchToManualModal, type SwitchToManualTarget } from "../components/SwitchToManualModal";
+import { ScheduleModal, type ScheduleTarget } from "../components/ScheduleModal";
+import { noMoveReasonLabel } from "../lib/run-reason";
+import {
+  inheritScheduleFields,
+  isOverridden,
+  overrideWriteFields,
+  resolveSchedule,
+  shopDefaultSchedule,
+} from "../lib/schedule-resolve";
 import { BulkRemoveConfirmModal } from "../components/BulkRemoveConfirmModal";
+import { PlanBar } from "../components/PlanBar";
+import { AddAllUntrackedModal } from "../components/AddAllUntrackedModal";
+import { SwitchSortConfirmModal, type SortSwitchTarget } from "../components/SwitchSortConfirmModal";
 
 const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 const SPARKLINE_LENGTH = 7;
@@ -141,7 +162,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   const fullRows = tracked.map((c) => {
     const live = liveByGid.get(c.collectionGid);
-    const needsAttention = !hydrationFailed && live != null && live.sortOrder !== "MANUAL";
+    // Live sortOrder is the primary signal. sortOrderIssueAt is the fallback
+    // for exactly the window the live read can't cover: hydration failed, or
+    // a run discovered the problem seconds ago and the merchant hasn't
+    // reloaded since.
+    const liveNotManual = !hydrationFailed && live != null && live.sortOrder !== "MANUAL";
+    const needsAttention = liveNotManual || ((hydrationFailed || live == null) && c.sortOrderIssueAt != null);
     const liveCount = live?.productsCount ?? c.productCount;
     // Best-effort, not a live full-catalogue check: "every product sold
     // out" is inferred from the last shuffle run's sold-out count matching
@@ -180,6 +206,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         actionLabel: "Switch to Manual",
         actionKind: "switch" as const,
         switchTarget: {
+          mode: "tracked" as const,
           id: r.config.id,
           gid: r.config.collectionGid,
           title: r.config.title,
@@ -222,7 +249,13 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     if (c.pins > 0 && pinsVaries) settingsBadges.push(`${c.pins} pin${c.pins === 1 ? "" : "s"}`);
     if (c.giveEveryoneATurn && giveEveryoneATurnVaries) settingsBadges.push("Fair rotation");
 
-    const scheduleLine = c.status === "PAUSED" ? "Paused" : scheduleLabel(c.scheduleType, c.scheduleTime, c.scheduleWeekday);
+    // Resolved, never read raw: a collection with null columns runs on the
+    // shop default, and the cell has to say what it actually does.
+    const effective = resolveSchedule(c, settings);
+    const scheduleLine =
+      c.status === "PAUSED"
+        ? "Paused"
+        : scheduleLabel(effective.scheduleType, effective.scheduleTime, effective.scheduleWeekday, effective.scheduleTime2 ?? null);
     const scheduleSubLine =
       c.status === "PAUSED" ? "Resume to schedule" : c.nextRunAt ? "" : "Shuffles only when you press Shuffle";
 
@@ -233,6 +266,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           whenLabel: lastRunLabel(latestRun.createdAt, settings.timezone, now),
           failed: latestRun.status === "FAILED",
           at: latestRun.createdAt,
+          // Null for runs recorded before noMoveReason existed, and for any
+          // run that actually moved something — the row falls back to the
+          // bare count in both cases rather than inventing a reason.
+          noMoveReason: latestRun.movedCount === 0 ? noMoveReasonLabel(latestRun.noMoveReason) : null,
         }
       : null;
 
@@ -250,6 +287,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       title: live?.title ?? c.title,
       status: c.status as "RUNNING" | "PAUSED",
       needsAttention: r.needsAttention,
+      // What Shopify actually has this collection sorted by, only when that
+      // isn't Manual — the row names it so the merchant knows what changed.
+      wrongSortLabel: r.needsAttention ? (live ? sortOrderLabel(live.sortOrder) : null) : null,
       allSoldOut: r.allSoldOut,
       factsLine: factsParts.join(" · "),
       settingsBadges,
@@ -257,8 +297,24 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       scheduleLine,
       scheduleSubLine,
       nextRunAt: c.status === "RUNNING" ? c.nextRunAt : null,
+      // Drives the "Custom" marker, and tells the modal whether to preselect
+      // "Use shop default".
+      scheduleIsCustom: isOverridden(c),
+      // The effective values the modal opens on — already resolved, so a
+      // collection that inherits opens showing the default it inherits.
+      schedule: {
+        scheduleType: effective.scheduleType,
+        scheduleTime: effective.scheduleTime,
+        scheduleTime2: effective.scheduleTime2 ?? null,
+        scheduleWeekday: effective.scheduleWeekday ?? null,
+      },
       lastRun,
       sparkline,
+      // Whether removing this one has anything to put back — drives the bulk
+      // remove dialog's copy so it can't claim "nothing changes" while
+      // silently restoring sorts.
+      restorableSort: c.previousSortOrder ? sortOrderLabel(c.previousSortOrder) : null,
+      hasOrderSnapshot: Boolean(c.originalOrder) && !c.previousSortOrder,
     };
   });
 
@@ -276,20 +332,47 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     totalProductsInRotation,
     productsActuallyMoving,
     lastBatch,
+    // When on, the add dialog is skipped entirely and the switch happens
+    // straight away — revocable on the Settings page.
+    autoSwitchToManual: settings.autoSwitchToManual,
+    timezone: settings.timezone,
+    // The live shop default every inheriting row follows. Sent as one object
+    // so the modal, the Settings link copy and the "Use shop default" reset
+    // all read the same values.
+    shopDefault: shopDefaultSchedule(settings),
+    // Gated on the entitlement helper, never on `plan === "PRO"` — the plan
+    // matrix is allowed to change without every caller having to.
+    scheduleSlots: timeSlots(settings.plan),
     planName: plan.name,
     planLimit: plan.maxCollections === Infinity ? null : plan.maxCollections,
+    // The plan card's data. ShopSettings.plan is already a local cache of
+    // whatever billing.check() last reported (see billing.server.ts) and
+    // this loader already reads it for the collection cap — so the card
+    // adds no query here and no Billing API call on any dashboard render.
+    // The bar and the stat card below it both read plan facts from this one
+    // value, so the two can never show different plans on one screen.
+    planId: plan.id,
+    planSummary: cadenceLabel(settings.plan),
+    canUpgrade: !isTopPlan(settings.plan),
     undoRetentionDays: plan.undoRetentionDays,
   };
 };
 
-function scheduleLabel(type: string, time: string, weekday: number | null): string {
+function scheduleLabel(
+  type: string,
+  time: string,
+  weekday: number | null,
+  time2: string | null,
+): string {
   switch (type) {
     case "DAILY":
       return `Daily at ${time}`;
     case "TWICE_DAILY":
-      return "Twice daily";
+      // Both merchant-picked times, in chronological order — "Twice daily"
+      // alone left the merchant with no way to see when the second run is.
+      return `Twice daily at ${[time, time2].filter(Boolean).sort().join(" and ")}`;
     case "WEEKLY":
-      return `Weekly, ${WEEKDAYS[weekday ?? 1]}`;
+      return `Weekly, ${WEEKDAYS[weekday ?? 1]} at ${time}`;
     default:
       return "Manual only";
   }
@@ -344,8 +427,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const formData = await request.formData();
   const actionType = formData.get("_action");
   const settings = await getOrCreateShopSettings(admin, shop);
-  const defaultSchedule = defaultScheduleForPlan(settings.plan);
-  const defaultWeekday = defaultSchedule === "WEEKLY" ? 1 : null;
+  // Every "add a collection" path starts the collection INHERITING the shop
+  // default rather than copying it. Writing a copy here would mean the shop
+  // default only ever governed collections that existed when it was set, and
+  // every collection added afterwards would quietly carry a frozen snapshot
+  // of it. Newly added collections start RUNNING, hence the default status.
+  const defaultScheduleFields = () => inheritScheduleFields(new Date(), settings.timezone, settings);
 
   if (actionType === "add-collections") {
     const plan = planOf(settings.plan);
@@ -372,16 +459,107 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       preset = DEFAULT_ADD_PRESET;
     }
 
-    for (const gid of toAdd) {
+    // Consent: either the merchant just ticked "switch automatically from now
+    // on" in the dialog, or they'd ticked it previously. Either way it is
+    // recorded before anything is mutated, and it stays revocable on the
+    // Settings page.
+    if (formData.get("rememberAutoSwitch") === "true" && !settings.autoSwitchToManual) {
+      await db.shopSettings.update({ where: { shop }, data: { autoSwitchToManual: true } });
+    }
+
+    interface AddOutcome {
+      gid: string;
+      title: string;
+      ok: boolean;
+      switchedFrom: string | null;
+      error?: string;
+    }
+
+    // Four at a time: fast enough for a twenty-collection batch, gentle
+    // enough not to trip Shopify's rate limiter. Each collection is
+    // independent, so one failure never fails the batch.
+    const outcomes = await mapWithLimit<string, AddOutcome>(toAdd, 4, async (gid) => {
       const title = String(formData.get(`collectionTitle:${gid}`) ?? "Collection");
-      const nextRunAt = computeNextRun(new Date(), settings.timezone, defaultSchedule, settings.defaultRunTime, defaultWeekday);
+      const submittedSort = String(formData.get(`collectionSort:${gid}`) ?? "MANUAL");
+      const needsSwitch = submittedSort !== "MANUAL";
+
+      // Snapshot BEFORE touching anything — this is what makes the switch
+      // reversible, and it's captured for already-Manual collections too,
+      // since a hand-curated order is exactly what a merchant wants back.
+      const snapshot = await captureOriginalOrder(admin, gid);
+
+      let previousSortOrder: string | undefined;
+      if (needsSwitch) {
+        const result = await setCollectionManualSort(admin, gid);
+        if (!result.ok) {
+          return { gid, title, ok: false, switchedFrom: null, error: result.error };
+        }
+        previousSortOrder = result.previousSortOrder;
+      }
+
       await db.collectionConfig.upsert({
         where: { shop_collectionGid: { shop, collectionGid: gid } },
         update: {},
-        create: { shop, collectionGid: gid, title, scheduleType: defaultSchedule, scheduleTime: settings.defaultRunTime, scheduleWeekday: defaultWeekday, nextRunAt, ...preset, pins: plan.canPin ? preset.pins : 0 },
+        create: {
+          shop,
+          collectionGid: gid,
+          title,
+          previousSortOrder,
+          originalOrder: snapshot?.packed ?? null,
+          originalOrderAt: snapshot ? new Date() : null,
+          ...defaultScheduleFields(),
+          ...preset,
+          pins: plan.canPin ? preset.pins : 0,
+        },
       });
+
+      return { gid, title, ok: true, switchedFrom: previousSortOrder ?? null };
+    });
+
+    // One Activity row per sort change: which collection, from what, to what,
+    // and when. "Who" isn't available — this app uses offline tokens only, so
+    // there is no staff identity attached to the request.
+    const switchedOutcomes = outcomes.filter((o) => o.ok && o.switchedFrom);
+    if (switchedOutcomes.length > 0) {
+      const configs = await db.collectionConfig.findMany({
+        where: { shop, collectionGid: { in: switchedOutcomes.map((o) => o.gid) } },
+        select: { id: true, collectionGid: true },
+      });
+      const idByGid = new Map(configs.map((c) => [c.collectionGid, c.id]));
+      await db.$transaction(
+        switchedOutcomes
+          .filter((o) => idByGid.has(o.gid))
+          .map((o) =>
+            db.shuffleRun.create({
+              data: {
+                shop,
+                collectionId: idByGid.get(o.gid)!,
+                trigger: "SORT_CHANGED",
+                status: "OK",
+                message: `${sortOrderLabel(o.switchedFrom!)} → Manual`,
+              },
+            }),
+          ),
+      );
     }
-    return data({ ok: true, added: toAdd.length, skipped: ids.length - toAdd.length });
+
+    const added = outcomes.filter((o) => o.ok).length;
+    const switched = switchedOutcomes.length;
+    const failures = outcomes.filter((o) => !o.ok);
+
+    return data({
+      ok: failures.length === 0,
+      added,
+      switched,
+      skipped: ids.length - toAdd.length,
+      // Named, with their gids, so the modal can offer a retry for exactly
+      // the ones that failed rather than making the merchant start over.
+      failed: failures.map((f) => ({ gid: f.gid, title: f.title, error: f.error ?? "Unknown error" })),
+      error:
+        failures.length > 0
+          ? `Couldn't switch ${failures.map((f) => f.title).join(", ")}. ${added} other collection${added === 1 ? "" : "s"} added.`
+          : undefined,
+    });
   }
 
   if (actionType === "add-untracked") {
@@ -392,11 +570,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     }
     const gid = String(formData.get("gid"));
     const title = String(formData.get("title") ?? "Collection");
-    const nextRunAt = computeNextRun(new Date(), settings.timezone, defaultSchedule, settings.defaultRunTime, defaultWeekday);
     await db.collectionConfig.upsert({
       where: { shop_collectionGid: { shop, collectionGid: gid } },
       update: {},
-      create: { shop, collectionGid: gid, title, scheduleType: defaultSchedule, scheduleTime: settings.defaultRunTime, scheduleWeekday: defaultWeekday, nextRunAt, ...DEFAULT_ADD_PRESET },
+      create: { shop, collectionGid: gid, title, ...defaultScheduleFields(), ...DEFAULT_ADD_PRESET },
     });
     return data({ ok: true });
   }
@@ -411,12 +588,23 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const title = String(formData.get("title") ?? "Collection");
     const switched = await setCollectionManualSort(admin, gid);
     if (!switched.ok) return data({ ok: false, error: switched.error ?? "Couldn't switch that collection." }, { status: 400 });
-    const nextRunAt = computeNextRun(new Date(), settings.timezone, defaultSchedule, settings.defaultRunTime, defaultWeekday);
-    await db.collectionConfig.upsert({
+    const config = await db.collectionConfig.upsert({
       where: { shop_collectionGid: { shop, collectionGid: gid } },
       update: {},
-      create: { shop, collectionGid: gid, title, scheduleType: defaultSchedule, scheduleTime: settings.defaultRunTime, scheduleWeekday: defaultWeekday, nextRunAt, ...DEFAULT_ADD_PRESET },
+      create: {
+        shop,
+        collectionGid: gid,
+        title,
+        previousSortOrder: switched.previousSortOrder,
+        ...defaultScheduleFields(),
+        ...DEFAULT_ADD_PRESET,
+      },
     });
+    // "Switch it, add it, and shuffle it now" in one click, when the
+    // merchant chose not to keep the current order in the confirmation.
+    if (formData.get("keepOrder") === "false") {
+      await runShuffleForCollection(admin, shop, config, settings.timezone, settings.neverMoveTags, "MANUAL", undefined, settings.pageSize);
+    }
     return data({ ok: true });
   }
 
@@ -428,21 +616,31 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const existingCount = await db.collectionConfig.count({ where: { shop } });
     const room = plan.maxCollections === Infinity ? gids.length : Math.max(0, plan.maxCollections - existingCount);
     let added = 0;
+    let switchedCount = 0;
     for (let i = 0; i < gids.length && added < room; i++) {
       const gid = gids[i];
+      let previousSortOrder: string | undefined;
       if (sortOrders[i] !== "MANUAL") {
-        const switched = await setCollectionManualSort(admin, gid);
-        if (!switched.ok) continue;
+        const result = await setCollectionManualSort(admin, gid);
+        if (!result.ok) continue;
+        previousSortOrder = result.previousSortOrder;
+        switchedCount++;
       }
-      const nextRunAt = computeNextRun(new Date(), settings.timezone, defaultSchedule, settings.defaultRunTime, defaultWeekday);
       await db.collectionConfig.upsert({
         where: { shop_collectionGid: { shop, collectionGid: gid } },
         update: {},
-        create: { shop, collectionGid: gid, title: titles[i] ?? "Collection", scheduleType: defaultSchedule, scheduleTime: settings.defaultRunTime, scheduleWeekday: defaultWeekday, nextRunAt, ...DEFAULT_ADD_PRESET },
+        create: {
+          shop,
+          collectionGid: gid,
+          title: titles[i] ?? "Collection",
+          previousSortOrder,
+          ...defaultScheduleFields(),
+          ...DEFAULT_ADD_PRESET,
+        },
       });
       added++;
     }
-    return data({ ok: true, added, skipped: gids.length - added });
+    return data({ ok: true, added, switched: switchedCount, skipped: gids.length - added });
   }
 
   if (actionType === "switch-to-manual") {
@@ -457,7 +655,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
     await db.collectionConfig.update({
       where: { id },
-      data: { status: "RUNNING", previousSortOrder: result.previousSortOrder },
+      // The sort is Manual again, so whatever health problem was recorded
+      // against this collection is resolved — clear it here rather than
+      // waiting for the next successful run to do it.
+      data: { status: "RUNNING", previousSortOrder: result.previousSortOrder, sortOrderIssueAt: null },
     });
 
     if (!keepOrder) {
@@ -473,7 +674,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const nextStatus = actionType === "pause" ? "PAUSED" : "RUNNING";
     const nextRunAt =
       nextStatus === "RUNNING"
-        ? computeNextRun(new Date(), settings.timezone, config.scheduleType as ScheduleType, config.scheduleTime, config.scheduleWeekday)
+        ? nextRunFor(new Date(), settings.timezone, resolveSchedule(config, settings))
         : null;
     await db.$transaction([
       db.collectionConfig.update({ where: { id }, data: { status: nextStatus, nextRunAt } }),
@@ -490,6 +691,149 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return data({ ok: true });
   }
 
+  // One writer for all three collection entry points (cell, row menu, bulk).
+  // `scheduleMode=default` clears the override so the rows go back to
+  // inheriting; anything else writes explicit values. Either way the sweep
+  // re-reads on its next pass, so the change takes effect immediately with
+  // nothing left queued at the old time.
+  if (actionType === "set-schedule") {
+    const ids = formData.getAll("id").map(String);
+    const toDefault = String(formData.get("scheduleMode") ?? "") === "default";
+    const configs = await db.collectionConfig.findMany({ where: { id: { in: ids }, shop } });
+    if (configs.length === 0) return data({ ok: false, error: "Nothing to update." }, { status: 400 });
+
+    let override: ReturnType<typeof overrideWriteFields>;
+    if (toDefault) {
+      override = overrideWriteFields(null);
+    } else {
+      const scheduleType = String(formData.get("scheduleType") ?? "WEEKLY") as ScheduleType;
+      // The cadence is a plan entitlement and is checked here, not only in
+      // the UI. Without this a hand-rolled POST could set DAILY on Free —
+      // and TWICE_DAILY too, since the slot guard below only fires when a
+      // second time comes with it.
+      if (!isScheduleAllowed(settings.plan, scheduleType)) {
+        return data(
+          { ok: false, error: `Your ${planOf(settings.plan).name} plan doesn't include that schedule.` },
+          { status: 400 },
+        );
+      }
+      const scheduleTime = normalizeHhMm(String(formData.get("scheduleTime") ?? "06:00"));
+      const rawTime2 = formData.get("scheduleTime2");
+      const scheduleTime2 =
+        scheduleType === "TWICE_DAILY" && rawTime2 != null && rawTime2 !== ""
+          ? normalizeHhMm(String(rawTime2))
+          : null;
+      // The second slot is a plan entitlement, checked here and not only in
+      // the UI — a hand-rolled POST must not be able to buy it for free.
+      if (scheduleTime2 != null && timeSlots(settings.plan) < 2) {
+        return data({ ok: false, error: "Two shuffles a day is a Pro feature." }, { status: 400 });
+      }
+      if (scheduleTime2 != null && !slotsFarEnoughApart(scheduleTime, scheduleTime2)) {
+        return data({ ok: false, error: "Keep the two shuffle times at least an hour apart." }, { status: 400 });
+      }
+      const rawWeekday = formData.get("scheduleWeekday");
+      override = overrideWriteFields({
+        scheduleType,
+        scheduleTime,
+        scheduleTime2,
+        scheduleWeekday: rawWeekday != null && rawWeekday !== "" ? Number(rawWeekday) : null,
+      });
+    }
+
+    const writes = configs.flatMap((c) => {
+      const before = resolveSchedule(c, settings);
+      const after = resolveSchedule({ ...c, ...override }, settings);
+      const changed = scheduleSummary(before) !== scheduleSummary(after) || isOverridden(c) !== (override.scheduleType != null);
+      const nextRunAt = c.status === "RUNNING" ? nextRunFor(new Date(), settings.timezone, after) : null;
+      return [
+        db.collectionConfig.update({
+          where: { id: c.id },
+          data: {
+            ...override,
+            nextRunAt,
+            // Stamped only on a real move, so the sweep can still tell "the
+            // worker was down" from "the merchant moved this into the past".
+            ...(changed ? { scheduleUpdatedAt: new Date() } : {}),
+          },
+        }),
+        ...(changed
+          ? [
+              db.shuffleRun.create({
+                data: {
+                  shop,
+                  collectionId: c.id,
+                  trigger: "SCHEDULE_CHANGED",
+                  status: "OK",
+                  message: `Schedule changed to ${scheduleSummary(after)}${override.scheduleType == null ? " (shop default)" : ""} — was ${scheduleSummary(before)}`,
+                },
+              }),
+            ]
+          : []),
+      ];
+    });
+    await db.$transaction(writes);
+    return data({ ok: true, count: configs.length, toDefault });
+  }
+
+  // The shop-wide default. Nothing is copied onto collection rows — every
+  // collection with a null override follows these values live — so the only
+  // extra work is repairing the advisory countdown on those rows.
+  if (actionType === "set-shop-default") {
+    const scheduleType = String(formData.get("scheduleType") ?? "WEEKLY") as ScheduleType;
+    // The cadence is a plan entitlement and is checked here, not only in
+    // the UI. Without this a hand-rolled POST could set DAILY on Free —
+    // and TWICE_DAILY too, since the slot guard below only fires when a
+    // second time comes with it.
+    if (!isScheduleAllowed(settings.plan, scheduleType)) {
+      return data(
+        { ok: false, error: `Your ${planOf(settings.plan).name} plan doesn't include that schedule.` },
+        { status: 400 },
+      );
+    }
+    const scheduleTime = normalizeHhMm(String(formData.get("scheduleTime") ?? "06:00"));
+    const rawTime2 = formData.get("scheduleTime2");
+    const scheduleTime2 =
+      scheduleType === "TWICE_DAILY" && rawTime2 != null && rawTime2 !== ""
+        ? normalizeHhMm(String(rawTime2))
+        : null;
+    if (scheduleTime2 != null && timeSlots(settings.plan) < 2) {
+      return data({ ok: false, error: "Two shuffles a day is a Pro feature." }, { status: 400 });
+    }
+    if (scheduleTime2 != null && !slotsFarEnoughApart(scheduleTime, scheduleTime2)) {
+      return data({ ok: false, error: "Keep the two shuffle times at least an hour apart." }, { status: 400 });
+    }
+    const rawWeekday = formData.get("scheduleWeekday");
+    const scheduleWeekday = rawWeekday != null && rawWeekday !== "" ? Number(rawWeekday) : null;
+
+    const updated = await db.shopSettings.update({
+      where: { shop },
+      data: {
+        defaultScheduleType: scheduleType,
+        defaultScheduleTime: scheduleTime,
+        defaultScheduleTime2: scheduleTime2,
+        defaultScheduleWeekday: scheduleType === "WEEKLY" ? scheduleWeekday : null,
+      },
+    });
+
+    // Everything inheriting just moved. nextRunAt is only an advisory cache
+    // (the sweep recomputes it anyway), but leaving it stale would show the
+    // merchant the old countdown until the next sweep touched each row.
+    const inheriting = await db.collectionConfig.findMany({ where: { shop, scheduleType: null } });
+    const nextDefault = shopDefaultSchedule(updated);
+    await db.$transaction(
+      inheriting.map((c) =>
+        db.collectionConfig.update({
+          where: { id: c.id },
+          data: {
+            scheduleUpdatedAt: new Date(),
+            nextRunAt: c.status === "RUNNING" ? nextRunFor(new Date(), updated.timezone, nextDefault) : null,
+          },
+        }),
+      ),
+    );
+    return data({ ok: true, moved: inheriting.length });
+  }
+
   if (actionType === "pause-all") {
     const running = await db.collectionConfig.findMany({ where: { shop, status: "RUNNING" } });
     await db.$transaction([
@@ -500,7 +844,33 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         }),
       ),
     ]);
-    return data({ ok: true });
+    // The count goes back so the toast can say what happened rather than
+    // just "Done".
+    return data({ ok: true, count: running.length });
+  }
+
+  // The way back out of "everything is paused". Without this the merchant
+  // could stop the whole app from one button and have no matching way to
+  // start it again short of visiting every collection.
+  if (actionType === "resume-all") {
+    const paused = await db.collectionConfig.findMany({ where: { shop, status: "PAUSED" } });
+    await db.$transaction(
+      paused.flatMap((c) => [
+        db.collectionConfig.update({
+          where: { id: c.id },
+          data: {
+            status: "RUNNING",
+            // Recomputed per collection, because each one may be on its own
+            // schedule or inheriting the shop default.
+            nextRunAt: nextRunFor(new Date(), settings.timezone, resolveSchedule(c, settings)),
+          },
+        }),
+        db.shuffleRun.create({
+          data: { shop, collectionId: c.id, trigger: "RESUMED", status: "OK", message: `${c.title} resumed` },
+        }),
+      ]),
+    );
+    return data({ ok: true, count: paused.length });
   }
 
   if (actionType === "bulk-pause" || actionType === "bulk-resume") {
@@ -511,7 +881,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       configs.flatMap((c) => {
         const nextRunAt =
           nextStatus === "RUNNING"
-            ? computeNextRun(new Date(), settings.timezone, c.scheduleType as ScheduleType, c.scheduleTime, c.scheduleWeekday)
+            ? nextRunFor(new Date(), settings.timezone, resolveSchedule(c, settings))
             : null;
         return [
           db.collectionConfig.update({ where: { id: c.id }, data: { status: nextStatus, nextRunAt } }),
@@ -543,12 +913,68 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   if (actionType === "bulk-remove") {
     const ids = formData.getAll("id").map(String);
+    const restore = formData.get("restore") !== "false";
+    const configs = await db.collectionConfig.findMany({ where: { id: { in: ids }, shop } });
+
+    let restoredCount = 0;
+    if (restore) {
+      // Four at a time, same as the add path, and one failure never blocks
+      // the rest — a collection we can't restore is still removed, and the
+      // Activity row says what happened to it.
+      const results = await mapWithLimit(configs, 4, async (config) => ({
+        config,
+        result: await restoreOnRemove(admin, config),
+      }));
+      restoredCount = results.filter((r) => r.result.restoredSort || r.result.restoredOrder).length;
+      await db.$transaction(
+        results.map(({ config, result }) =>
+          db.shuffleRun.create({
+            data: {
+              shop,
+              collectionId: config.id,
+              trigger: "SORT_RESTORED",
+              status: result.error ? "FAILED" : "OK",
+              message: result.error
+                ? `Removed, but couldn't restore: ${result.error}`
+                : result.restoredSort
+                  ? `Removed — sort put back to ${sortOrderLabel(result.restoredSort)}`
+                  : result.restoredOrder
+                    ? "Removed — original product order put back"
+                    : "Removed — order left exactly as it is",
+            },
+          }),
+        ),
+      );
+    }
+
     await db.collectionConfig.deleteMany({ where: { id: { in: ids }, shop } });
-    return data({ ok: true });
+    return data({ ok: true, restored: restoredCount });
   }
 
   if (actionType === "remove") {
     const id = String(formData.get("id"));
+    const restore = formData.get("restore") !== "false";
+    const config = await db.collectionConfig.findFirst({ where: { id, shop } });
+    if (!config) return data({ ok: false }, { status: 404 });
+
+    const result = restore
+      ? await restoreOnRemove(admin, config)
+      : { restoredSort: null, restoredOrder: false, error: undefined as string | undefined };
+    await db.shuffleRun.create({
+      data: {
+        shop,
+        collectionId: config.id,
+        trigger: "SORT_RESTORED",
+        status: result.error ? "FAILED" : "OK",
+        message: result.error
+          ? `Removed, but couldn't restore: ${result.error}`
+          : result.restoredSort
+            ? `Removed — sort put back to ${sortOrderLabel(result.restoredSort)}`
+            : result.restoredOrder
+              ? "Removed — original product order put back"
+              : "Removed — order left exactly as it is",
+      },
+    });
     await db.collectionConfig.deleteMany({ where: { id, shop } });
     return data({ ok: true });
   }
@@ -583,6 +1009,13 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
 // ============================== component ==============================
 
+/** One-line summary of an effective schedule, for the Activity message that
+ * records old -> new. Built on the same label helper the table cell uses, so
+ * the log and the row can't describe the same schedule differently. */
+function scheduleSummary(s: SlotSchedule): string {
+  return scheduleLabel(s.scheduleType, s.scheduleTime, s.scheduleWeekday, s.scheduleTime2 ?? null);
+}
+
 const PAGE_SIZE = 25;
 
 export default function Collections() {
@@ -599,6 +1032,12 @@ export default function Collections() {
     lastBatch,
     planName,
     planLimit,
+    planId,
+    timezone,
+    shopDefault,
+    scheduleSlots,
+    planSummary,
+    canUpgrade,
     undoRetentionDays,
   } = useLoaderData<typeof loader>();
   const revalidator = useRevalidator();
@@ -621,7 +1060,14 @@ export default function Collections() {
   const previewFetcher = useFetcher({ key: "shuffle-all-preview" });
   const remainingFetcher = useFetcher({ key: "shuffle-remaining" });
   const switchFetcher = useFetcher<{ ok: boolean; error?: string }>({ key: "switch-to-manual" });
-  const addFetcher = useFetcher<{ ok: boolean; added?: number; skipped?: number }>({ key: "add-collections" });
+  const addFetcher = useFetcher<{
+    ok: boolean;
+    added?: number;
+    switched?: number;
+    skipped?: number;
+    failed?: Array<{ gid: string; title: string; error: string }>;
+    error?: string;
+  }>({ key: "add-collections" });
   const bulkFetcher = useFetcher<{ ok: boolean; moved?: number; collections?: number }>({ key: "bulk-action" });
 
   // ---- client-side search / filter / sort / page (spec: no server round-trip) ----
@@ -652,6 +1098,11 @@ export default function Collections() {
       return true;
     });
     const sorted = [...filtered].sort((a, b) => {
+      // Attention beats every sort key. The row that needs a decision is the
+      // one the merchant must not have to hunt for — and without this it can
+      // land on page 2 entirely.
+      const attention = Number(isRowAttention(b)) - Number(isRowAttention(a));
+      if (attention !== 0) return attention;
       switch (sort) {
         case "products": {
           const av = Number(a.factsLine.match(/^(\d+)/)?.[1] ?? 0);
@@ -683,6 +1134,23 @@ export default function Collections() {
   const [shuffleRunId, setShuffleRunId] = useState<number | null>(null);
   const [pendingRowIds, setPendingRowIds] = useState<Set<string>>(new Set());
   const [switchTarget, setSwitchTarget] = useState<SwitchToManualTarget | null>(null);
+  // Pausing everything stops the app doing its job, so it is never a
+  // single click — see the confirm modal at the bottom of this route.
+  const pauseAllFetcher = useFetcher<{ ok?: boolean; count?: number }>();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- showOverlay/hideOverlay are imperative methods not on the typed public props
+  const pauseAllModalRef = useRef<any>(null);
+  const [pauseAllIntent, setPauseAllIntent] = useState<"pause" | "resume">("pause");
+
+  const [scheduleTarget, setScheduleTarget] = useState<ScheduleTarget | null>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- showOverlay/hideOverlay are imperative methods not on the typed public props
+  const scheduleModalRef = useRef<any>(null);
+  const scheduleFetcher = useFetcher<{ ok?: boolean; error?: string; count?: number; toDefault?: boolean }>();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- showOverlay/hideOverlay are imperative methods not on the typed public props
+  const addAllModalRef = useRef<any>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- showOverlay/hideOverlay are imperative methods not on the typed public props
+  const sortConfirmModalRef = useRef<any>(null);
+  // The picker's submission, parked while the batch confirmation is open.
+  const [pendingAdd, setPendingAdd] = useState<{ formData: FormData; targets: SortSwitchTarget[] } | null>(null);
   const [awaitingAddModal, setAwaitingAddModal] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const shuffleWasActive = useRef(false);
@@ -703,13 +1171,12 @@ export default function Collections() {
   useEffect(() => {
     if (!awaitingAddModal || picker.state !== "idle" || !picker.data) return;
     setAwaitingAddModal(false);
-    const { addable, nonManualCount } = picker.data;
+    const { addable } = picker.data;
     if (addable.length > 0) {
+      // Automated collections are in `addable` now too, so an empty list
+      // genuinely means there is nothing left to add — no "switch them
+      // first" branch to send the merchant away any more.
       addModalRef.current?.showOverlay();
-    } else if (nonManualCount > 0) {
-      shopify.toast.show(
-        `${nonManualCount} collection${nonManualCount === 1 ? "" : "s"} use${nonManualCount === 1 ? "s" : ""} a different sort order. Switch ${nonManualCount === 1 ? "it" : "them"} to Manual sort first.`,
-      );
     } else {
       shopify.toast.show("Every collection is already being shuffled.");
     }
@@ -717,21 +1184,58 @@ export default function Collections() {
   }, [awaitingAddModal, picker.state, picker.data]);
 
   function submitAddCollections(formData: FormData) {
+    // Which of the selected collections actually need a sort change. Ones
+    // already on Manual are skipped silently and never appear in the dialog.
+    const selectedGids = new Set(formData.getAll("collectionGid").map(String));
+    const targets: SortSwitchTarget[] = (picker.data?.addable ?? [])
+      .filter((c) => selectedGids.has(c.id) && c.needsManual)
+      .map((c) => ({ gid: c.id, title: c.title, sortOrderLabel: c.sortOrderLabel }));
+
+    // Nothing to switch, or standing consent already recorded: straight
+    // through, no dialog, no extra step.
+    if (targets.length === 0 || picker.data?.autoSwitchToManual) {
+      addFetcher.submit(formData, { method: "post" });
+      return;
+    }
+
+    closeModal(addModalRef.current);
+    setPendingAdd({ formData, targets });
+    sortConfirmModalRef.current?.showOverlay();
+  }
+
+  function confirmSortSwitch(rememberChoice: boolean) {
+    if (!pendingAdd) return;
+    const formData = pendingAdd.formData;
+    // Consent travels with the submission that acts on it, so the preference
+    // is never written without a switch actually happening.
+    if (rememberChoice) formData.set("rememberAutoSwitch", "true");
+    closeModal(sortConfirmModalRef.current);
+    setPendingAdd(null);
     addFetcher.submit(formData, { method: "post" });
+  }
+
+  function cancelSortSwitch() {
+    closeModal(sortConfirmModalRef.current);
+    setPendingAdd(null);
   }
 
   useEffect(() => {
     if (addFetcher.state === "idle" && addFetcher.data) {
-      closeModal(addModalRef.current);
+      if (addFetcher.data.ok) closeModal(addModalRef.current);
+      const { added = 0, switched = 0, skipped = 0, error } = addFetcher.data;
       if (addFetcher.data.ok) {
-        const { added = 0, skipped = 0 } = addFetcher.data;
-        shopify.toast.show(
-          skipped > 0
-            ? `${added} collection${added === 1 ? "" : "s"} added — ${skipped} skipped (plan limit)`
-            : `${added} collection${added === 1 ? "" : "s"} added`,
-        );
+        const parts = [`${added} collection${added === 1 ? "" : "s"} added`];
+        // Say so when we changed a merchant's sort order, even under standing
+        // consent — especially then, since no dialog appeared.
+        if (switched > 0) parts.push("sort changed to Manual");
+        if (skipped > 0) parts.push(`${skipped} skipped (plan limit)`);
+        shopify.toast.show(`${parts.join(". ")}.`);
       } else {
-        shopify.toast.show("Couldn't add that just now", { isError: true });
+        // Partial success: the ones that worked are already added and
+        // enabled. Only the failures are named, and the picker stays open so
+        // they can be retried without starting over.
+        shopify.toast.show(error ?? "Couldn't add that just now", { isError: true });
+        if ((addFetcher.data.failed?.length ?? 0) > 0) openAddModal();
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- fires only on fetcher settle
@@ -768,6 +1272,97 @@ export default function Collections() {
     }
   }, [pendingRowIds, remainingFetcher.state, shopify]);
 
+  // Every entry point funnels through this one opener, so the cell, the menu
+  // item and the bulk button can't drift into three slightly different
+  // pickers.
+  function openScheduleModal(target: ScheduleTarget) {
+    setScheduleTarget(target);
+    scheduleModalRef.current?.showOverlay();
+  }
+
+  function openScheduleForRow(r: CollectionRowData) {
+    openScheduleModal({
+      mode: "collection",
+      id: r.id,
+      title: r.title,
+      schedule: r.schedule as SlotSchedule,
+      isCustom: r.scheduleIsCustom,
+    });
+  }
+
+  function confirmSchedule(schedule: SlotSchedule | null) {
+    if (!scheduleTarget) return;
+    const ids =
+      scheduleTarget.mode === "collection"
+        ? [scheduleTarget.id]
+        : scheduleTarget.mode === "bulk"
+          ? Array.from(selected)
+          : [];
+    closeModal(scheduleModalRef.current);
+    const fields: Record<string, string | string[]> =
+      schedule == null
+        ? { scheduleMode: "default" }
+        : {
+            scheduleMode: "custom",
+            scheduleType: schedule.scheduleType,
+            scheduleTime: schedule.scheduleTime,
+            scheduleTime2: schedule.scheduleTime2 ?? "",
+            scheduleWeekday: schedule.scheduleWeekday == null ? "" : String(schedule.scheduleWeekday),
+          };
+    if (scheduleTarget.mode === "shop-default") {
+      scheduleFetcher.submit(formDataOf({ _action: "set-shop-default", ...fields }), { method: "post" });
+    } else {
+      scheduleFetcher.submit(formDataOf({ _action: "set-schedule", id: ids, ...fields }), { method: "post" });
+    }
+    setScheduleTarget(null);
+  }
+
+  useEffect(() => {
+    if (scheduleFetcher.state !== "idle" || !scheduleFetcher.data) return;
+    if (scheduleFetcher.data.ok) {
+      setSelected(new Set());
+      const n = scheduleFetcher.data.count ?? 0;
+      shopify.toast.show(
+        scheduleFetcher.data.toDefault
+          ? `${n} collection${n === 1 ? "" : "s"} now follow the shop default`
+          : n > 0
+            ? `Schedule updated for ${n} collection${n === 1 ? "" : "s"}`
+            : "Default schedule updated",
+      );
+    } else {
+      shopify.toast.show(scheduleFetcher.data.error ?? "Couldn't save that schedule", { isError: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- fires only on fetcher settle
+  }, [scheduleFetcher.state, scheduleFetcher.data]);
+
+  // "Resume all" only when there is nothing left running — a half-paused
+  // shop still reads "Pause all", because that is the action that gets it
+  // to a known state.
+  const allPaused = trackedTotal > 0 && runningCount === 0;
+  const pauseAllIsResume = allPaused;
+
+  function openPauseAllModal() {
+    setPauseAllIntent(pauseAllIsResume ? "resume" : "pause");
+    pauseAllModalRef.current?.showOverlay();
+  }
+
+  function confirmPauseAll() {
+    closeModal(pauseAllModalRef.current);
+    pauseAllFetcher.submit(
+      { _action: pauseAllIntent === "resume" ? "resume-all" : "pause-all" },
+      { method: "post" },
+    );
+  }
+
+  useEffect(() => {
+    if (pauseAllFetcher.state !== "idle" || !pauseAllFetcher.data?.ok) return;
+    const n = pauseAllFetcher.data.count ?? 0;
+    shopify.toast.show(
+      `${n} collection${n === 1 ? "" : "s"} ${pauseAllIntent === "resume" ? "resumed" : "paused"}`,
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- fires only on fetcher settle
+  }, [pauseAllFetcher.state, pauseAllFetcher.data]);
+
   function openSwitchModal(target: SwitchToManualTarget) {
     setSwitchTarget(target);
     switchModalRef.current?.showOverlay();
@@ -775,6 +1370,20 @@ export default function Collections() {
 
   function confirmSwitch(keepOrder: boolean) {
     if (!switchTarget) return;
+    // An untracked collection gets switched AND added in the one submit —
+    // that's the "one click, done" flow. A tracked one only needs the switch.
+    if (switchTarget.mode === "untracked") {
+      switchFetcher.submit(
+        {
+          _action: "switch-and-add",
+          gid: switchTarget.gid,
+          title: switchTarget.title,
+          keepOrder: String(keepOrder),
+        },
+        { method: "post" },
+      );
+      return;
+    }
     switchFetcher.submit(
       { _action: "switch-to-manual", id: switchTarget.id, gid: switchTarget.gid, keepOrder: String(keepOrder) },
       { method: "post" },
@@ -785,7 +1394,12 @@ export default function Collections() {
     if (switchFetcher.state === "idle" && switchFetcher.data) {
       closeModal(switchModalRef.current);
       if (switchFetcher.data.ok) {
-        shopify.toast.show(`${switchTarget?.title ?? "Collection"} switched to Manual sort`);
+        const title = switchTarget?.title ?? "Collection";
+        shopify.toast.show(
+          switchTarget?.mode === "untracked"
+            ? `${title} switched to Manual sort and added`
+            : `${title} switched to Manual sort`,
+        );
       } else {
         shopify.toast.show(switchFetcher.data.error ?? "Couldn't switch that collection", { isError: true });
       }
@@ -808,14 +1422,23 @@ export default function Collections() {
   // the settle effect below needs to know what just ran).
   const [lastBulkAction, setLastBulkAction] = useState<string | null>(null);
 
-  function runBulk(actionName: "bulk-pause" | "bulk-resume" | "bulk-shuffle" | "bulk-remove") {
+  function runBulk(
+    actionName: "bulk-pause" | "bulk-resume" | "bulk-shuffle" | "bulk-remove",
+    extra: Record<string, string> = {},
+  ) {
     setLastBulkAction(actionName);
-    bulkFetcher.submit(formDataOf({ _action: actionName, id: Array.from(selected) }), { method: "post" });
+    bulkFetcher.submit(
+      formDataOf({ _action: actionName, id: Array.from(selected), ...extra }),
+      { method: "post" },
+    );
   }
 
-  function confirmBulkRemove() {
+  function confirmBulkRemove(restore: boolean) {
     closeModal(bulkRemoveModalRef.current);
-    runBulk("bulk-remove");
+    // The choice travels with the submission. The action reads
+    // `restore !== "false"`, so sending it explicitly is what stops a bulk
+    // removal from restoring sorts without the merchant having said so.
+    runBulk("bulk-remove", { restore: String(restore) });
   }
 
   useEffect(() => {
@@ -880,8 +1503,15 @@ export default function Collections() {
   const untrackedCollections = untrackedDataFetcher.data?.items ?? [];
   const untrackedMore = untrackedDataFetcher.data?.hasMore ?? false;
   const totalStoreCollections = untrackedDataFetcher.data?.totalStoreCollections ?? null;
-  const untrackedFetcher = useFetcher<{ ok: boolean; added?: number; skipped?: number }>({ key: "add-all-untracked" });
+  const untrackedFetcher = useFetcher<{ ok: boolean; added?: number; switched?: number; skipped?: number }>({ key: "add-all-untracked" });
   function addAllUntracked() {
+    // Always confirm: this is the one path that could switch several
+    // collections' sort at once, and it used to do it without asking.
+    addAllModalRef.current?.showOverlay();
+  }
+
+  function confirmAddAllUntracked() {
+    closeModal(addAllModalRef.current);
     untrackedFetcher.submit(
       formDataOf({
         _action: "add-all-untracked",
@@ -894,34 +1524,30 @@ export default function Collections() {
   }
   useEffect(() => {
     if (untrackedFetcher.state === "idle" && untrackedFetcher.data?.ok) {
-      shopify.toast.show(`${untrackedFetcher.data.added ?? 0} collection${(untrackedFetcher.data.added ?? 0) === 1 ? "" : "s"} added`);
+      const added = untrackedFetcher.data.added ?? 0;
+      const switched = untrackedFetcher.data.switched ?? 0;
+      shopify.toast.show(
+        switched > 0
+          ? `${added} collection${added === 1 ? "" : "s"} added — ${switched} switched to Manual sort`
+          : `${added} collection${added === 1 ? "" : "s"} added`,
+      );
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- fires only on fetcher settle
   }, [untrackedFetcher.state, untrackedFetcher.data]);
 
   return (
     <s-page heading="Collections" {...noHydrationWarning}>
-      <s-button slot="secondary-actions" onClick={openAddModal} {...noHydrationWarning}>
-        Add collection
-      </s-button>
-      <s-button
-        slot="secondary-actions"
-        command="--toggle"
-        commandFor="collections-overflow-menu"
-        accessibilityLabel="More actions"
-        {...noHydrationWarning}
-      >
-        ···
-      </s-button>
-      <s-menu id="collections-overflow-menu" accessibilityLabel="More actions">
-        <PauseAllButton />
-      </s-menu>
+      {/* The page header keeps the breadcrumb and title only. These three
+          used to live in its primary-action/secondary-actions slots, which
+          put them up in Shopify's own title bar, away from the table they
+          act on. The "···" overflow held exactly one item — Pause all — so
+          it is gone rather than relocated: a menu for one labelled action
+          is a hiding place, not a grouping. */}
 
-      {hasAnythingTracked && (
-        <s-button slot="primary-action" variant="primary" onClick={openShuffleAllModal} {...noHydrationWarning}>
-          Shuffle all now
-        </s-button>
-      )}
+      {/* Above the stat row, below the page header. Rendered whether or not
+          anything is tracked yet — a merchant with no collections still needs
+          to see which plan they're on. */}
+      <PlanBar planId={planId} trackedCount={trackedTotal} loading={isLoading} />
 
       {hasAnythingTracked && !hydrationFailed && (
         <StatusRow
@@ -933,6 +1559,9 @@ export default function Collections() {
           productsActuallyMoving={productsActuallyMoving}
           trackedTotal={trackedTotal}
           totalStoreCollections={totalStoreCollections}
+          planName={planName}
+          planSummary={planSummary}
+          canUpgrade={canUpgrade}
         />
       )}
 
@@ -956,6 +1585,40 @@ export default function Collections() {
           pauseFetcherKeyPrefix="row-action-"
         />
       )}
+
+      {/* The table's own toolbar, in the page body directly above the card
+          it acts on. Right-aligned so it reads as belonging to the card
+          below, with clear space so it is not a floating strip — and it sits
+          on the card's left/top edge rather than its right, so it never
+          collides with the Sort control at the card's top-right. Wraps
+          instead of squashing on narrow widths. */}
+      <div className="shuffly-collections-toolbar">
+        <s-button onClick={openAddModal} accessibilityLabel="Add a collection to Shuffly">
+          Add collection
+        </s-button>
+        {hasAnythingTracked && (
+          <s-button
+            onClick={openPauseAllModal}
+            accessibilityLabel={
+              pauseAllIsResume
+                ? `Resume all ${trackedTotal} collections`
+                : `Pause all ${trackedTotal} collections`
+            }
+            {...(pauseAllFetcher.state !== "idle" ? { loading: true } : {})}
+          >
+            {pauseAllIsResume ? "Resume all" : "Pause all"}
+          </s-button>
+        )}
+        {hasAnythingTracked && (
+          <s-button
+            variant="primary"
+            onClick={openShuffleAllModal}
+            accessibilityLabel="Shuffle every collection now"
+          >
+            Shuffle all now
+          </s-button>
+        )}
+      </div>
 
       <s-section padding="none">
         {hasAnythingTracked && trackedTotal > 5 && (
@@ -982,6 +1645,22 @@ export default function Collections() {
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <s-button variant="primary" onClick={() => runBulk("bulk-shuffle")} {...(bulkBusy ? { loading: pendingBulkAction === "bulk-shuffle" || undefined, disabled: true } : {})}>
                 Shuffle now
+              </s-button>
+
+              {/* Third entry point into the same modal. Bulk can set an
+                  explicit schedule or reset the whole selection back to the
+                  shop default — both are one submit to `set-schedule`. */}
+              <s-button
+                onClick={() =>
+                  openScheduleModal({
+                    mode: "bulk",
+                    count: selected.size,
+                    schedule: (selectedRows[0]?.schedule as SlotSchedule) ?? (shopDefault as SlotSchedule),
+                  })
+                }
+                {...(bulkBusy ? { disabled: true } : {})}
+              >
+                Set schedule…
               </s-button>
 
               {selectionHasRunning && (
@@ -1029,6 +1708,16 @@ export default function Collections() {
                     onShuffleSettled={handleRowSettled}
                     selected={selected.has(r.id)}
                     onToggleSelect={toggleSelect}
+                    onEditSchedule={openScheduleForRow}
+                    onSwitchToManual={(c) =>
+                      openSwitchModal({
+                        mode: "tracked",
+                        id: c.id,
+                        gid: c.collectionGid,
+                        title: c.title,
+                        sortOrderLabel: c.wrongSortLabel ?? "another sort",
+                      })
+                    }
                   />
                   {i < pageRows.length - 1 && <s-divider />}
                 </div>
@@ -1089,6 +1778,7 @@ export default function Collections() {
           onAddAll={addAllUntracked}
           addingAll={untrackedFetcher.state !== "idle"}
           onFindMore={openAddModal}
+          onSwitch={openSwitchModal}
         />
       ) : (
         <div className="shuffly-untracked-card">
@@ -1124,6 +1814,50 @@ export default function Collections() {
         onCancel={() => closeModal(shuffleAllModalRef.current)}
       />
 
+      {/* Never pause everything on a single click: it stops the app doing
+          the one thing it is for, and the merchant should be told so before
+          it happens rather than after. */}
+      <s-modal
+        id="pause-all-modal"
+        ref={pauseAllModalRef}
+        heading={
+          pauseAllIntent === "resume"
+            ? `Resume all ${trackedTotal} collection${trackedTotal === 1 ? "" : "s"}?`
+            : `Pause all ${trackedTotal} collection${trackedTotal === 1 ? "" : "s"}?`
+        }
+      >
+        <s-paragraph>
+          {pauseAllIntent === "resume"
+            ? "Each collection goes back to its own schedule, and the next run is worked out from it."
+            : "Nothing will shuffle until you resume."}
+        </s-paragraph>
+        <s-button
+          slot="primary-action"
+          variant="primary"
+          onClick={confirmPauseAll}
+          disabled={pauseAllFetcher.state !== "idle" || undefined}
+        >
+          {pauseAllIntent === "resume" ? "Resume all" : "Pause all"}
+        </s-button>
+        <s-button slot="secondary-actions" onClick={() => closeModal(pauseAllModalRef.current)}>
+          Cancel
+        </s-button>
+      </s-modal>
+
+      <ScheduleModal
+        ref={scheduleModalRef}
+        target={scheduleTarget}
+        shopDefault={shopDefault as SlotSchedule}
+        timezone={timezone}
+        slots={scheduleSlots}
+        busy={scheduleFetcher.state !== "idle"}
+        onConfirm={confirmSchedule}
+        onCancel={() => {
+          closeModal(scheduleModalRef.current);
+          setScheduleTarget(null);
+        }}
+      />
+
       <SwitchToManualModal
         ref={switchModalRef}
         target={switchTarget}
@@ -1132,9 +1866,28 @@ export default function Collections() {
         onCancel={() => closeModal(switchModalRef.current)}
       />
 
+      <SwitchSortConfirmModal
+        ref={sortConfirmModalRef}
+        targets={pendingAdd?.targets ?? []}
+        busy={addFetcher.state !== "idle"}
+        onConfirm={confirmSortSwitch}
+        onCancel={cancelSortSwitch}
+      />
+
+      <AddAllUntrackedModal
+        ref={addAllModalRef}
+        items={untrackedCollections}
+        busy={untrackedFetcher.state !== "idle"}
+        onConfirm={confirmAddAllUntracked}
+        onCancel={() => closeModal(addAllModalRef.current)}
+      />
+
       <BulkRemoveConfirmModal
         ref={bulkRemoveModalRef}
         titles={selectedRows.map((r) => r.title)}
+        restorable={selectedRows
+          .filter((r) => r.restorableSort || r.hasOrderSnapshot)
+          .map((r) => ({ title: r.title, sortOrderLabel: r.restorableSort ?? null }))}
         busy={bulkFetcher.state !== "idle"}
         onConfirm={confirmBulkRemove}
         onCancel={() => closeModal(bulkRemoveModalRef.current)}
@@ -1143,7 +1896,7 @@ export default function Collections() {
       <style>{`
         .shuffly-status-row {
           display: grid;
-          grid-template-columns: repeat(3, 1fr);
+          grid-template-columns: repeat(4, 1fr);
           gap: 16px;
           margin: 20px 0;
         }
@@ -1168,7 +1921,12 @@ export default function Collections() {
         .shuffly-status-label { font-size: 12px; color: var(--p-color-text-secondary, #6b6b6b); }
         .shuffly-status-value { font-size: 15px; font-weight: 700; color: var(--p-color-text, #131110); margin-top: 1px; }
         .shuffly-status-detail { font-size: 12px; color: var(--p-color-text-secondary, #6b6b6b); margin-top: 2px; }
-        @container shuffly-status (max-width: 640px) {
+        /* Four cards need a two-up step before stacking, or each one is too
+           narrow to read at tablet widths. */
+        @container shuffly-status (max-width: 1000px) {
+          .shuffly-status-row { grid-template-columns: repeat(2, 1fr); }
+        }
+        @container shuffly-status (max-width: 560px) {
           .shuffly-status-row { grid-template-columns: 1fr; }
         }
         /* Amber, not brand orange — "attention" is a semantic tone, and
@@ -1224,6 +1982,18 @@ export default function Collections() {
            (checkbox, collection, preview, schedule, last run, actions) are
            DIRECT children of this grid — no wrapper div in between, which
            is what was collapsing every cell into column 1 last time. */
+        /* Sits above the table card as its toolbar. The bottom margin is a
+           full spacing step so it reads as attached to the card rather than
+           floating between sections, and wrap keeps the three buttons intact
+           on a narrow viewport instead of squashing them. */
+        .shuffly-collections-toolbar {
+          display: flex;
+          flex-wrap: wrap;
+          justify-content: flex-end;
+          align-items: center;
+          gap: var(--p-space-200, 8px);
+          margin: var(--p-space-500, 20px) 0 var(--p-space-400, 16px);
+        }
         .shuffly-collections-grid-container {
           container-type: inline-size;
           container-name: shuffly-collections;
@@ -1232,7 +2002,10 @@ export default function Collections() {
           box-sizing: border-box;
           width: 100%;
           display: grid;
-          grid-template-columns: 36px minmax(200px, 1fr) 110px 140px 120px 230px;
+          /* Last column is just the "···" trigger now that the duplicate
+             inline buttons are gone — the 170px it used to reserve went
+             back to Collection (via the 1fr), Schedule and Last run. */
+          grid-template-columns: 36px minmax(250px, 1fr) 110px 150px 175px 48px;
           align-items: center;
           column-gap: 16px;
           padding: 12px 16px;
@@ -1267,7 +2040,7 @@ export default function Collections() {
           inset: 0;
           z-index: 0;
         }
-        .shuffly-row-select, .shuffly-row-actions { position: relative; z-index: 1; }
+        .shuffly-row-select, .shuffly-row-actions, .shuffly-row-schedule { position: relative; z-index: 1; }
         .shuffly-row:has(> .shuffly-row-link-overlay:focus-visible),
         .shuffly-row:has(> .shuffly-row-actions :focus-visible) {
           outline: 2px solid var(--p-color-border-focus, #005bd3);
@@ -1277,6 +2050,12 @@ export default function Collections() {
            as the strip above. */
         .shuffly-row--sold-out {
           box-shadow: inset 3px 0 0 0 var(--p-color-border-caution, #946200);
+        }
+        /* Critical, not caution — a wrong sort means shuffles silently do
+           nothing at all, which is a harder failure than "ran, nothing to
+           move". Same 3px bar so the two read as one family. */
+        .shuffly-row--wrong-sort {
+          box-shadow: inset 3px 0 0 0 var(--p-color-border-critical, #8e0b21);
         }
         /* The selected-row accent bar is one of the four sanctioned uses of
            brand orange — background tint stays the neutral info-blue
@@ -1293,6 +2072,42 @@ export default function Collections() {
           min-width: 0;
         }
         .shuffly-row-title, .shuffly-row-meta { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        /* Badges get their own line under the name rather than competing with
+           it for width — see CollectionRow.tsx for why. Wrapping, so a row
+           with several never pushes the column wider. */
+        .shuffly-row-badges {
+          display: flex;
+          flex-wrap: wrap;
+          align-items: center;
+          gap: 4px;
+          margin-top: 4px;
+        }
+        /* The Schedule cell's text IS the button. No chrome — it should read
+           as the schedule, and only reveal itself as clickable on hover or
+           focus, so the table doesn't turn into a wall of buttons. */
+        /* Fills the cell rather than hugging the text. A target the width of
+           the words leaves dead strips either side of it, and a click that
+           lands in one of them appears to do nothing — which is how a
+           merchant concludes the app is broken. */
+        .shuffly-schedule-button {
+          display: block;
+          width: 100%;
+          padding: 0;
+          margin: 0;
+          border: none;
+          background: none;
+          font: inherit;
+          text-align: left;
+          color: inherit;
+          cursor: pointer;
+          border-radius: 4px;
+        }
+        .shuffly-schedule-button:hover { text-decoration: underline; }
+        .shuffly-schedule-button:focus-visible {
+          outline: 2px solid var(--p-color-border-focus, #005bd3);
+          outline-offset: 2px;
+        }
+        .shuffly-schedule-custom { margin-left: 6px; font-size: 12px; }
         .shuffly-thumbs { display: flex; align-items: center; gap: 4px; }
         .shuffly-row-schedule, .shuffly-row-lastrun { text-align: left; }
         .shuffly-row-mobile-label { display: none; }
@@ -1303,10 +2118,8 @@ export default function Collections() {
           display: flex;
           align-items: center;
           justify-content: flex-end;
-          gap: 4px;
           padding-right: 8px;
         }
-        .shuffly-row-quick-buttons { display: flex; align-items: center; gap: 4px; }
         @container shuffly-collections (max-width: 820px) {
           .shuffly-row--header { display: none; }
           .shuffly-row:not(.shuffly-row--header) {
@@ -1332,42 +2145,6 @@ export default function Collections() {
             color: var(--p-color-text-secondary, #6b6b6b);
             margin-bottom: 2px;
           }
-          .shuffly-row-quick-buttons { display: none; }
-        }
-        .shuffly-row-action-btn {
-          display: inline-flex;
-          align-items: center;
-          justify-content: center;
-          height: 28px;
-          padding: 0 10px;
-          border: 1px solid var(--p-color-border, #e3e3e3);
-          border-radius: 6px;
-          background: var(--p-color-bg-surface, #ffffff);
-          color: var(--p-color-text, #131110);
-          font: inherit;
-          font-size: 12px;
-          font-weight: 600;
-          white-space: nowrap;
-          cursor: pointer;
-          outline: none;
-          box-shadow: none;
-        }
-        .shuffly-row-action-btn:hover:not(:disabled) { background: var(--p-color-bg-surface-secondary, #f6f6f7); }
-        .shuffly-row-action-btn:disabled { opacity: 0.5; cursor: default; }
-        .shuffly-row-action-btn:focus-visible {
-          outline: 2px solid var(--p-color-border-warning, #FF4B1F);
-          outline-offset: 1px;
-        }
-        /* Green (success), not brand orange — resuming is a positive/
-           "turned back on" action, the same semantic as the bulk bar's
-           "Shuffle now"; orange stays reserved for the four spots above. */
-        .shuffly-row-action-btn--primary {
-          border-color: transparent;
-          background: var(--p-color-bg-fill-success, #008060);
-          color: #ffffff;
-        }
-        .shuffly-row-action-btn--primary:hover:not(:disabled) {
-          background: var(--p-color-bg-fill-success-hover, #006e52);
         }
         .shuffly-bulk-bar {
           position: sticky;
@@ -1577,14 +2354,6 @@ function formDataOf(fields: Record<string, string | string[]>): FormData {
   return fd;
 }
 
-function PauseAllButton() {
-  const fetcher = useFetcher();
-  return (
-    <s-button onClick={() => fetcher.submit({ _action: "pause-all" }, { method: "post" })} {...(fetcher.state !== "idle" ? { loading: true } : {})}>
-      Pause all
-    </s-button>
-  );
-}
 
 // ---- status row ----
 
@@ -1616,6 +2385,14 @@ function AlertCircleGlyph({ color }: { color: string }) {
   );
 }
 
+function PlanGlyph({ color }: { color: string }) {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M12 2l2.9 6.3 6.9.8-5 4.7 1.3 6.8L12 17.4 5.9 20.6 7.2 13.8l-5-4.7 6.9-.8z" />
+    </svg>
+  );
+}
+
 function GridGlyph({ color }: { color: string }) {
   return (
     <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
@@ -1641,6 +2418,9 @@ function StatusRow({
   productsActuallyMoving,
   trackedTotal,
   totalStoreCollections,
+  planName,
+  planSummary,
+  canUpgrade,
 }: {
   runningCount: number;
   nextRunLabel: string | null;
@@ -1650,6 +2430,9 @@ function StatusRow({
   productsActuallyMoving: number;
   trackedTotal: number;
   totalStoreCollections: number | null;
+  planName: string;
+  planSummary: string;
+  canUpgrade: boolean;
 }) {
   const [nowMs, setNowMs] = useState(() => Date.now());
   useEffect(() => {
@@ -1718,6 +2501,27 @@ function StatusRow({
               ? `across ${trackedTotal} tracked collection${trackedTotal === 1 ? "" : "s"}`
               : `across ${trackedTotal} of your ${totalStoreCollections} collections`}
           </div>
+        </div>
+      </div>
+      <div className="shuffly-status-card">
+        <div className="shuffly-status-chip" style={{ background: TONE_TOKENS.success.tint }}>
+          <PlanGlyph color={TONE_TOKENS.success.accent} />
+        </div>
+        <div style={{ minWidth: 0, flex: "1 1 0%" }}>
+          <div className="shuffly-status-label">Your plan</div>
+          <div className="shuffly-status-value">{planName}</div>
+          <div className="shuffly-status-detail">{planSummary}</div>
+          {canUpgrade && (
+            <div style={{ marginTop: 8 }}>
+              {/* Links to the in-app Plan page rather than straight to
+                  Shopify's pricing page: that URL needs the app handle,
+                  which would mean an extra Admin API call in this loader on
+                  every dashboard render. /app/plan already has it. */}
+              <s-button variant="secondary" href="/app/plan">
+                Upgrade
+              </s-button>
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -1897,7 +2701,7 @@ function CollectionsSkeletonRows({ count }: { count: number }) {
             <div className="shuffly-thumbs">{bar(96, 32)}</div>
             <div className="shuffly-row-schedule">{bar(80)}</div>
             <div className="shuffly-row-lastrun">{bar(70)}</div>
-            <div className="shuffly-row-actions">{bar(150, 28)}</div>
+            <div className="shuffly-row-actions">{bar(24, 24)}</div>
           </div>
           {i < count - 1 && <s-divider />}
         </div>
@@ -1939,13 +2743,16 @@ function NotShuffledYetCard({
   onAddAll,
   addingAll,
   onFindMore,
+  onSwitch,
 }: {
   items: UntrackedCollectionItem[];
   hasMore: boolean;
   onAddAll: () => void;
   addingAll: boolean;
   onFindMore: () => void;
+  onSwitch: (target: SwitchToManualTarget) => void;
 }) {
+  const anyNeedManual = items.some((item) => item.sortOrder !== "MANUAL");
   return (
     <div className="shuffly-untracked-card">
       <div className="shuffly-untracked-header">
@@ -1957,8 +2764,15 @@ function NotShuffledYetCard({
           Add all {items.length}
         </s-button>
       </div>
+      {anyNeedManual && (
+        <div style={{ padding: "8px 12px 0" }}>
+          <s-text color="subdued">
+            Automated collections can be added too — Shuffly asks before switching one to Manual sort.
+          </s-text>
+        </div>
+      )}
       {items.map((item) => (
-        <UntrackedRow key={item.gid} item={item} />
+        <UntrackedRow key={item.gid} item={item} onSwitch={onSwitch} />
       ))}
       {hasMore && (
         <div style={{ padding: "10px 12px" }}>
@@ -1974,17 +2788,33 @@ function NotShuffledYetCard({
   );
 }
 
-function UntrackedRow({ item }: { item: UntrackedCollectionItem }) {
+function UntrackedRow({
+  item,
+  onSwitch,
+}: {
+  item: UntrackedCollectionItem;
+  onSwitch: (target: SwitchToManualTarget) => void;
+}) {
   const needsManual = item.sortOrder !== "MANUAL";
   const addFetcher = useFetcher<{ ok: boolean; error?: string }>({ key: `row-action-untracked-${item.gid}` });
   const shopify = useAppBridge();
   const busy = addFetcher.state !== "idle";
 
   function onClick() {
-    addFetcher.submit(
-      { _action: needsManual ? "switch-and-add" : "add-untracked", gid: item.gid, title: item.title },
-      { method: "post" },
-    );
+    // Never switch a merchant's sort silently: hand a non-Manual collection
+    // to the confirmation modal, which then does the switch AND the add in
+    // one submit. An already-Manual one has nothing to confirm.
+    if (needsManual) {
+      onSwitch({
+        mode: "untracked",
+        id: "",
+        gid: item.gid,
+        title: item.title,
+        sortOrderLabel: item.sortOrderLabel,
+      });
+      return;
+    }
+    addFetcher.submit({ _action: "add-untracked", gid: item.gid, title: item.title }, { method: "post" });
   }
 
   useEffect(() => {

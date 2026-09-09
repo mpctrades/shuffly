@@ -5,12 +5,16 @@ import {
   diffToMoves,
   getCollectionProductsInOrder,
   reorderCollectionProducts,
+  restoreCollectionSort,
   setCollectionManualSort,
+  unpackProductIds,
 } from "./collections.server";
 import { bumpTurnCounts, computeShuffledOrder, type ShuffleProductInput } from "./shuffle-algorithm.server";
-import { computeNextRun, type ScheduleType } from "./schedule.server";
+import { nextRunFor } from "./schedule.server";
 import { recordProductPositions, recordKnownProducts, invalidateInsightsCache } from "./insights.server";
 import { undoRetentionCutoff } from "./plans";
+import { isNotManualSortError, resolveNoMoveReason } from "./run-reason";
+import { resolveSchedule } from "./schedule-resolve";
 
 export interface ShuffleRunSummary {
   ok: boolean;
@@ -95,6 +99,37 @@ export async function runShuffleForCollection(
   invalidateInsightsCache(shop);
 
   if (sortOrder !== "MANUAL") {
+    // Reachable when a merchant changes the sort back in Shopify admin
+    // after Shuffly switched it. The Collections list and the collection's
+    // own page both offer a one-click switch, so point there rather than
+    // sending them to Shopify admin.
+    const message = `"${config.title}" is no longer on Manual sort, so Shuffly can't set its positions. Open it in Shuffly to switch it back.`;
+    // This used to return without writing anything, which is why a
+    // sort-order failure left no trace at all — no Activity entry, no last
+    // run, nothing on the row until the next hydration happened to notice.
+    // Record it on both the run and the collection so the table can say so
+    // straight away.
+    await db.$transaction([
+      db.collectionConfig.update({
+        where: { id: config.id },
+        data: { sortOrderIssueAt: new Date() },
+      }),
+      db.shuffleRun.create({
+        data: {
+          shop,
+          collectionId: config.id,
+          trigger,
+          batchId,
+          status: "FAILED",
+          movedCount: 0,
+          pinnedCount: 0,
+          soldOutCount: 0,
+          durationMs: Date.now() - started,
+          noMoveReason: "NOT_MANUAL",
+          message,
+        },
+      }),
+    ]);
     return {
       ok: false,
       error: "NOT_MANUAL",
@@ -102,7 +137,7 @@ export async function runShuffleForCollection(
       pinnedCount: 0,
       soldOutCount: 0,
       durationMs: Date.now() - started,
-      message: `"${config.title}" uses a sort order Shuffly can't set positions on yet. Switch it to manual sort first.`,
+      message,
     };
   }
 
@@ -143,20 +178,31 @@ export async function runShuffleForCollection(
   const durationMs = Date.now() - started;
 
   if (!reorderResult.ok) {
-    await db.shuffleRun.create({
-      data: {
-        shop,
-        collectionId: config.id,
-        trigger,
-        batchId,
-        status: "FAILED",
-        movedCount: 0,
-        pinnedCount: result.pinnedCount,
-        soldOutCount: result.soldOutCount,
-        durationMs,
-        message: reorderResult.error ?? "Unknown error",
-      },
-    });
+    // Shopify can reject the reorder for the same reason the pre-flight
+    // check above catches — the sort was changed between our read and our
+    // write. Same code, same collection stamp, so the row reads the same
+    // either way.
+    const sortRejected = isNotManualSortError(reorderResult.error);
+    await db.$transaction([
+      ...(sortRejected
+        ? [db.collectionConfig.update({ where: { id: config.id }, data: { sortOrderIssueAt: new Date() } })]
+        : []),
+      db.shuffleRun.create({
+        data: {
+          shop,
+          collectionId: config.id,
+          trigger,
+          batchId,
+          status: "FAILED",
+          movedCount: 0,
+          pinnedCount: result.pinnedCount,
+          soldOutCount: result.soldOutCount,
+          durationMs,
+          noMoveReason: sortRejected ? "NOT_MANUAL" : "FAILED",
+          message: reorderResult.error ?? "Unknown error",
+        },
+      }),
+    ]);
     return {
       ok: false,
       error: reorderResult.error,
@@ -169,13 +215,36 @@ export async function runShuffleForCollection(
   }
 
   const nextTurnCounts = bumpTurnCounts(turnCounts, result.order, result.pinnedCount);
-  const nextRunAt = computeNextRun(
-    new Date(),
-    timezone,
-    config.scheduleType as ScheduleType,
-    config.scheduleTime,
-    config.scheduleWeekday,
-  );
+  // Advisory only — the cron sweep re-derives what's due from the stored
+  // schedule (see cron.server.ts). This keeps the countdown honest and the
+  // sweep's candidate query index-backed.
+  // The collection may be inheriting its schedule, so the shop default is
+  // needed to know when it next runs. One indexed read, negligible beside the
+  // Shopify round trips this function already makes — and reading it here
+  // rather than threading it through eight call sites means it can never be
+  // passed stale.
+  const scheduleDefaults = (await db.shopSettings.findUnique({
+    where: { shop },
+    select: {
+      defaultScheduleType: true,
+      defaultScheduleTime: true,
+      defaultScheduleTime2: true,
+      defaultScheduleWeekday: true,
+    },
+  })) ?? { defaultScheduleType: "WEEKLY", defaultScheduleTime: "06:00", defaultScheduleTime2: null, defaultScheduleWeekday: 1 };
+  const nextRunAt = nextRunFor(new Date(), timezone, resolveSchedule(config, scheduleDefaults));
+
+  // A run that moved nothing is not self-explanatory — "0 moved" alone can't
+  // tell a merchant whether we worked and had nothing to do or quietly
+  // failed. Every zero-move run carries the reason from here on.
+  const noMoveReason =
+    moves.length === 0
+      ? resolveNoMoveReason({
+          productCount: products.length,
+          soldOutCount: result.soldOutCount,
+          shuffledCount: result.shuffledCount,
+        })
+      : null;
 
   const writes = [
     db.collectionConfig.update({
@@ -187,6 +256,9 @@ export async function runShuffleForCollection(
         lastKnownOrder: JSON.stringify(result.order),
         nextRunAt,
         productCount: products.length,
+        // This run reached Shopify, so whatever sort problem we last
+        // recorded is over.
+        sortOrderIssueAt: null,
         // One-time boost, consumed — it only ever leads a single run.
         priorityBoostIds: "[]",
       },
@@ -202,7 +274,8 @@ export async function runShuffleForCollection(
         pinnedCount: result.pinnedCount,
         soldOutCount: result.soldOutCount,
         durationMs,
-        message: `Shuffled — ${moves.length} products moved`,
+        noMoveReason,
+        message: `Shuffled — ${moves.length} product${moves.length === 1 ? "" : "s"} moved`,
         previousOrder: JSON.stringify(fetchedOrder),
       },
     }),
@@ -240,7 +313,7 @@ export async function runShuffleForCollection(
     pinnedCount: result.pinnedCount,
     soldOutCount: result.soldOutCount,
     durationMs,
-    message: `Shuffled — ${moves.length} products moved`,
+    message: `Shuffled — ${moves.length} product${moves.length === 1 ? "" : "s"} moved`,
   };
 }
 
@@ -296,4 +369,53 @@ export async function undoRun(
 
 export async function ensureManualSort(admin: AdminApiContext, collectionGid: string) {
   return setCollectionManualSort(admin, collectionGid);
+}
+
+export interface RemoveRestoreResult {
+  /** What was actually put back, for the toast — never a promise, always a
+   * report of what happened. */
+  restoredSort: string | null;
+  restoredOrder: boolean;
+  error?: string;
+}
+
+/**
+ * Undo Shuffly's footprint on a collection as it's removed.
+ *
+ * The two restores are mutually exclusive by nature, which is why this picks
+ * one rather than offering both:
+ *
+ *  - We switched the sort (previousSortOrder is set). Putting that automatic
+ *    sort back makes product positions irrelevant — Shopify recomputes the
+ *    order from the rule — so restoring the sort IS the restore, and
+ *    reordering products first would be wasted work.
+ *  - It was already Manual when it was added (previousSortOrder is null).
+ *    Then the merchant's own curated order is the thing worth putting back,
+ *    from the never-pruned originalOrder snapshot.
+ *
+ * Anything not present is simply not claimed: no snapshot, no order restore.
+ */
+export async function restoreOnRemove(
+  admin: AdminApiContext,
+  config: CollectionConfig,
+): Promise<RemoveRestoreResult> {
+  if (config.previousSortOrder) {
+    const result = await restoreCollectionSort(admin, config.collectionGid, config.previousSortOrder);
+    if (!result.ok) return { restoredSort: null, restoredOrder: false, error: result.error };
+    return { restoredSort: config.previousSortOrder, restoredOrder: false };
+  }
+
+  const original = unpackProductIds(config.originalOrder);
+  if (original.length === 0) return { restoredSort: null, restoredOrder: false };
+
+  const { products } = await getCollectionProductsInOrder(admin, config.collectionGid);
+  const currentOrder = products.map((p) => p.id);
+  // Only ids still in the collection; anything added since goes to the end,
+  // the same reconciliation undoRun does.
+  const stillPresent = new Set(currentOrder);
+  const target = original.filter((id) => stillPresent.has(id));
+  const appended = currentOrder.filter((id) => !target.includes(id));
+  const result = await reorderCollectionProducts(admin, config.collectionGid, diffToMoves(currentOrder, [...target, ...appended]));
+  if (!result.ok) return { restoredSort: null, restoredOrder: false, error: result.error };
+  return { restoredSort: null, restoredOrder: true };
 }

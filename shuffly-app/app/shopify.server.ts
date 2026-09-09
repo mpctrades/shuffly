@@ -59,26 +59,6 @@ export const BILLING_PLANS = {
       },
     ],
   },
-  AGENCY: {
-    replacementBehavior: BillingReplacementBehavior.ApplyImmediately,
-    lineItems: [
-      {
-        amount: 49,
-        currencyCode: "USD",
-        interval: BillingInterval.Every30Days as const,
-      },
-    ],
-  },
-  AGENCY_ANNUAL: {
-    replacementBehavior: BillingReplacementBehavior.ApplyImmediately,
-    lineItems: [
-      {
-        amount: 490,
-        currencyCode: "USD",
-        interval: BillingInterval.Annual as const,
-      },
-    ],
-  },
 };
 
 const shopify = shopifyApp({

@@ -1,5 +1,6 @@
 import { Fragment } from "react";
 import { AppProvider } from "@shopify/shopify-app-react-router/react";
+import { SUPPORT_EMAIL } from "../lib/app-config";
 
 // Public, unauthenticated page — required for the Shopify App Store listing,
 // and also what a merchant sees reaching it from inside Shopify Admin (e.g.
@@ -21,7 +22,6 @@ import { AppProvider } from "@shopify/shopify-app-react-router/react";
 // the one small brand touch. Still no loader/async data, so still nothing
 // that can shift in after first paint.
 const LAST_UPDATED = "September 1, 2026";
-const SUPPORT_EMAIL = "team@mapetitecoree.com";
 // Same value as shopify.app.toml's application_url. Hardcoded rather than
 // read from a loader (which this static page otherwise has no need for) —
 // update this if the app ever moves off the "dev" domain.

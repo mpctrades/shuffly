@@ -18,7 +18,7 @@ import { useAppBridge } from "@shopify/app-bridge-react";
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { getOrCreateShopSettings } from "../lib/shop-context.server";
-import { PLANS, planOf, type PlanDefinition, type PlanId } from "../lib/plans";
+import { PLANS, nextPlanOf, planOf, type PlanDefinition, type PlanId } from "../lib/plans";
 import {
   enforcePlanCollectionCap,
   enforcePlanEntitlements,
@@ -32,16 +32,6 @@ import {
   type BillingSummary,
 } from "../lib/billing.server";
 import { KeyValueRows } from "../components/KeyValueRows";
-
-/** The plan we'd pitch to a shop on `key`, or null when they're already at
- * the top of what's offered. AGENCY is legacy — nobody new lands on it, and
- * there's nothing above it — so it has no upsell either. */
-const NEXT_PUBLIC_TIER: Record<PlanId, PlanId | null> = {
-  FREE: "STARTER",
-  STARTER: "PRO",
-  PRO: null,
-  AGENCY: null,
-};
 
 // Shopify runs all three, so all three are honest to promise here.
 const TRUST_ITEMS = ["Cancel any time", "Change plan instantly", "Billed through Shopify"];
@@ -162,6 +152,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     // any store still inside managed pricing's trial — hold a *test*
     // subscription, so `isTest: false` filters out the very plan the
     // merchant just picked and the page keeps insisting they're on Free.
+    // Forced, not throttled: the merchant is looking at the plan page, so
+    // the number on it has to be current rather than up to 15 minutes old.
+    // Same helper the embedded layout uses, so the two can't reconcile
+    // differently.
     const { appSubscriptions } = await billing.check({ isTest: true });
     const reconciled = await reconcilePlanFromSubscriptions(
       shop,
@@ -249,8 +243,11 @@ export default function Plan() {
     navigation.state === "loading" && navigation.location?.pathname === "/app/plan";
 
   const plan = planOf(currentPlanId);
-  const nextTierId = NEXT_PUBLIC_TIER[currentPlanId];
-  const nextTier = nextTierId ? PLANS[nextTierId] : null;
+  // Was a hand-written FREE->STARTER->PRO map here. It duplicated the tier
+  // order that plans.ts already derives from PLANS by price, which is the
+  // same source the Collections plan bar upsells from — so the two could
+  // have disagreed about what to pitch. One derivation now.
+  const nextTier = nextPlanOf(currentPlanId);
   const benefits = nextTier ? upgradeBenefits(plan, nextTier) : [];
   const included = currentPlanSummary(plan);
 

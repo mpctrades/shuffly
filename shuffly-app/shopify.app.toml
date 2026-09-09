@@ -21,6 +21,14 @@ api_version = "2026-07"
   uri = "/webhooks/app/scopes_update"
   topics = [ "app/scopes_update" ]
 
+  # Every Shuffly schedule is a local wall-clock time read in the shop's own
+  # timezone, so a merchant moving their store timezone has to move their
+  # schedules with it. Without this the value was only refreshed when someone
+  # opened the Settings page. No extra scope: shop/update needs none.
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/shop/update"
+  topics = [ "shop/update" ]
+
   # Mandatory compliance webhooks — required even though Shuffly never
   # touches customer data, per https://shopify.dev/docs/apps/build/privacy-law-compliance
   # These three use `compliance_topics`, not `topics`, and share one URI.
