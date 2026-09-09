@@ -1946,8 +1946,13 @@ export default function Collections() {
         /* The Schedule cell's text IS the button. No chrome — it should read
            as the schedule, and only reveal itself as clickable on hover or
            focus, so the table doesn't turn into a wall of buttons. */
+        /* Fills the cell rather than hugging the text. A target the width of
+           the words leaves dead strips either side of it, and a click that
+           lands in one of them appears to do nothing — which is how a
+           merchant concludes the app is broken. */
         .shuffly-schedule-button {
-          display: inline-block;
+          display: block;
+          width: 100%;
           padding: 0;
           margin: 0;
           border: none;

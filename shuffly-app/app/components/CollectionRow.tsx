@@ -326,12 +326,12 @@ export function CollectionRow({
             aria-label={`Change schedule for ${t.title} — currently ${t.scheduleLine}`}
           >
             <s-text type="strong">{displayStatus === "PAUSED" ? "Paused" : t.scheduleLine}</s-text>
+            {t.scheduleIsCustom && (
+              <span className="shuffly-schedule-custom">
+                <s-text color="subdued">Custom</s-text>
+              </span>
+            )}
           </button>
-          {t.scheduleIsCustom && (
-            <span className="shuffly-schedule-custom">
-              <s-text color="subdued">Custom</s-text>
-            </span>
-          )}
         </div>
         <div style={{ fontSize: 12 }}>
           {displayStatus === "RUNNING" && t.nextRunAt ? (

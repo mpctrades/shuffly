@@ -105,6 +105,16 @@ export const ScheduleModal = forwardRef<any, ScheduleModalProps>(function Schedu
     return `${label} (in ${away})`;
   }, [effective, timezone]);
 
+  // A select that still holds focus can keep its dropdown open, and while it
+  // is open the browser spends the next click closing it instead of
+  // delivering it to the page — so the merchant's first click on "Save
+  // schedule" does nothing and the app looks broken. Dropping focus the
+  // moment a value is committed means the next click is a normal click.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- currentTarget isn't in the typed event map for custom elements
+  function commit(e: any) {
+    e?.currentTarget?.blur?.();
+  }
+
   const heading = !target
     ? "Schedule"
     : target.mode === "shop-default"
@@ -154,8 +164,11 @@ export const ScheduleModal = forwardRef<any, ScheduleModalProps>(function Schedu
             label="Day of week"
             value={String(weekday)}
             disabled={useDefault || undefined}
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- currentTarget.value isn't in the typed event map
-            onChange={(e: any) => setWeekday(Number(e.currentTarget?.value ?? 1))}
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any -- currentTarget.value isn't in the typed event map
+            onChange={(e: any) => {
+              setWeekday(Number(e.currentTarget?.value ?? 1));
+              commit(e);
+            }}
           >
             {WEEKDAY_NAMES.map((name, i) => (
               <s-option key={name} value={String(i)}>
@@ -173,7 +186,10 @@ export const ScheduleModal = forwardRef<any, ScheduleModalProps>(function Schedu
           disabled={useDefault || undefined}
           details={`${time} · ${timezone} (your store's timezone)`}
           // eslint-disable-next-line @typescript-eslint/no-explicit-any -- currentTarget.value isn't in the typed event map
-          onChange={(e: any) => setTime(e.currentTarget?.value ?? "06:00")}
+          onChange={(e: any) => {
+            setTime(e.currentTarget?.value ?? "06:00");
+            commit(e);
+          }}
         >
           {timeOptionsIncluding(time).map((t) => (
             <s-option key={t} value={t}>
@@ -196,7 +212,10 @@ export const ScheduleModal = forwardRef<any, ScheduleModalProps>(function Schedu
                 : `${time2} · ${timezone}`
           }
           // eslint-disable-next-line @typescript-eslint/no-explicit-any -- currentTarget.value isn't in the typed event map
-          onChange={(e: any) => setTime2(e.currentTarget?.value ?? "18:00")}
+          onChange={(e: any) => {
+            setTime2(e.currentTarget?.value ?? "18:00");
+            commit(e);
+          }}
         >
           {timeOptionsIncluding(time2).map((t) => (
             <s-option key={t} value={t}>
