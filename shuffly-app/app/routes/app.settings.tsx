@@ -271,7 +271,7 @@ export default function Settings() {
       {isLoading ? (
         <SettingsSkeleton />
       ) : (
-        <s-stack direction="block" gap="large">
+        <s-stack direction="block" gap="base">
           {/* Annotated sections, the way Shopify's own settings pages are
               laid out: the section's name and what it is for on the left,
               its controls on the right, stacked down one column. The old
@@ -279,7 +279,7 @@ export default function Settings() {
               left a void wherever the shorter column ran out. */}
           <AnnotatedSection
             title="Schedule"
-            description="When Shuffly reorders your collections, and the timezone those times are read in."
+            description="When Shuffly reorders your collections."
           >
             {/* Read-only on purpose. Shopify owns this value: the
                 shop/update webhook overwrites it whenever the merchant
@@ -288,7 +288,7 @@ export default function Settings() {
             <SettingsRow
               label="Timezone"
               value={timezoneLabel}
-              help="Read from your Shopify settings. All schedules follow it."
+              help="Read from your Shopify settings."
               action={
                 <s-link href={shopifyTimezoneUrl} target="_blank">
                   Change in Shopify
@@ -299,7 +299,7 @@ export default function Settings() {
             <SettingsRow
               label="Default schedule"
               value={shopDefaultLabel}
-              help="All collections use this unless you set a different time on the collection itself."
+              help="Collections use this unless you set a different time on the collection itself."
               action={
                 <s-button
                   onClick={() => {
@@ -313,33 +313,32 @@ export default function Settings() {
             />
           </AnnotatedSection>
 
+          <s-divider />
+
           <AnnotatedSection
             title="Never move these"
             description="Products Shuffly leaves exactly where they are, in every collection."
           >
+            {/* "+ Add tag" belongs at the end of the list it appends to, not
+                pinned to the card's far corner away from the tags. */}
             <SettingsRow
               label="Products tagged"
-              help="Applies to every collection."
-              action={
-                !addingTag ? <s-button onClick={() => setAddingTag(true)}>Add tag</s-button> : undefined
-              }
               value={
-                tags.length === 0 ? (
-                  <s-text color="subdued">No tags yet</s-text>
-                ) : (
-                  <s-stack direction="inline" gap="small-200" alignItems="center">
-                    {tags.map((tag) => (
-                      <s-clickable-chip
-                        key={tag}
-                        removable
-                        accessibilityLabel={`Remove ${tag}`}
-                        onRemove={() => removeTag(tag)}
-                      >
-                        {tag}
-                      </s-clickable-chip>
-                    ))}
-                  </s-stack>
-                )
+                <s-stack direction="inline" gap="small-200" alignItems="center">
+                  {tags.map((tag) => (
+                    <s-clickable-chip
+                      key={tag}
+                      removable
+                      accessibilityLabel={`Remove ${tag}`}
+                      onRemove={() => removeTag(tag)}
+                    >
+                      {tag}
+                    </s-clickable-chip>
+                  ))}
+                  {!addingTag && (
+                    <s-button onClick={() => setAddingTag(true)}>+ Add tag</s-button>
+                  )}
+                </s-stack>
               }
             />
             {addingTag && (
@@ -366,15 +365,17 @@ export default function Settings() {
             )}
           </AnnotatedSection>
 
+          <s-divider />
+
           <AnnotatedSection
             title="Adding collections"
-            description="What happens when you add a collection that isn't on Manual sort."
+            description="Shuffly can only set the order on a collection that uses Manual sort."
           >
             {/* The switch is both the value and the control, so it takes the
                 action slot and the row keeps its shape. */}
             <SettingsRow
               label="Switch collections to Manual sort without asking"
-              help="Shuffly can only set the order on a collection that uses Manual sort. With this on, adding an automated collection switches it straight away instead of asking first. You can always put a collection's original sort back when you remove it from Shuffly."
+              help="With this on, an automated collection is switched straight away instead of asking first. You can always put its original sort back when you remove it."
               action={
                 <s-switch
                   label="Switch collections to Manual sort without asking"
@@ -390,24 +391,22 @@ export default function Settings() {
             />
           </AnnotatedSection>
 
+          <s-divider />
+
           <AnnotatedSection
             title="Support"
             description="Email us about anything — a collection that didn't shuffle, a run you want undone, or a feature you need."
           >
             <SettingsRow
-              label="Email"
-              value={<s-link href={SUPPORT_MAILTO}>{SUPPORT_EMAIL}</s-link>}
-              help="The Help page has the same address, plus a button that copies your shop details for us."
-            />
-            <s-divider />
-            <SettingsRow
-              label="Website"
+              label="Get in touch"
               value={
-                <s-link href={WEBSITE_URL} target="_blank">
-                  Shuffly website
-                </s-link>
+                <s-stack direction="inline" gap="base" alignItems="center">
+                  <s-link href={SUPPORT_MAILTO}>{SUPPORT_EMAIL}</s-link>
+                  <s-link href={WEBSITE_URL} target="_blank">
+                    Shuffly website
+                  </s-link>
+                </s-stack>
               }
-              help="Guides, release notes and answers to common questions."
             />
           </AnnotatedSection>
         </s-stack>
@@ -420,11 +419,18 @@ export default function Settings() {
         .shuffly-annotated-section {
           display: grid;
           grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
-          gap: 16px;
+          gap: var(--p-space-400, 16px);
           align-items: start;
+        }
+        /* The card carries its own padding, so without this the annotation
+           starts higher than the first label it annotates. One padding step
+           down puts them on the same baseline. */
+        .shuffly-annotated-section > :first-child {
+          padding-block-start: var(--p-space-400, 16px);
         }
         @media (max-width: 820px) {
           .shuffly-annotated-section { grid-template-columns: 1fr; }
+          .shuffly-annotated-section > :first-child { padding-block-start: 0; }
         }
       `}</style>
 
@@ -501,7 +507,9 @@ function SettingsRow({
 }: {
   label: string;
   value?: React.ReactNode;
-  help: string;
+  /** Omitted where the section's annotation already says it — a row that
+   * repeats its own heading in smaller grey type is noise. */
+  help?: string;
   action?: React.ReactNode;
 }) {
   return (
@@ -513,7 +521,7 @@ function SettingsRow({
         </s-stack>
         {action}
       </s-grid>
-      <s-text color="subdued">{help}</s-text>
+      {help && <s-text color="subdued">{help}</s-text>}
     </s-stack>
   );
 }
@@ -533,7 +541,7 @@ function Bar({ width }: { width: number }) {
 
 function SettingsSkeleton() {
   return (
-    <s-stack direction="block" gap="large">
+    <s-stack direction="block" gap="base">
       {[0, 1, 2, 3].map((i) => (
         <div key={i} className="shuffly-annotated-section">
           <s-stack direction="block" gap="small-200">
