@@ -275,6 +275,7 @@ export default function Settings() {
               two-column card grid gave every section the same weight and
               left a void wherever the shorter column ran out. */}
           <AnnotatedSection
+            icon="clock"
             title="Schedule"
             description="When Shuffly reorders your collections."
           >
@@ -313,6 +314,7 @@ export default function Settings() {
           <s-divider />
 
           <AnnotatedSection
+            icon="pin"
             title="Never move these"
             description="Products Shuffly leaves exactly where they are, in every collection."
           >
@@ -365,6 +367,7 @@ export default function Settings() {
           <s-divider />
 
           <AnnotatedSection
+            icon="apps"
             title="Adding collections"
             description="Shuffly can only set the order on a collection that uses Manual sort."
           >
@@ -391,6 +394,7 @@ export default function Settings() {
           <s-divider />
 
           <AnnotatedSection
+            icon="email"
             title="Support"
             description="Email us about anything — a collection that didn't shuffle, a run you want undone, or a feature you need."
           >
@@ -468,10 +472,13 @@ export default function Settings() {
  * out, and it replaced a two-column card grid that gave every section equal
  * weight and left a void wherever the shorter column ran out. */
 function AnnotatedSection({
+  icon,
   title,
   description,
   children,
 }: {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- s-icon's `type` union isn't worth re-declaring here
+  icon: any;
   title: string;
   description: string;
   children: React.ReactNode;
@@ -479,10 +486,17 @@ function AnnotatedSection({
   return (
     <div className="shuffly-annotated-section">
       <s-stack direction="block" gap="small-200">
-        <s-heading>{title}</s-heading>
+        {/* One icon per section, one size, sitting on the heading's own
+            baseline — no tinted chip behind it and no colour. The chips this
+            replaced used brand orange as decoration; a plain icon anchors the
+            heading without claiming to mean anything. */}
+        <s-stack direction="inline" gap="small-200" alignItems="center">
+          <s-icon type={icon} />
+          <s-heading>{title}</s-heading>
+        </s-stack>
         <s-text color="subdued">{description}</s-text>
       </s-stack>
-      <s-section>
+      <s-section padding="base">
         <s-stack direction="block" gap="base">
           {children}
         </s-stack>
@@ -513,8 +527,18 @@ function SettingsRow({
     <s-stack direction="block" gap="small-200">
       <s-grid gridTemplateColumns="1fr auto" gap="base" alignItems="center">
         <s-stack direction="block" gap="small-200">
-          <s-text type="strong">{label}</s-text>
-          {value != null && (typeof value === "string" ? <s-text>{value}</s-text> : value)}
+          {/* Where a row has a value, that value is the thing the merchant
+              came to read, so it takes the strong weight and the label
+              becomes its caption. Where a row has no value — a toggle, whose
+              label IS the setting — the label keeps the weight instead. */}
+          {value != null ? (
+            <>
+              <s-text color="subdued">{label}</s-text>
+              {typeof value === "string" ? <s-text type="strong">{value}</s-text> : value}
+            </>
+          ) : (
+            <s-text type="strong">{label}</s-text>
+          )}
         </s-stack>
         {action}
       </s-grid>
@@ -545,7 +569,7 @@ function SettingsSkeleton() {
             <Bar width={140} />
             <Bar width={200} />
           </s-stack>
-          <s-section>
+          <s-section padding="base">
             <s-stack direction="block" gap="base">
               <Bar width={180} />
               <Bar width={260} />
