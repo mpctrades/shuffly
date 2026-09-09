@@ -1,10 +1,10 @@
 import { closeModal } from "../lib/polaris-modal";
-import { StatChip, StatTile, StatTileRow, type StatTone } from "../components/StatTiles";
+import { IconChip } from "../components/IconChip";
 import { ScheduleModal, type ScheduleTarget } from "../components/ScheduleModal";
 import { shopDefaultSchedule } from "../lib/schedule-resolve";
-import { formatNextRun, nextRunFor, slotsFarEnoughApart, type ScheduleType, type SlotSchedule } from "../lib/schedule.server";
+import { nextRunFor, slotsFarEnoughApart, type ScheduleType, type SlotSchedule } from "../lib/schedule.server";
 import { timeSlots } from "../lib/plans.server";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { data, useLoaderData, useNavigation, useFetcher } from "react-router";
 import { useAppBridge } from "@shopify/app-bridge-react";
@@ -62,7 +62,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     where: { shop },
     select: { status: true, nextRunAt: true, sortOrderIssueAt: true },
   });
-  const runningCount = tracked.filter((t) => t.status === "RUNNING").length;
   const soonestNextRunMs = tracked
     .filter((t) => t.status === "RUNNING" && t.nextRunAt)
     .map((t) => t.nextRunAt!.getTime())
@@ -71,15 +70,19 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // the engine, so this costs nothing here — it will not catch a sort changed
   // since the last run, which the Collections page's live check does.
   const needsManualSort = tracked.filter((t) => t.sortOrderIssueAt != null).length;
+  // "Ready" = running, with no sort problem a run has actually hit. Derived
+  // from the query above, so it adds nothing. It is the lagging signal, not
+  // a live sortOrder read — see the Collections page for that.
+  const readyCount = tracked.filter((t) => t.status === "RUNNING" && t.sortOrderIssueAt == null).length;
 
   return {
     settings: { ...settings, timezone },
     trackedCount: tracked.length,
-    runningCount,
     nextRunAtMs: soonestNextRunMs ?? null,
-    nextRunLabel: soonestNextRunMs ? formatNextRun(new Date(soonestNextRunMs), timezone) : null,
     needsManualSort,
-    timezoneLabel: `${timezone} (${timezoneOffsetLabel(timezone)})`,
+    readyCount,
+    timezoneLabel: timezone,
+    timezoneOffset: timezoneOffsetLabel(timezone),
     // The shop-wide default schedule every collection follows unless it has
     // its own. Same shape the Collections page sends the modal.
     shopDefault: shopDefaultSchedule(settings),
@@ -164,14 +167,14 @@ export default function Settings() {
   const {
     settings,
     timezoneLabel,
+    timezoneOffset,
     shopDefault,
     scheduleSlots,
     shopifyTimezoneUrl,
     trackedCount,
-    runningCount,
     nextRunAtMs,
-    nextRunLabel,
     needsManualSort,
+    readyCount,
     error,
   } = useLoaderData<typeof loader>();
   const navigation = useNavigation();
@@ -184,13 +187,21 @@ export default function Settings() {
 
   // Same label the Collections table shows, from the same values, so the two
   // screens can't describe the shop default differently.
-  const shopDefaultLabel = useMemo(() => {
+  // Split in two so the row can show the time as its value and the cadence
+  // as the sub-line, rather than one long sentence.
+  const shopDefaultValue = useMemo(() => {
     const day = shopDefault.scheduleWeekday != null ? WEEKDAY_NAMES[shopDefault.scheduleWeekday] : null;
-    if (shopDefault.scheduleType === "WEEKLY" && day) return `Weekly, ${day} at ${shopDefault.scheduleTime}`;
+    if (shopDefault.scheduleType === "WEEKLY" && day) return `${day} ${shopDefault.scheduleTime}`;
     if (shopDefault.scheduleType === "TWICE_DAILY")
-      return `Twice daily at ${shopDefault.scheduleTime} and ${shopDefault.scheduleTime2 ?? "—"}`;
-    if (shopDefault.scheduleType === "DAILY") return `Daily at ${shopDefault.scheduleTime}`;
-    return "Only when you press Shuffle";
+      return `${shopDefault.scheduleTime} and ${shopDefault.scheduleTime2 ?? "—"}`;
+    if (shopDefault.scheduleType === "DAILY") return shopDefault.scheduleTime;
+    return "Manual only";
+  }, [shopDefault]);
+  const shopDefaultCadence = useMemo(() => {
+    if (shopDefault.scheduleType === "WEEKLY") return "weekly";
+    if (shopDefault.scheduleType === "TWICE_DAILY") return "twice daily";
+    if (shopDefault.scheduleType === "DAILY") return "daily";
+    return "only when you press Shuffle";
   }, [shopDefault]);
 
 
@@ -318,75 +329,35 @@ export default function Settings() {
       {isLoading ? (
         <SettingsSkeleton />
       ) : (
-        <s-stack direction="block" gap="base">
-          {/* Every tile is a real number read from the same columns the
-              Collections bento reads, in the same treatment — the page needed
-              an anchor, and an anchor made of live facts rather than
-              ornament. */}
-          <StatTileRow>
-            <StatTile
-              icon="collection"
-              tone="info"
-              label="Shuffling"
-              value={`${runningCount} collection${runningCount === 1 ? "" : "s"}`}
-              detail={trackedCount === runningCount ? "all tracked" : `of ${trackedCount} tracked`}
-            />
-            <StatTile
-              icon="clock"
-              tone="warning"
-              label="Next run"
-              value={countdown}
-              detail={nextRunLabel ?? "No collection is scheduled"}
-            />
-            <StatTile
-              icon="globe"
-              tone="success"
-              label="Timezone"
-              value={settings.timezone}
-              detail="From your Shopify settings"
-            />
-            <StatTile
-              icon="pin"
-              tone="info"
-              label="Never move"
-              value={`${tags.length} tag${tags.length === 1 ? "" : "s"}`}
-              detail="In every collection"
-            />
-          </StatTileRow>
-
-          {/* Annotated sections, the way Shopify's own settings pages are
-              laid out: the section's name and what it is for on the left,
-              its controls on the right, stacked down one column. The old
-              two-column card grid gave every section the same weight and
-              left a void wherever the shorter column ran out. */}
-          <AnnotatedSection
-            icon="clock"
-            tone="warning"
-            title="Schedule"
-            description="When Shuffly reorders your collections."
-          >
-            {/* Read-only on purpose. Shopify owns this value: the
-                shop/update webhook overwrites it whenever the merchant
-                changes it in Shopify, and this page's loader re-reads it
-                live on every visit. */}
+        <div className="shuffly-settings-column">
+          {/* One rule holds this page together: every control sits on the
+              same right edge, on its label's line. The layout this replaced
+              had a link at one card's top-right, a button at another's, a
+              toggle mid-row and tags bottom-left — four places to look for
+              the thing you came to change. */}
+          <SettingsGroup icon="clock" title="Schedule">
             <SettingsRow
               label="Timezone"
-              value={timezoneLabel}
-              help="Read from your Shopify settings."
-              action={
-                <s-link href={shopifyTimezoneUrl} target="_blank">
-                  Change in Shopify
+              help="Read from your Shopify settings"
+              valueOverride={timezoneLabel}
+              subValue={timezoneOffset}
+              control={(helpId) => (
+                <s-link href={shopifyTimezoneUrl} target="_blank" aria-describedby={helpId}>
+                  Change
                 </s-link>
-              }
+              )}
             />
             <s-divider />
             <SettingsRow
               label="Default schedule"
               badge={nextRunAtMs != null ? <s-badge>{countdown}</s-badge> : undefined}
-              value={shopDefaultLabel}
-              help="Collections use this unless you set a different time on the collection itself."
-              action={
+              help="Collections use this unless you set their own time"
+              valueOverride={shopDefaultValue}
+              subValue={shopDefaultCadence}
+              control={(helpId) => (
                 <s-button
+                  aria-describedby={helpId}
+                  accessibilityLabel="Change the default schedule"
                   onClick={() => {
                     setScheduleTarget({ mode: "shop-default", schedule: shopDefault as SlotSchedule });
                     scheduleModalRef.current?.showOverlay();
@@ -394,84 +365,93 @@ export default function Settings() {
                 >
                   Change
                 </s-button>
-              }
+              )}
             />
-          </AnnotatedSection>
+          </SettingsGroup>
 
-          <s-divider />
-
-          <AnnotatedSection
-            icon="pin"
-            tone="info"
-            title="Never move these"
-            description="Products Shuffly leaves exactly where they are, in every collection."
-          >
-            {/* "+ Add tag" belongs at the end of the list it appends to, not
-                pinned to the card's far corner away from the tags. */}
+          <SettingsGroup icon="pin" title="Never move these">
             <SettingsRow
               label="Products tagged"
-              value={
+              help="Left exactly where they are, in every collection"
+              control={(helpId) => (
                 <s-stack direction="inline" gap="small-200" alignItems="center">
                   {tags.map((tag) => (
                     <s-clickable-chip
                       key={tag}
                       removable
-                      accessibilityLabel={`Remove ${tag}`}
+                      accessibilityLabel={`Remove the ${tag} tag`}
                       onRemove={() => removeTag(tag)}
                     >
                       {tag}
                     </s-clickable-chip>
                   ))}
                   {!addingTag && (
-                    <s-button onClick={() => setAddingTag(true)}>+ Add tag</s-button>
+                    <s-button
+                      aria-describedby={helpId}
+                      accessibilityLabel="Add a never-move tag"
+                      onClick={() => setAddingTag(true)}
+                    >
+                      + Add
+                    </s-button>
                   )}
                 </s-stack>
-              }
+              )}
             />
             {addingTag && (
-              <s-grid gridTemplateColumns="1fr auto auto" gap="small" alignItems="end">
-                <s-text-field
-                  label="New tag"
-                  labelAccessibilityVisibility="exclusive"
-                  value={newTag}
-                  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- currentTarget.value isn't in the typed event map
-                  onInput={(e: any) => setNewTag(e.currentTarget?.value ?? "")}
-                />
-                <s-button variant="primary" onClick={addTag}>
-                  Add
-                </s-button>
-                <s-button
-                  onClick={() => {
-                    setAddingTag(false);
-                    setNewTag("");
-                  }}
-                >
-                  Cancel
-                </s-button>
-              </s-grid>
+              <>
+                <s-divider />
+                <div className="shuffly-settings-rowpad">
+                  <s-grid gridTemplateColumns="1fr auto auto" gap="small" alignItems="end">
+                    <s-text-field
+                      label="New tag"
+                      labelAccessibilityVisibility="exclusive"
+                      value={newTag}
+                      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- currentTarget.value isn't in the typed event map
+                      onInput={(e: any) => setNewTag(e.currentTarget?.value ?? "")}
+                    />
+                    <s-button variant="primary" onClick={addTag}>
+                      Add
+                    </s-button>
+                    <s-button
+                      onClick={() => {
+                        setAddingTag(false);
+                        setNewTag("");
+                      }}
+                    >
+                      Cancel
+                    </s-button>
+                  </s-grid>
+                </div>
+              </>
             )}
-          </AnnotatedSection>
+          </SettingsGroup>
 
-          <s-divider />
-
-          <AnnotatedSection
-            icon="apps"
-            tone="info"
-            title="Adding collections"
-            description="Shuffly can only set the order on a collection that uses Manual sort."
-          >
-            {/* The switch is both the value and the control, so it takes the
-                action slot and the row keeps its shape. */}
+          <SettingsGroup icon="apps" title="Collections">
             <SettingsRow
-              label="Switch collections to Manual sort without asking"
+              label="Ready to shuffle"
               badge={
-                autoSwitchToManual ? <s-badge tone="success">On</s-badge> : <s-badge>Off</s-badge>
+                needsManualSort > 0 ? (
+                  <s-badge tone="warning">{needsManualSort} needs Manual sort</s-badge>
+                ) : undefined
               }
-              help="With this on, an automated collection is switched straight away instead of asking first. You can always put its original sort back when you remove it."
-              action={
+              help="A collection that leaves Manual sort stops being reordered"
+              valueOverride={`${readyCount} of ${trackedCount}`}
+              control={(helpId) => (
+                <s-link href="/app/collections" aria-describedby={helpId}>
+                  Review
+                </s-link>
+              )}
+            />
+            <s-divider />
+            <SettingsRow
+              label="Switch to Manual sort without asking"
+              badge={autoSwitchToManual ? <s-badge tone="success">On</s-badge> : <s-badge>Off</s-badge>}
+              help="Switches automated collections straight away instead of asking"
+              control={(helpId) => (
                 <s-switch
-                  label="Switch collections to Manual sort without asking"
+                  label="Switch to Manual sort without asking"
                   labelAccessibilityVisibility="exclusive"
+                  aria-describedby={helpId}
                   checked={autoSwitchToManual || undefined}
                   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- currentTarget.checked isn't in the typed event map
                   onChange={(e: any) => {
@@ -479,66 +459,109 @@ export default function Settings() {
                     markDirty();
                   }}
                 />
-              }
+              )}
             />
-            {needsManualSort > 0 && (
-              <>
-                <s-divider />
-                {/* Warning tone because it is a real problem: those
-                    collections are not being reordered at all. */}
-                <s-stack direction="inline" gap="small-200" alignItems="center">
-                  <s-badge tone="warning">
-                    {needsManualSort} collection{needsManualSort === 1 ? "" : "s"} need
-                    {needsManualSort === 1 ? "s" : ""} Manual sort
-                  </s-badge>
-                  <s-link href="/app/collections">Review in Collections</s-link>
-                </s-stack>
-              </>
-            )}
-          </AnnotatedSection>
+          </SettingsGroup>
 
-          <s-divider />
-
-          <AnnotatedSection
-            icon="email"
-            tone="success"
-            title="Support"
-            description="Email us about anything — a collection that didn't shuffle, a run you want undone, or a feature you need."
-          >
+          <SettingsGroup icon="email" title="Support">
             <SettingsRow
-              label="Get in touch"
-              value={
-                <s-stack direction="inline" gap="base" alignItems="center">
-                  <s-link href={SUPPORT_MAILTO}>{SUPPORT_EMAIL}</s-link>
-                  <s-link href={WEBSITE_URL} target="_blank">
-                    Shuffly website
-                  </s-link>
-                </s-stack>
-              }
+              label="Email us"
+              help="A run you want undone, or a feature you need"
+              control={(helpId) => (
+                <s-link href={SUPPORT_MAILTO} aria-describedby={helpId}>
+                  {SUPPORT_EMAIL}
+                </s-link>
+              )}
             />
-          </AnnotatedSection>
-        </s-stack>
+            <s-divider />
+            <SettingsRow
+              label="Guides and release notes"
+              help="Answers to common questions"
+              control={(helpId) => (
+                <s-link href={WEBSITE_URL} target="_blank" aria-describedby={helpId}>
+                  Shuffly website
+                </s-link>
+              )}
+            />
+          </SettingsGroup>
+        </div>
       )}
 
-      {/* The only CSS on this page, and it is layout only: the annotated
-          two-column measure, collapsing to one column on narrow viewports
-          the way Shopify's own settings pages do. */}
+      {/* Layout only. The annotated two-column grid and the stat-tile row
+          this replaced are both gone, along with all of their rules. */}
       <style>{`
-        .shuffly-annotated-section {
+        .shuffly-settings-column {
+          display: flex;
+          flex-direction: column;
+          gap: 24px;
+          max-width: 640px;
+          margin: 0 auto;
+          padding: 4px 0 24px;
+        }
+        /* The group label sits ABOVE its card, small and uppercase, which is
+           what let the side column go — and with it the dead space that sat
+           next to every short annotation. */
+        .shuffly-settings-grouplabel {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          margin: 0 0 8px 2px;
+          font-size: 12px;
+          font-weight: 700;
+          letter-spacing: 0.06em;
+          text-transform: uppercase;
+          color: var(--p-color-text-secondary, #6b6b6b);
+        }
+        .shuffly-icon-chip {
+          flex: none;
+          border-radius: 6px;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+        }
+        /* The shared right edge, and the shared rhythm every row keeps. */
+        .shuffly-settings-row {
           display: grid;
-          grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
-          gap: var(--p-space-500, 20px);
-          align-items: start;
+          grid-template-columns: minmax(0, 1fr) auto;
+          gap: 16px;
+          align-items: center;
+          min-height: 54px;
+          padding: 12px 16px;
         }
-        /* The card carries its own padding, so without this the annotation
-           starts higher than the first label it annotates. One padding step
-           down puts them on the same baseline. */
-        .shuffly-annotated-section > :first-child {
-          padding-block-start: var(--p-space-400, 16px);
+        .shuffly-settings-rowpad { padding: 12px 16px; }
+        .shuffly-settings-rowlabel { min-width: 0; }
+        .shuffly-settings-labelline {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          flex-wrap: wrap;
         }
-        @media (max-width: 820px) {
-          .shuffly-annotated-section { grid-template-columns: 1fr; }
-          .shuffly-annotated-section > :first-child { padding-block-start: 0; }
+        .shuffly-settings-label { font-weight: 600; color: var(--p-color-text, #131110); }
+        .shuffly-settings-help {
+          display: block;
+          margin-top: 2px;
+          font-size: 12px;
+          color: var(--p-color-text-secondary, #6b6b6b);
+        }
+        .shuffly-settings-control {
+          display: flex;
+          align-items: center;
+          justify-content: flex-end;
+          gap: 12px;
+          flex-wrap: wrap;
+        }
+        .shuffly-settings-valuebox { text-align: right; }
+        .shuffly-settings-value { display: block; font-weight: 600; color: var(--p-color-text, #131110); }
+        .shuffly-settings-subvalue {
+          display: block;
+          font-size: 12px;
+          color: var(--p-color-text-secondary, #6b6b6b);
+        }
+        /* Controls wrap beneath their label rather than squeezing. */
+        @media (max-width: 720px) {
+          .shuffly-settings-row { grid-template-columns: 1fr; align-items: start; }
+          .shuffly-settings-control { justify-content: flex-start; }
+          .shuffly-settings-valuebox { text-align: left; }
         }
       `}</style>
 
@@ -578,92 +601,78 @@ export default function Settings() {
  * controls on the right. This is how Shopify's own settings pages are laid
  * out, and it replaced a two-column card grid that gave every section equal
  * weight and left a void wherever the shorter column ran out. */
-function AnnotatedSection({
+/** A group: a small uppercase label with one tinted chip, sitting ABOVE its
+ * card rather than beside it. That is what let the side column go, and with
+ * it the dead space next to every short annotation. */
+function SettingsGroup({
   icon,
-  tone,
   title,
-  description,
   children,
 }: {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- s-icon's `type` union isn't worth re-declaring here
   icon: any;
-  tone: StatTone;
   title: string;
-  description: string;
   children: React.ReactNode;
 }) {
   return (
-    <div className="shuffly-annotated-section">
-      <s-stack direction="block" gap="small-200">
-        {/* One icon per section, one size, sitting on the heading's own
-            baseline — no tinted chip behind it and no colour. The chips this
-            replaced used brand orange as decoration; a plain icon anchors the
-            heading without claiming to mean anything. */}
-        <s-stack direction="inline" gap="small-200" alignItems="center">
-          <StatChip icon={icon} tone={tone} size={28} />
-          <s-heading>{title}</s-heading>
-        </s-stack>
-        <s-text color="subdued">{description}</s-text>
-      </s-stack>
-      <s-section padding="base">
-        <s-stack direction="block" gap="base">
-          {children}
-        </s-stack>
-      </s-section>
-    </div>
+    <section className="shuffly-settings-group">
+      <div className="shuffly-settings-grouplabel">
+        <IconChip icon={icon} />
+        <span>{title}</span>
+      </div>
+      <s-section padding="none">{children}</s-section>
+    </section>
   );
 }
 
-/** One row shape for every setting, everywhere on this page: the label, the
- * value it currently has, and an action only when the value can be changed
- * from here. The help line always sits underneath — never above, never
- * beside. `value` takes a node as well as a string so a chip list or a link
- * is still laid out as the row's value rather than becoming its own shape. */
+/** The one row shape, used without exception.
+ *
+ * LEFT  the label at 600, an inline badge where state is worth colouring,
+ *       and one subdued line of help beneath.
+ * RIGHT the value and/or control, right-aligned and vertically centred.
+ *
+ * `control` is a function of the help text's id so the caller can hang
+ * aria-describedby on the real control — the association has to be on the
+ * focusable element, and only the caller knows which that is. */
 function SettingsRow({
   label,
-  value,
-  help,
   badge,
-  action,
+  help,
+  valueOverride,
+  subValue,
+  control,
 }: {
   label: string;
-  value?: React.ReactNode;
-  /** Omitted where the section's annotation already says it — a row that
-   * repeats its own heading in smaller grey type is noise. */
-  help?: string;
-  /** State worth colouring, next to the label. A Polaris tone badge is the
-   * only colour on these rows, and it always carries meaning: whether a
-   * setting is on, how long until the next run, what needs attention. */
   badge?: React.ReactNode;
-  action?: React.ReactNode;
+  help: string;
+  /** The row's value, shown above the sub-line. Omitted on rows where the
+   * control IS the value, like the toggle or the tag chips. */
+  valueOverride?: string;
+  subValue?: string;
+  control: (helpId: string) => React.ReactNode;
 }) {
+  const helpId = useId();
   return (
-    <s-stack direction="block" gap="small-200">
-      <s-grid gridTemplateColumns="1fr auto" gap="base" alignItems="center">
-        <s-stack direction="block" gap="small-200">
-          {/* Where a row has a value, that value is the thing the merchant
-              came to read, so it takes the strong weight and the label
-              becomes its caption. Where a row has no value — a toggle, whose
-              label IS the setting — the label keeps the weight instead. */}
-          {value != null ? (
-            <>
-              <s-stack direction="inline" gap="small-200" alignItems="center">
-                <s-text color="subdued">{label}</s-text>
-                {badge}
-              </s-stack>
-              {typeof value === "string" ? <s-text type="strong">{value}</s-text> : value}
-            </>
-          ) : (
-            <s-stack direction="inline" gap="small-200" alignItems="center">
-              <s-text type="strong">{label}</s-text>
-              {badge}
-            </s-stack>
-          )}
-        </s-stack>
-        {action}
-      </s-grid>
-      {help && <s-text color="subdued">{help}</s-text>}
-    </s-stack>
+    <div className="shuffly-settings-row">
+      <div className="shuffly-settings-rowlabel">
+        <div className="shuffly-settings-labelline">
+          <span className="shuffly-settings-label">{label}</span>
+          {badge}
+        </div>
+        <span id={helpId} className="shuffly-settings-help">
+          {help}
+        </span>
+      </div>
+      <div className="shuffly-settings-control">
+        {valueOverride != null && (
+          <div className="shuffly-settings-valuebox">
+            <span className="shuffly-settings-value">{valueOverride}</span>
+            {subValue && <span className="shuffly-settings-subvalue">{subValue}</span>}
+          </div>
+        )}
+        {control(helpId)}
+      </div>
+    </div>
   );
 }
 
@@ -682,21 +691,24 @@ function Bar({ width }: { width: number }) {
 
 function SettingsSkeleton() {
   return (
-    <s-stack direction="block" gap="base">
+    <div className="shuffly-settings-column">
       {[0, 1, 2, 3].map((i) => (
-        <div key={i} className="shuffly-annotated-section">
-          <s-stack direction="block" gap="small-200">
-            <Bar width={140} />
-            <Bar width={200} />
-          </s-stack>
-          <s-section padding="base">
-            <s-stack direction="block" gap="base">
-              <Bar width={180} />
-              <Bar width={260} />
-            </s-stack>
+        <section key={i} className="shuffly-settings-group">
+          <div className="shuffly-settings-grouplabel">
+            <Bar width={90} />
+          </div>
+          <s-section padding="none">
+            {[0, 1].map((r) => (
+              <div key={r} className="shuffly-settings-row">
+                <div className="shuffly-settings-rowlabel">
+                  <Bar width={150} />
+                  <Bar width={220} />
+                </div>
+              </div>
+            ))}
           </s-section>
-        </div>
+        </section>
       ))}
-    </s-stack>
+    </div>
   );
 }
