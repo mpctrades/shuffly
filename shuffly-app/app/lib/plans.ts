@@ -136,6 +136,23 @@ export function timeSlots(planId: string | null | undefined): number {
   return planOf(planId).allowedSchedules.includes("TWICE_DAILY") ? 2 : 1;
 }
 
+/**
+ * Whether this plan is allowed to run on this cadence. The single gate for
+ * it, so an action can't forget half the rule the way three of them did:
+ * they checked `timeSlots()` for the second time slot but never checked the
+ * cadence itself, which let a Free shop store DAILY — and store TWICE_DAILY
+ * outright, because the slot guard only fired when a second time came with
+ * it, and slotTimesFor derives one at +12h when it doesn't.
+ */
+export function isScheduleAllowed(
+  planId: string | null | undefined,
+  scheduleType: string,
+): boolean {
+  return planOf(planId).allowedSchedules.includes(
+    scheduleType as PlanDefinition["allowedSchedules"][number],
+  );
+}
+
 /** "25 collections" / "Unlimited collections". The noun is part of the
  * label so an uncapped plan doesn't have to read "Unlimited 25 collections". */
 export function collectionCapLabel(planId: string | null | undefined): string {

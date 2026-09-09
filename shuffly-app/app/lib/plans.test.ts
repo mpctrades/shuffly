@@ -12,6 +12,7 @@ import {
   overLimitCount,
   planOf,
   timeSlots,
+  isScheduleAllowed,
   undoRetentionCutoff,
 } from "./plans";
 
@@ -241,5 +242,55 @@ describe("a retired plan id", () => {
   it("still gets an upgrade path rather than being stranded at the top", () => {
     expect(isTopPlan("AGENCY")).toBe(false);
     expect(nextPlanOf("AGENCY")?.id).toBe("STARTER");
+  });
+});
+
+describe("isScheduleAllowed", () => {
+  // Regression guard. Three actions checked timeSlots() for the second time
+  // slot but never checked the cadence, so a hand-rolled POST could put a
+  // Free shop on DAILY — and on TWICE_DAILY outright, because the slot guard
+  // only fired when a second time came with it and slotTimesFor derives one
+  // at +12h when it doesn't.
+  it("keeps Free on weekly and manual only", () => {
+    expect(isScheduleAllowed("FREE", "WEEKLY")).toBe(true);
+    expect(isScheduleAllowed("FREE", "MANUAL")).toBe(true);
+    expect(isScheduleAllowed("FREE", "DAILY")).toBe(false);
+    expect(isScheduleAllowed("FREE", "TWICE_DAILY")).toBe(false);
+  });
+
+  it("gives Starter daily but not twice daily", () => {
+    expect(isScheduleAllowed("STARTER", "DAILY")).toBe(true);
+    expect(isScheduleAllowed("STARTER", "TWICE_DAILY")).toBe(false);
+  });
+
+  it("gives Pro everything", () => {
+    for (const t of ["WEEKLY", "MANUAL", "DAILY", "TWICE_DAILY"]) {
+      expect(isScheduleAllowed("PRO", t)).toBe(true);
+    }
+  });
+
+  it("refuses an unknown cadence on every plan", () => {
+    for (const p of ["FREE", "STARTER", "PRO"]) {
+      expect(isScheduleAllowed(p, "HOURLY")).toBe(false);
+      expect(isScheduleAllowed(p, "")).toBe(false);
+    }
+  });
+
+  it("treats an unknown plan as Free, not as unrestricted", () => {
+    // A retired plan name like AGENCY, or a Shopify rename, must never widen
+    // what a shop may schedule.
+    expect(isScheduleAllowed("AGENCY", "TWICE_DAILY")).toBe(false);
+    expect(isScheduleAllowed(undefined, "DAILY")).toBe(false);
+    expect(isScheduleAllowed(null, "WEEKLY")).toBe(true);
+  });
+
+  it("agrees with the cadence the plan advertises", () => {
+    // The listing copy and the gate read the same field, so they cannot
+    // promise a cadence the app then refuses.
+    for (const plan of Object.values(PLANS)) {
+      for (const t of plan.allowedSchedules) {
+        expect(isScheduleAllowed(plan.id, t)).toBe(true);
+      }
+    }
   });
 });

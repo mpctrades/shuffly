@@ -22,7 +22,7 @@ import {
   type ScheduleType,
   type SlotSchedule,
 } from "../lib/schedule.server";
-import { cadenceLabel, isTopPlan, planOf, pruneExpiredUndoSnapshots, timeSlots } from "../lib/plans.server";
+import { cadenceLabel, isScheduleAllowed, isTopPlan, planOf, pruneExpiredUndoSnapshots, timeSlots } from "../lib/plans.server";
 import { closeModal } from "../lib/polaris-modal";
 import { CollectionRow, type CollectionRowData } from "../components/CollectionRow";
 import {
@@ -707,6 +707,16 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       override = overrideWriteFields(null);
     } else {
       const scheduleType = String(formData.get("scheduleType") ?? "WEEKLY") as ScheduleType;
+      // The cadence is a plan entitlement and is checked here, not only in
+      // the UI. Without this a hand-rolled POST could set DAILY on Free —
+      // and TWICE_DAILY too, since the slot guard below only fires when a
+      // second time comes with it.
+      if (!isScheduleAllowed(settings.plan, scheduleType)) {
+        return data(
+          { ok: false, error: `Your ${planOf(settings.plan).name} plan doesn't include that schedule.` },
+          { status: 400 },
+        );
+      }
       const scheduleTime = normalizeHhMm(String(formData.get("scheduleTime") ?? "06:00"));
       const rawTime2 = formData.get("scheduleTime2");
       const scheduleTime2 =
@@ -770,6 +780,16 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   // extra work is repairing the advisory countdown on those rows.
   if (actionType === "set-shop-default") {
     const scheduleType = String(formData.get("scheduleType") ?? "WEEKLY") as ScheduleType;
+    // The cadence is a plan entitlement and is checked here, not only in
+    // the UI. Without this a hand-rolled POST could set DAILY on Free —
+    // and TWICE_DAILY too, since the slot guard below only fires when a
+    // second time comes with it.
+    if (!isScheduleAllowed(settings.plan, scheduleType)) {
+      return data(
+        { ok: false, error: `Your ${planOf(settings.plan).name} plan doesn't include that schedule.` },
+        { status: 400 },
+      );
+    }
     const scheduleTime = normalizeHhMm(String(formData.get("scheduleTime") ?? "06:00"));
     const rawTime2 = formData.get("scheduleTime2");
     const scheduleTime2 =

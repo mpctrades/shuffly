@@ -6,9 +6,26 @@ import { AppProvider } from "@shopify/shopify-app-react-router/react";
 
 import { authenticate } from "../shopify.server";
 import { WEBSITE_URL } from "../lib/app-config";
+import { syncPlanIfStale } from "../lib/billing.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  await authenticate.admin(request);
+  const { billing, session } = await authenticate.admin(request);
+
+  // Every embedded page passes through this layout, so this is where a
+  // downgrade or a lapsed trial gets noticed. It used to be reconciled only
+  // by the Plan page's loader, which meant a shop that stopped paying kept
+  // its paid collection cap, pins and undo retention until somebody happened
+  // to open that one page. Throttled, so browsing doesn't re-ask Shopify on
+  // every navigation.
+  //
+  // Never fatal: a billing hiccup must not blank the whole app, and the
+  // cached plan is a perfectly good answer until the next page load.
+  try {
+    await syncPlanIfStale(session.shop, billing);
+  } catch (err) {
+    console.error("[app] plan sync failed, using the cached plan:", err);
+  }
+
   return null;
 };
 

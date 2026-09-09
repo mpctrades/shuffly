@@ -3,7 +3,7 @@ import { IconChip } from "../components/IconChip";
 import { ScheduleModal, type ScheduleTarget } from "../components/ScheduleModal";
 import { shopDefaultSchedule } from "../lib/schedule-resolve";
 import { nextRunFor, slotsFarEnoughApart, type ScheduleType, type SlotSchedule } from "../lib/schedule.server";
-import { timeSlots } from "../lib/plans.server";
+import { isScheduleAllowed, planOf, timeSlots } from "../lib/plans.server";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { data, useLoaderData, useNavigation, useFetcher } from "react-router";
@@ -106,10 +106,18 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   // collections read these values live — so the only follow-up is repairing
   // their advisory countdown.
   if (String(formData.get("_action") ?? "") === "set-shop-default") {
+    const settings = await getOrCreateShopSettings(admin, shop);
     const scheduleType = String(formData.get("scheduleType") ?? "WEEKLY") as ScheduleType;
+    // The shop default governs every collection that inherits it, so an
+    // unchecked cadence here re-cadences the whole shop in one POST.
+    if (!isScheduleAllowed(settings.plan, scheduleType)) {
+      return data(
+        { ok: false, error: `Your ${planOf(settings.plan).name} plan doesn't include that schedule.` },
+        { status: 400 },
+      );
+    }
     const scheduleTime = normalizeHhMm(String(formData.get("scheduleTime") ?? "06:00"));
     const rawTime2 = formData.get("scheduleTime2");
-    const settings = await getOrCreateShopSettings(admin, shop);
     const scheduleTime2 =
       scheduleType === "TWICE_DAILY" && rawTime2 != null && rawTime2 !== ""
         ? normalizeHhMm(String(rawTime2))

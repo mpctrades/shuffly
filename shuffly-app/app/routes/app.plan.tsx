@@ -152,6 +152,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     // any store still inside managed pricing's trial — hold a *test*
     // subscription, so `isTest: false` filters out the very plan the
     // merchant just picked and the page keeps insisting they're on Free.
+    // Forced, not throttled: the merchant is looking at the plan page, so
+    // the number on it has to be current rather than up to 15 minutes old.
+    // Same helper the embedded layout uses, so the two can't reconcile
+    // differently.
     const { appSubscriptions } = await billing.check({ isTest: true });
     const reconciled = await reconcilePlanFromSubscriptions(
       shop,
