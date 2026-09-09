@@ -1,7 +1,8 @@
 import { closeModal } from "../lib/polaris-modal";
+import { StatChip, StatTile, StatTileRow, type StatTone } from "../components/StatTiles";
 import { ScheduleModal, type ScheduleTarget } from "../components/ScheduleModal";
 import { shopDefaultSchedule } from "../lib/schedule-resolve";
-import { nextRunFor, slotsFarEnoughApart, type ScheduleType, type SlotSchedule } from "../lib/schedule.server";
+import { formatNextRun, nextRunFor, slotsFarEnoughApart, type ScheduleType, type SlotSchedule } from "../lib/schedule.server";
 import { timeSlots } from "../lib/plans.server";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
@@ -55,8 +56,29 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       "Couldn't confirm your shop's timezone from Shopify just now — showing the last known value.";
   }
 
+  // The status row's numbers, from the same columns the Collections page
+  // reads. One indexed query, no Admin API call, no new scope.
+  const tracked = await db.collectionConfig.findMany({
+    where: { shop },
+    select: { status: true, nextRunAt: true, sortOrderIssueAt: true },
+  });
+  const runningCount = tracked.filter((t) => t.status === "RUNNING").length;
+  const soonestNextRunMs = tracked
+    .filter((t) => t.status === "RUNNING" && t.nextRunAt)
+    .map((t) => t.nextRunAt!.getTime())
+    .sort((a, b) => a - b)[0];
+  // Collections a run has already found stuck off Manual sort. Persisted by
+  // the engine, so this costs nothing here — it will not catch a sort changed
+  // since the last run, which the Collections page's live check does.
+  const needsManualSort = tracked.filter((t) => t.sortOrderIssueAt != null).length;
+
   return {
     settings: { ...settings, timezone },
+    trackedCount: tracked.length,
+    runningCount,
+    nextRunAtMs: soonestNextRunMs ?? null,
+    nextRunLabel: soonestNextRunMs ? formatNextRun(new Date(soonestNextRunMs), timezone) : null,
+    needsManualSort,
     timezoneLabel: `${timezone} (${timezoneOffsetLabel(timezone)})`,
     // The shop-wide default schedule every collection follows unless it has
     // its own. Same shape the Collections page sends the modal.
@@ -139,8 +161,19 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 const WEEKDAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 
 export default function Settings() {
-  const { settings, timezoneLabel, shopDefault, scheduleSlots, shopifyTimezoneUrl, error } =
-    useLoaderData<typeof loader>();
+  const {
+    settings,
+    timezoneLabel,
+    shopDefault,
+    scheduleSlots,
+    shopifyTimezoneUrl,
+    trackedCount,
+    runningCount,
+    nextRunAtMs,
+    nextRunLabel,
+    needsManualSort,
+    error,
+  } = useLoaderData<typeof loader>();
   const navigation = useNavigation();
   const shopify = useAppBridge();
   const fetcher = useFetcher<{ ok: boolean }>();
@@ -160,6 +193,23 @@ export default function Settings() {
     return "Only when you press Shuffle";
   }, [shopDefault]);
 
+
+  // Ticks client-side from the fixed instant, like the Collections
+  // countdown — no polling, and it can't disagree with the stored time.
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    if (nextRunAtMs == null) return;
+    const id = setInterval(() => setNowMs(Date.now()), 30_000);
+    return () => clearInterval(id);
+  }, [nextRunAtMs]);
+  const countdown = useMemo(() => {
+    if (nextRunAtMs == null) return "Not scheduled";
+    const mins = Math.max(0, Math.round((nextRunAtMs - nowMs) / 60_000));
+    const d = Math.floor(mins / 1440);
+    const h = Math.floor((mins % 1440) / 60);
+    const m = mins % 60;
+    return d > 0 ? `in ${d}d ${h}h` : h > 0 ? `in ${h}h ${m}m` : `in ${m}m`;
+  }, [nextRunAtMs, nowMs]);
 
   const [scheduleTarget, setScheduleTarget] = useState<ScheduleTarget | null>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- showOverlay/hideOverlay are imperative methods not on the typed public props
@@ -269,6 +319,41 @@ export default function Settings() {
         <SettingsSkeleton />
       ) : (
         <s-stack direction="block" gap="base">
+          {/* Every tile is a real number read from the same columns the
+              Collections bento reads, in the same treatment — the page needed
+              an anchor, and an anchor made of live facts rather than
+              ornament. */}
+          <StatTileRow>
+            <StatTile
+              icon="collection"
+              tone="info"
+              label="Shuffling"
+              value={`${runningCount} collection${runningCount === 1 ? "" : "s"}`}
+              detail={trackedCount === runningCount ? "all tracked" : `of ${trackedCount} tracked`}
+            />
+            <StatTile
+              icon="clock"
+              tone="warning"
+              label="Next run"
+              value={countdown}
+              detail={nextRunLabel ?? "No collection is scheduled"}
+            />
+            <StatTile
+              icon="globe"
+              tone="success"
+              label="Timezone"
+              value={settings.timezone}
+              detail="From your Shopify settings"
+            />
+            <StatTile
+              icon="pin"
+              tone="info"
+              label="Never move"
+              value={`${tags.length} tag${tags.length === 1 ? "" : "s"}`}
+              detail="In every collection"
+            />
+          </StatTileRow>
+
           {/* Annotated sections, the way Shopify's own settings pages are
               laid out: the section's name and what it is for on the left,
               its controls on the right, stacked down one column. The old
@@ -276,6 +361,7 @@ export default function Settings() {
               left a void wherever the shorter column ran out. */}
           <AnnotatedSection
             icon="clock"
+            tone="warning"
             title="Schedule"
             description="When Shuffly reorders your collections."
           >
@@ -296,6 +382,7 @@ export default function Settings() {
             <s-divider />
             <SettingsRow
               label="Default schedule"
+              badge={nextRunAtMs != null ? <s-badge>{countdown}</s-badge> : undefined}
               value={shopDefaultLabel}
               help="Collections use this unless you set a different time on the collection itself."
               action={
@@ -315,6 +402,7 @@ export default function Settings() {
 
           <AnnotatedSection
             icon="pin"
+            tone="info"
             title="Never move these"
             description="Products Shuffly leaves exactly where they are, in every collection."
           >
@@ -368,6 +456,7 @@ export default function Settings() {
 
           <AnnotatedSection
             icon="apps"
+            tone="info"
             title="Adding collections"
             description="Shuffly can only set the order on a collection that uses Manual sort."
           >
@@ -375,6 +464,9 @@ export default function Settings() {
                 action slot and the row keeps its shape. */}
             <SettingsRow
               label="Switch collections to Manual sort without asking"
+              badge={
+                autoSwitchToManual ? <s-badge tone="success">On</s-badge> : <s-badge>Off</s-badge>
+              }
               help="With this on, an automated collection is switched straight away instead of asking first. You can always put its original sort back when you remove it."
               action={
                 <s-switch
@@ -389,12 +481,27 @@ export default function Settings() {
                 />
               }
             />
+            {needsManualSort > 0 && (
+              <>
+                <s-divider />
+                {/* Warning tone because it is a real problem: those
+                    collections are not being reordered at all. */}
+                <s-stack direction="inline" gap="small-200" alignItems="center">
+                  <s-badge tone="warning">
+                    {needsManualSort} collection{needsManualSort === 1 ? "" : "s"} need
+                    {needsManualSort === 1 ? "s" : ""} Manual sort
+                  </s-badge>
+                  <s-link href="/app/collections">Review in Collections</s-link>
+                </s-stack>
+              </>
+            )}
           </AnnotatedSection>
 
           <s-divider />
 
           <AnnotatedSection
             icon="email"
+            tone="success"
             title="Support"
             description="Email us about anything — a collection that didn't shuffle, a run you want undone, or a feature you need."
           >
@@ -420,7 +527,7 @@ export default function Settings() {
         .shuffly-annotated-section {
           display: grid;
           grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
-          gap: var(--p-space-400, 16px);
+          gap: var(--p-space-500, 20px);
           align-items: start;
         }
         /* The card carries its own padding, so without this the annotation
@@ -473,12 +580,14 @@ export default function Settings() {
  * weight and left a void wherever the shorter column ran out. */
 function AnnotatedSection({
   icon,
+  tone,
   title,
   description,
   children,
 }: {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- s-icon's `type` union isn't worth re-declaring here
   icon: any;
+  tone: StatTone;
   title: string;
   description: string;
   children: React.ReactNode;
@@ -491,7 +600,7 @@ function AnnotatedSection({
             replaced used brand orange as decoration; a plain icon anchors the
             heading without claiming to mean anything. */}
         <s-stack direction="inline" gap="small-200" alignItems="center">
-          <s-icon type={icon} />
+          <StatChip icon={icon} tone={tone} size={28} />
           <s-heading>{title}</s-heading>
         </s-stack>
         <s-text color="subdued">{description}</s-text>
@@ -514,6 +623,7 @@ function SettingsRow({
   label,
   value,
   help,
+  badge,
   action,
 }: {
   label: string;
@@ -521,6 +631,10 @@ function SettingsRow({
   /** Omitted where the section's annotation already says it — a row that
    * repeats its own heading in smaller grey type is noise. */
   help?: string;
+  /** State worth colouring, next to the label. A Polaris tone badge is the
+   * only colour on these rows, and it always carries meaning: whether a
+   * setting is on, how long until the next run, what needs attention. */
+  badge?: React.ReactNode;
   action?: React.ReactNode;
 }) {
   return (
@@ -533,11 +647,17 @@ function SettingsRow({
               label IS the setting — the label keeps the weight instead. */}
           {value != null ? (
             <>
-              <s-text color="subdued">{label}</s-text>
+              <s-stack direction="inline" gap="small-200" alignItems="center">
+                <s-text color="subdued">{label}</s-text>
+                {badge}
+              </s-stack>
               {typeof value === "string" ? <s-text type="strong">{value}</s-text> : value}
             </>
           ) : (
-            <s-text type="strong">{label}</s-text>
+            <s-stack direction="inline" gap="small-200" alignItems="center">
+              <s-text type="strong">{label}</s-text>
+              {badge}
+            </s-stack>
           )}
         </s-stack>
         {action}
