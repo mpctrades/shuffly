@@ -1,5 +1,17 @@
 # shuffly-contact-api
 
+> **NOT CURRENTLY DEPLOYED.** The live form does not use this service.
+> `shuffly.mpctrades.com/api/contact` is proxied to the pre-existing
+> `contact-relay.service` on `127.0.0.1:3002` instead, which already sends via
+> the Gmail API to team@mpctrades.com and needed no new credential.
+>
+> This service is kept because it is the path to *Shuffly-branded* enquiry
+> emails: the shared relay hardcodes StockPing's subject and heading, so
+> enquiries currently arrive titled `StockPing contact - Shuffly - ...`. To
+> switch over, put an SMTP App Password in `.env` (see `.env.example`), bring
+> the container up, and repoint the nginx `location = /api/contact` from 3002
+> back to 3007.
+
 The contact form on `shuffly.mpctrades.com` posts here. The marketing site
 itself is a single static `index.html` served by nginx; this is the only
 backend behind it.
