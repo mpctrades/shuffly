@@ -1,5 +1,10 @@
 // Drives the Settings page's save path in CI instead of in a browser.
 //
+// Lives in lib/, not routes/, for the same reason the webhook route tests do:
+// React Router's build treats everything under app/routes/ as part of the
+// client graph, so a test file there drags vitest into the bundle and the
+// production build fails outright.
+//
 // The browser automation failed to deliver clicks to this page three sessions
 // running, so "does it actually save?" kept going unverified while the page
 // looked correct — exactly what a screenshot cannot tell you. These tests
@@ -30,13 +35,13 @@ vi.mock("../db.server", () => ({
   },
 }));
 
-vi.mock("../lib/shop-context.server", () => ({
+vi.mock("./shop-context.server", () => ({
   getOrCreateShopSettings: mocks.getOrCreateShopSettings,
 }));
 
 // Only the loader touches this; stubbed so importing the route doesn't pull
 // in the Admin GraphQL client.
-vi.mock("../lib/collections.server", () => ({
+vi.mock("./collections.server", () => ({
   getShopTimezone: vi.fn().mockResolvedValue("America/New_York"),
 }));
 
@@ -44,8 +49,8 @@ vi.mock("../lib/collections.server", () => ({
 // tests, but the imports must not touch `window` at module load.
 vi.mock("@shopify/app-bridge-react", () => ({ useAppBridge: () => ({}) }));
 
-import { action } from "./app.settings";
-import { addTag, parseTags, removeTag, serializeTags, settingsSubmission } from "../lib/settings-form";
+import { action } from "../routes/app.settings";
+import { addTag, parseTags, removeTag, serializeTags, settingsSubmission } from "./settings-form";
 
 const SHOP = "shuffly-test.myshopify.com";
 
