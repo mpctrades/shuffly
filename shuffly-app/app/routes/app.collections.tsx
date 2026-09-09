@@ -844,7 +844,33 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         }),
       ),
     ]);
-    return data({ ok: true });
+    // The count goes back so the toast can say what happened rather than
+    // just "Done".
+    return data({ ok: true, count: running.length });
+  }
+
+  // The way back out of "everything is paused". Without this the merchant
+  // could stop the whole app from one button and have no matching way to
+  // start it again short of visiting every collection.
+  if (actionType === "resume-all") {
+    const paused = await db.collectionConfig.findMany({ where: { shop, status: "PAUSED" } });
+    await db.$transaction(
+      paused.flatMap((c) => [
+        db.collectionConfig.update({
+          where: { id: c.id },
+          data: {
+            status: "RUNNING",
+            // Recomputed per collection, because each one may be on its own
+            // schedule or inheriting the shop default.
+            nextRunAt: nextRunFor(new Date(), settings.timezone, resolveSchedule(c, settings)),
+          },
+        }),
+        db.shuffleRun.create({
+          data: { shop, collectionId: c.id, trigger: "RESUMED", status: "OK", message: `${c.title} resumed` },
+        }),
+      ]),
+    );
+    return data({ ok: true, count: paused.length });
   }
 
   if (actionType === "bulk-pause" || actionType === "bulk-resume") {
@@ -1108,6 +1134,13 @@ export default function Collections() {
   const [shuffleRunId, setShuffleRunId] = useState<number | null>(null);
   const [pendingRowIds, setPendingRowIds] = useState<Set<string>>(new Set());
   const [switchTarget, setSwitchTarget] = useState<SwitchToManualTarget | null>(null);
+  // Pausing everything stops the app doing its job, so it is never a
+  // single click — see the confirm modal at the bottom of this route.
+  const pauseAllFetcher = useFetcher<{ ok?: boolean; count?: number }>();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- showOverlay/hideOverlay are imperative methods not on the typed public props
+  const pauseAllModalRef = useRef<any>(null);
+  const [pauseAllIntent, setPauseAllIntent] = useState<"pause" | "resume">("pause");
+
   const [scheduleTarget, setScheduleTarget] = useState<ScheduleTarget | null>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- showOverlay/hideOverlay are imperative methods not on the typed public props
   const scheduleModalRef = useRef<any>(null);
@@ -1302,6 +1335,34 @@ export default function Collections() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- fires only on fetcher settle
   }, [scheduleFetcher.state, scheduleFetcher.data]);
 
+  // "Resume all" only when there is nothing left running — a half-paused
+  // shop still reads "Pause all", because that is the action that gets it
+  // to a known state.
+  const allPaused = trackedTotal > 0 && runningCount === 0;
+  const pauseAllIsResume = allPaused;
+
+  function openPauseAllModal() {
+    setPauseAllIntent(pauseAllIsResume ? "resume" : "pause");
+    pauseAllModalRef.current?.showOverlay();
+  }
+
+  function confirmPauseAll() {
+    closeModal(pauseAllModalRef.current);
+    pauseAllFetcher.submit(
+      { _action: pauseAllIntent === "resume" ? "resume-all" : "pause-all" },
+      { method: "post" },
+    );
+  }
+
+  useEffect(() => {
+    if (pauseAllFetcher.state !== "idle" || !pauseAllFetcher.data?.ok) return;
+    const n = pauseAllFetcher.data.count ?? 0;
+    shopify.toast.show(
+      `${n} collection${n === 1 ? "" : "s"} ${pauseAllIntent === "resume" ? "resumed" : "paused"}`,
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- fires only on fetcher settle
+  }, [pauseAllFetcher.state, pauseAllFetcher.data]);
+
   function openSwitchModal(target: SwitchToManualTarget) {
     setSwitchTarget(target);
     switchModalRef.current?.showOverlay();
@@ -1476,27 +1537,12 @@ export default function Collections() {
 
   return (
     <s-page heading="Collections" {...noHydrationWarning}>
-      <s-button slot="secondary-actions" onClick={openAddModal} {...noHydrationWarning}>
-        Add collection
-      </s-button>
-      {/* Same one-glyph fix as the row menus — a text label on a menu
-          trigger makes Polaris add its own chevron beside it. */}
-      <s-button
-        slot="secondary-actions"
-        icon="menu-horizontal"
-        commandFor="collections-overflow-menu"
-        accessibilityLabel="More actions"
-        {...noHydrationWarning}
-      ></s-button>
-      <s-menu id="collections-overflow-menu" accessibilityLabel="More actions">
-        <PauseAllButton />
-      </s-menu>
-
-      {hasAnythingTracked && (
-        <s-button slot="primary-action" variant="primary" onClick={openShuffleAllModal} {...noHydrationWarning}>
-          Shuffle all now
-        </s-button>
-      )}
+      {/* The page header keeps the breadcrumb and title only. These three
+          used to live in its primary-action/secondary-actions slots, which
+          put them up in Shopify's own title bar, away from the table they
+          act on. The "···" overflow held exactly one item — Pause all — so
+          it is gone rather than relocated: a menu for one labelled action
+          is a hiding place, not a grouping. */}
 
       {/* Above the stat row, below the page header. Rendered whether or not
           anything is tracked yet — a merchant with no collections still needs
@@ -1539,6 +1585,40 @@ export default function Collections() {
           pauseFetcherKeyPrefix="row-action-"
         />
       )}
+
+      {/* The table's own toolbar, in the page body directly above the card
+          it acts on. Right-aligned so it reads as belonging to the card
+          below, with clear space so it is not a floating strip — and it sits
+          on the card's left/top edge rather than its right, so it never
+          collides with the Sort control at the card's top-right. Wraps
+          instead of squashing on narrow widths. */}
+      <div className="shuffly-collections-toolbar">
+        <s-button onClick={openAddModal} accessibilityLabel="Add a collection to Shuffly">
+          Add collection
+        </s-button>
+        {hasAnythingTracked && (
+          <s-button
+            onClick={openPauseAllModal}
+            accessibilityLabel={
+              pauseAllIsResume
+                ? `Resume all ${trackedTotal} collections`
+                : `Pause all ${trackedTotal} collections`
+            }
+            {...(pauseAllFetcher.state !== "idle" ? { loading: true } : {})}
+          >
+            {pauseAllIsResume ? "Resume all" : "Pause all"}
+          </s-button>
+        )}
+        {hasAnythingTracked && (
+          <s-button
+            variant="primary"
+            onClick={openShuffleAllModal}
+            accessibilityLabel="Shuffle every collection now"
+          >
+            Shuffle all now
+          </s-button>
+        )}
+      </div>
 
       <s-section padding="none">
         {hasAnythingTracked && trackedTotal > 5 && (
@@ -1734,6 +1814,36 @@ export default function Collections() {
         onCancel={() => closeModal(shuffleAllModalRef.current)}
       />
 
+      {/* Never pause everything on a single click: it stops the app doing
+          the one thing it is for, and the merchant should be told so before
+          it happens rather than after. */}
+      <s-modal
+        id="pause-all-modal"
+        ref={pauseAllModalRef}
+        heading={
+          pauseAllIntent === "resume"
+            ? `Resume all ${trackedTotal} collection${trackedTotal === 1 ? "" : "s"}?`
+            : `Pause all ${trackedTotal} collection${trackedTotal === 1 ? "" : "s"}?`
+        }
+      >
+        <s-paragraph>
+          {pauseAllIntent === "resume"
+            ? "Each collection goes back to its own schedule, and the next run is worked out from it."
+            : "Nothing will shuffle until you resume."}
+        </s-paragraph>
+        <s-button
+          slot="primary-action"
+          variant="primary"
+          onClick={confirmPauseAll}
+          disabled={pauseAllFetcher.state !== "idle" || undefined}
+        >
+          {pauseAllIntent === "resume" ? "Resume all" : "Pause all"}
+        </s-button>
+        <s-button slot="secondary-actions" onClick={() => closeModal(pauseAllModalRef.current)}>
+          Cancel
+        </s-button>
+      </s-modal>
+
       <ScheduleModal
         ref={scheduleModalRef}
         target={scheduleTarget}
@@ -1872,6 +1982,18 @@ export default function Collections() {
            (checkbox, collection, preview, schedule, last run, actions) are
            DIRECT children of this grid — no wrapper div in between, which
            is what was collapsing every cell into column 1 last time. */
+        /* Sits above the table card as its toolbar. The bottom margin is a
+           full spacing step so it reads as attached to the card rather than
+           floating between sections, and wrap keeps the three buttons intact
+           on a narrow viewport instead of squashing them. */
+        .shuffly-collections-toolbar {
+          display: flex;
+          flex-wrap: wrap;
+          justify-content: flex-end;
+          align-items: center;
+          gap: var(--p-space-200, 8px);
+          margin: var(--p-space-500, 20px) 0 var(--p-space-400, 16px);
+        }
         .shuffly-collections-grid-container {
           container-type: inline-size;
           container-name: shuffly-collections;
@@ -2232,14 +2354,6 @@ function formDataOf(fields: Record<string, string | string[]>): FormData {
   return fd;
 }
 
-function PauseAllButton() {
-  const fetcher = useFetcher();
-  return (
-    <s-button onClick={() => fetcher.submit({ _action: "pause-all" }, { method: "post" })} {...(fetcher.state !== "idle" ? { loading: true } : {})}>
-      Pause all
-    </s-button>
-  );
-}
 
 // ---- status row ----
 
