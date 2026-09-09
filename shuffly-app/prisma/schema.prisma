@@ -40,12 +40,14 @@ model ShopSettings {
   id                  String    @id @default(cuid())
   shop                String    @unique
   timezone            String    @default("UTC")
-  defaultRunTime      String    @default("06:00") // "HH:MM", local to `timezone`
   // The shop-wide DEFAULT schedule. Every collection whose own scheduleType
   // is null follows these values live — they are never copied onto the
   // collection row, so changing them here moves every inheriting collection.
-  // (defaultRunTime above is a different, older thing: a seed value copied
-  // once onto a newly added collection. It stays for that purpose.)
+  //
+  // This replaced a `defaultRunTime` column, which was the old copy-forward
+  // seed: a time stamped onto each collection as it was added. Nothing seeds
+  // a new collection any more (it starts with a null schedule and inherits),
+  // so that column had no reader left and was dropped.
   defaultScheduleType    String  @default("WEEKLY") // DAILY | TWICE_DAILY | WEEKLY | MANUAL
   defaultScheduleTime    String  @default("06:00") // "HH:MM", local to `timezone`
   defaultScheduleTime2   String? // second slot, only meaningful when the type is TWICE_DAILY

@@ -13,36 +13,18 @@ import { getOrCreateShopSettings } from "../lib/shop-context.server";
 import { getShopTimezone } from "../lib/collections.server";
 import { timezoneOffsetLabel } from "../lib/schedule.server";
 // Client-safe (see time-slots.ts) — the component below renders these.
-import { normalizeHhMm, timeOptionsIncluding } from "../lib/time-slots";
+import { normalizeHhMm } from "../lib/time-slots";
 import { SUPPORT_EMAIL, SUPPORT_MAILTO, WEBSITE_URL } from "../lib/app-config";
 
 const SAVE_BAR_ID = "settings-save-bar";
 
-type Tone = "success" | "warning" | "info" | "neutral";
-
-/** One color story for every card on this page — the same token family as
- * Insights/Help, so all three pages read as one design. "warning" is the
- * brand/orange accent used everywhere else in the app for that purpose;
- * every value is a Polaris token, the hex after each is a same-hue
- * fallback only, never the source of truth. */
-const TONE_TOKENS: Record<Tone, { accent: string; tint: string }> = {
-  success: {
-    accent: "var(--p-color-icon-success, #008060)",
-    tint: "var(--p-color-bg-fill-success-secondary, #E3F5EE)",
-  },
-  warning: {
-    accent: "var(--p-color-icon-warning, #FF4B1F)",
-    tint: "var(--p-color-bg-fill-warning-secondary, #FFF1E4)",
-  },
-  info: {
-    accent: "var(--p-color-icon-info, #1F5199)",
-    tint: "var(--p-color-bg-fill-info-secondary, #EAF2FF)",
-  },
-  neutral: {
-    accent: "var(--p-color-icon-secondary, #6b6b6b)",
-    tint: "var(--p-color-bg-fill-secondary, #F1F1F1)",
-  },
-};
+/* One accent, used once. The cards used to carry a 3px coloured bar along
+   the top — orange on the left column, blue on the right — which encoded
+   nothing and put a colour in the UI that isn't in Shuffly's palette (brand
+   orange, ink, paper). The bar is gone and the card's own border does the
+   separating; the icon chip is the single accent, and it is always the brand
+   orange. Polaris token, with a same-hue hex fallback only. */
+const ICON_TINT = "var(--p-color-bg-fill-warning-secondary, #FFF1E4)";
 
 function parseTags(csv: string): string[] {
   return csv
@@ -81,6 +63,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     // The shop-wide default schedule every collection follows unless it has
     // its own. Same shape the Collections page sends the modal.
     shopDefault: shopDefaultSchedule(settings),
+    // Where a merchant actually changes the timezone: Shopify's own settings,
+    // because Shopify owns the value (see the Timezone row). Built from the
+    // shop domain rather than hard-coded so it is right for every store.
+    shopifyTimezoneUrl: `https://admin.shopify.com/store/${shop.replace(/\.myshopify\.com$/, "")}/settings/general`,
     scheduleSlots: timeSlots(settings.plan),
     error,
   };
@@ -138,14 +124,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return data({ ok: true, moved: inheriting.length });
   }
 
-  const defaultRunTime = normalizeHhMm(String(formData.get("defaultRunTime") ?? "06:00"));
   const neverMoveTags = String(formData.get("neverMoveTags") ?? "");
   const autoSwitchToManual = formData.get("autoSwitchToManual") === "on";
 
   await db.shopSettings.update({
     where: { shop },
     data: {
-      defaultRunTime,
       neverMoveTags,
       autoSwitchToManual,
     },
@@ -157,7 +141,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 const WEEKDAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 
 export default function Settings() {
-  const { settings, timezoneLabel, shopDefault, scheduleSlots, error } =
+  const { settings, timezoneLabel, shopDefault, scheduleSlots, shopifyTimezoneUrl, error } =
     useLoaderData<typeof loader>();
   const navigation = useNavigation();
   const shopify = useAppBridge();
@@ -179,7 +163,6 @@ export default function Settings() {
   }, [shopDefault]);
 
 
-  const [defaultRunTime, setDefaultRunTime] = useState(settings.defaultRunTime);
   const [scheduleTarget, setScheduleTarget] = useState<ScheduleTarget | null>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- showOverlay/hideOverlay are imperative methods not on the typed public props
   const scheduleModalRef = useRef<any>(null);
@@ -228,7 +211,6 @@ export default function Settings() {
   }, []);
 
   function handleDiscard() {
-    setDefaultRunTime(settings.defaultRunTime);
     setAutoSwitchToManual(settings.autoSwitchToManual);
     setTags(parseTags(settings.neverMoveTags));
     setAddingTag(false);
@@ -240,7 +222,6 @@ export default function Settings() {
   function handleSave() {
     fetcher.submit(
       {
-        defaultRunTime,
         neverMoveTags: tags.join(","),
         autoSwitchToManual: autoSwitchToManual ? "on" : "",
       },
@@ -299,27 +280,35 @@ export default function Settings() {
           style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 16 }}
         >
           <s-stack direction="block" gap="base">
-            <SettingsCard icon="clock" tone="warning" title="Store">
+            {/* Everything left in this card is about when things run, so it
+                is called Schedule. Both rows use the same shape — label,
+                current value, and an action only when the value is editable
+                here — with the help line always underneath. */}
+            <SettingsCard icon="clock" title="Schedule">
               <s-stack direction="block" gap="base">
-                <s-select
+                {/* Read-only on purpose. Shopify owns this value: the
+                    shop/update webhook overwrites it whenever the merchant
+                    changes it in Shopify, and this page's loader re-reads it
+                    live on every visit. It was previously rendered as a
+                    dropdown, which promised an edit the app could not keep —
+                    the select had no name, so it never submitted anything,
+                    and even if it had, the webhook would have reverted it. */}
+                <SettingsRow
                   label="Timezone"
-                  value={settings.timezone}
-                  details="Read from Shopify. All schedules follow it."
-                >
-                  <s-option value={settings.timezone}>{timezoneLabel}</s-option>
-                </s-select>
-                {/* The shop default schedule. Says plainly what it governs,
-                    because "default" on its own doesn't tell a merchant that
-                    a per-collection time wins over it. */}
-                <div>
-                  <s-text type="strong">Default schedule</s-text>
-                  <div style={{ marginTop: 2 }}>
-                    <s-text color="subdued">
-                      All collections use this unless you set a different time on the collection itself.
-                    </s-text>
-                  </div>
-                  <div style={{ marginTop: 8, display: "flex", alignItems: "center", gap: 10 }}>
-                    <s-text type="strong">{shopDefaultLabel}</s-text>
+                  value={timezoneLabel}
+                  help="Read from your Shopify settings. All schedules follow it."
+                  action={
+                    <s-link href={shopifyTimezoneUrl} target="_blank">
+                      Change in Shopify
+                    </s-link>
+                  }
+                />
+
+                <SettingsRow
+                  label="Default schedule"
+                  value={shopDefaultLabel}
+                  help="All collections use this unless you set a different time on the collection itself."
+                  action={
                     <s-button
                       onClick={() => {
                         setScheduleTarget({ mode: "shop-default", schedule: shopDefault as SlotSchedule });
@@ -328,29 +317,12 @@ export default function Settings() {
                     >
                       Change
                     </s-button>
-                  </div>
-                </div>
-
-                <s-select
-                  label="Default run time"
-                  value={defaultRunTime}
-                  details="The starting time for collections you add from now on. Change any collection's own time on its page."
-                  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- currentTarget.value isn't in the typed event map
-                  onChange={(e: any) => {
-                    setDefaultRunTime(e.currentTarget?.value ?? "06:00");
-                    markDirty();
-                  }}
-                >
-                  {timeOptionsIncluding(settings.defaultRunTime, defaultRunTime).map((t) => (
-                    <s-option key={t} value={t}>
-                      {t}
-                    </s-option>
-                  ))}
-                </s-select>
+                  }
+                />
               </s-stack>
             </SettingsCard>
 
-            <SettingsCard icon="pin" tone="warning" title="Never move these">
+            <SettingsCard icon="pin" title="Never move these">
               <s-stack direction="block" gap="small-200">
                 <div>
                   <s-text type="strong">Products tagged</s-text>
@@ -411,7 +383,7 @@ export default function Settings() {
           </s-stack>
 
           <s-stack direction="block" gap="base">
-            <SettingsCard icon="apps" tone="info" title="Adding collections">
+            <SettingsCard icon="apps" title="Adding collections">
               <s-stack direction="block" gap="small-200">
                 <s-switch
                   label="Switch collections to Manual sort without asking"
@@ -435,7 +407,7 @@ export default function Settings() {
               </CardFooterStrip>
             </SettingsCard>
 
-            <SettingsCard icon="email" tone="info" title="Support">
+            <SettingsCard icon="email" title="Support">
               <s-stack direction="block" gap="small-200">
                 <s-paragraph>
                   Email us about anything — a collection that didn&apos;t shuffle, a run you want undone, or a
@@ -513,19 +485,49 @@ function CardFooterStrip({ children }: { children: React.ReactNode }) {
 /** The card shell shared by every card on this page — and matching the one
  * on Insights/Help: white surface, 1px border, 12px radius, subtle shadow,
  * a 3px accent bar on top, and a 32px icon chip beside the heading. */
+/** One row shape for every setting: the label, the value it currently has,
+ * and an action only when the value can be changed from here. The help line
+ * always sits underneath, never above and never beside — three different
+ * arrangements in one small card is what made this page hard to read. */
+function SettingsRow({
+  label,
+  value,
+  help,
+  action,
+}: {
+  label: string;
+  value: string;
+  help: string;
+  action: React.ReactNode;
+}) {
+  return (
+    <div>
+      <s-grid gridTemplateColumns="1fr auto" gap="base" alignItems="center">
+        <div>
+          <s-text type="strong">{label}</s-text>
+          <div style={{ marginTop: 2 }}>
+            <s-text>{value}</s-text>
+          </div>
+        </div>
+        {action}
+      </s-grid>
+      <div style={{ marginTop: 4 }}>
+        <s-text color="subdued">{help}</s-text>
+      </div>
+    </div>
+  );
+}
+
 function SettingsCard({
   icon,
-  tone,
   title,
   children,
 }: {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- s-icon's `type` union isn't worth re-declaring here
   icon: any;
-  tone: Tone;
   title: string;
   children: React.ReactNode;
 }) {
-  const tokens = TONE_TOKENS[tone];
   return (
     <div
       style={{
@@ -537,16 +539,6 @@ function SettingsCard({
         overflow: "hidden",
       }}
     >
-      <div
-        style={{
-          position: "absolute",
-          top: 0,
-          left: 0,
-          right: 0,
-          height: 3,
-          background: tokens.accent,
-        }}
-      />
       <div style={{ padding: 16 }}>
         <div
           style={{
@@ -563,13 +555,13 @@ function SettingsCard({
               height: 32,
               flex: "0 0 auto",
               borderRadius: 8,
-              background: tokens.tint,
+              background: ICON_TINT,
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
             }}
           >
-            <s-icon type={icon} tone={tone}></s-icon>
+            <s-icon type={icon} tone="warning"></s-icon>
           </div>
           <s-heading>{title}</s-heading>
         </div>

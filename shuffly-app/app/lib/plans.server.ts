@@ -61,7 +61,10 @@ export async function enforcePlanEntitlements(shop: string, planId: PlanId): Pro
     }),
     db.shopSettings.findUnique({ where: { shop } }),
   ]);
-  const scheduleTime = settings?.defaultRunTime ?? "06:00";
+  // The shop's own default schedule time, not the retired defaultRunTime
+  // seed — when a downgrade forces a collection onto a coarser cadence, the
+  // time the merchant actually chose is the right one to keep.
+  const scheduleTime = settings?.defaultScheduleTime ?? "06:00";
   const scheduleWeekday = fallbackSchedule === "WEEKLY" ? 1 : null;
   // Dropping to a schedule the new plan allows also drops the second time
   // slot, since only the top tier has one — scheduleWriteFields nulls it for
