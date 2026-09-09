@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { nextRunFor } from "./schedule-core";
-import { isOverridden, overrideWriteFields, resolveSchedule, shopDefaultSchedule } from "./schedule-resolve";
+import {
+  inheritScheduleFields,
+  isOverridden,
+  overrideWriteFields,
+  resolveSchedule,
+  shopDefaultSchedule,
+} from "./schedule-resolve";
 
 const shop = {
   defaultScheduleType: "WEEKLY",
@@ -114,5 +120,35 @@ describe("shopDefaultSchedule", () => {
       scheduleTime2: null,
       scheduleWeekday: 1,
     });
+  });
+});
+
+describe("a newly added collection", () => {
+  // Regression guard: every add path used to write a COPY of the default
+  // onto the new row, so the shop default governed only the collections that
+  // existed when it was set. Anything added later silently froze.
+  it("stores no schedule of its own, so it follows the shop default", () => {
+    const fields = inheritScheduleFields(new Date("2026-09-09T00:00:00Z"), "UTC", shop);
+    expect(fields.scheduleType).toBeNull();
+    expect(fields.scheduleTime).toBeNull();
+    expect(fields.scheduleTime2).toBeNull();
+    expect(fields.scheduleWeekday).toBeNull();
+    expect(isOverridden(fields)).toBe(false);
+  });
+
+  it("still gets a countdown, derived from the shop default", () => {
+    const now = new Date("2026-09-09T00:00:00Z");
+    const fields = inheritScheduleFields(now, "UTC", shop);
+    expect(fields.nextRunAt).toEqual(nextRunFor(now, "UTC", shopDefaultSchedule(shop)));
+  });
+
+  it("has no countdown when created paused", () => {
+    expect(inheritScheduleFields(new Date(), "UTC", shop, "PAUSED").nextRunAt).toBeNull();
+  });
+
+  it("moves with the default afterwards, like any inheriting collection", () => {
+    const fields = inheritScheduleFields(new Date(), "UTC", shop);
+    const moved = resolveSchedule(fields, { ...shop, defaultScheduleTime: "21:00" });
+    expect(moved.scheduleTime).toBe("21:00");
   });
 });

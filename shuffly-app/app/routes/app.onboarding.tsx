@@ -6,7 +6,7 @@ import db from "../db.server";
 import { getOrCreateShopSettings } from "../lib/shop-context.server";
 import { listAllCollections, getCollectionProductsInOrder } from "../lib/collections.server";
 import { computeShuffledOrder, type ShuffleProductInput } from "../lib/shuffle-algorithm.server";
-import { scheduleWriteFields } from "../lib/schedule.server";
+import { inheritScheduleFields } from "../lib/schedule-resolve";
 import { defaultScheduleForPlan, planOf } from "../lib/plans.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
@@ -104,8 +104,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const allowed = collections
       .filter((collection) => collection.sortOrder === "MANUAL" && requested.has(collection.id))
       .slice(0, room);
-    const scheduleType = defaultScheduleForPlan(plan.id);
-    const scheduleWeekday = scheduleType === "WEEKLY" ? 1 : null;
     const pins = plan.canPin
       ? Math.max(0, Math.min(10, Number(formData.get("pins") ?? 0)))
       : 0;
@@ -125,12 +123,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           pushSoldOutToEnd,
           boostNewArrivals,
           giveEveryoneATurn,
-          ...scheduleWriteFields(new Date(), settings.timezone, {
-            scheduleType,
-            scheduleTime: settings.defaultRunTime,
-            scheduleTime2: null,
-            scheduleWeekday,
-          }),
+          // Inherits the shop default, like every other add path — see
+          // inheritScheduleFields for why a copy would break the model.
+          ...inheritScheduleFields(new Date(), settings.timezone, settings),
         },
       });
     }

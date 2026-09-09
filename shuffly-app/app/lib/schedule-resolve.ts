@@ -11,7 +11,7 @@
 // both need to render the effective schedule and its live "next run" preview
 // client-side, and React Router refuses to let client code import a
 // `.server.ts` module.
-import type { ScheduleType, SlotSchedule } from "./schedule-core";
+import { nextRunFor, type ScheduleType, type SlotSchedule } from "./schedule-core";
 
 /** The four schedule columns as they sit on a CollectionConfig row. */
 export interface ScheduleOverride {
@@ -76,5 +76,31 @@ export function overrideWriteFields(schedule: SlotSchedule | null): ScheduleOver
     scheduleTime: schedule.scheduleTime,
     scheduleTime2: schedule.scheduleType === "TWICE_DAILY" ? (schedule.scheduleTime2 ?? null) : null,
     scheduleWeekday: schedule.scheduleType === "WEEKLY" ? (schedule.scheduleWeekday ?? null) : null,
+  };
+}
+
+/** The schedule columns to write for a NEWLY tracked collection: none at all.
+ *
+ * A new collection has to START inheriting, or the shop default only ever
+ * applies to collections that existed when the default was set — every
+ * collection added afterwards would silently carry a frozen copy of whatever
+ * the default happened to be that day, which is the exact failure this whole
+ * model exists to prevent.
+ *
+ * `nextRunAt` is still derived here, from the shop default, because it is an
+ * advisory cache the countdown reads before the first sweep touches the row.
+ */
+export function inheritScheduleFields(
+  now: Date,
+  timezone: string,
+  settings: ShopScheduleDefault,
+  status: "RUNNING" | "PAUSED" = "RUNNING",
+) {
+  return {
+    scheduleType: null,
+    scheduleTime: null,
+    scheduleTime2: null,
+    scheduleWeekday: null,
+    nextRunAt: status === "RUNNING" ? nextRunFor(now, timezone, shopDefaultSchedule(settings)) : null,
   };
 }

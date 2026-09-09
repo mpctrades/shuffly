@@ -5,7 +5,8 @@
 // `from "../lib/plans.server"` imports (loaders/actions) keep working.
 import db from "../db.server";
 import { defaultScheduleForPlan, planOf, undoRetentionCutoff, type PlanId } from "./plans";
-import { scheduleWriteFields } from "./schedule.server";
+import { scheduleWriteFields, nextRunFor } from "./schedule.server";
+import { shopDefaultSchedule } from "./schedule-resolve";
 
 export * from "./plans";
 
@@ -72,7 +73,43 @@ export async function enforcePlanEntitlements(shop: string, planId: PlanId): Pro
     scheduleWeekday,
   });
 
+  // The shop default has to be clamped too, and it is the more important of
+  // the two: an inheriting collection stores NULL, so `scheduleType notIn
+  // (...)` never matches it (SQL NULL is not "not in" anything). Without this
+  // a shop downgrading from Pro would keep a TWICE_DAILY default, and every
+  // collection following that default would go on shuffling twice a day on a
+  // plan that doesn't allow it.
+  const defaultDisallowed =
+    settings != null && !plan.allowedSchedules.includes(settings.defaultScheduleType as (typeof plan.allowedSchedules)[number]);
+  const clampedDefault = {
+    defaultScheduleType: fallbackSchedule,
+    defaultScheduleTime: scheduleTime,
+    defaultScheduleTime2: null,
+    defaultScheduleWeekday: scheduleWeekday,
+  };
+  // Everything inheriting is about to run at a different time, so its
+  // advisory countdown is repaired in the same transaction.
+  const inheriting = defaultDisallowed
+    ? await db.collectionConfig.findMany({ where: { shop, scheduleType: null }, select: { id: true, status: true } })
+    : [];
+  const inheritedNextRunAt = nextRunFor(
+    new Date(),
+    settings?.timezone ?? "UTC",
+    shopDefaultSchedule({ ...clampedDefault }),
+  );
+
   await db.$transaction([
+    ...(defaultDisallowed
+      ? [
+          db.shopSettings.update({ where: { shop }, data: clampedDefault }),
+          ...inheriting.map((c) =>
+            db.collectionConfig.update({
+              where: { id: c.id },
+              data: { nextRunAt: c.status === "RUNNING" ? inheritedNextRunAt : null },
+            }),
+          ),
+        ]
+      : []),
     ...(disallowed.length > 0
       ? [
           db.collectionConfig.updateMany({

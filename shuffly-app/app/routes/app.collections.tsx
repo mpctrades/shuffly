@@ -18,12 +18,11 @@ import {
   formatActivityTimestamp,
   nextRunFor,
   normalizeHhMm,
-  scheduleWriteFields,
   slotsFarEnoughApart,
   type ScheduleType,
   type SlotSchedule,
 } from "../lib/schedule.server";
-import { cadenceLabel, defaultScheduleForPlan, isTopPlan, planOf, pruneExpiredUndoSnapshots, timeSlots } from "../lib/plans.server";
+import { cadenceLabel, isTopPlan, planOf, pruneExpiredUndoSnapshots, timeSlots } from "../lib/plans.server";
 import { closeModal } from "../lib/polaris-modal";
 import { CollectionRow, type CollectionRowData } from "../components/CollectionRow";
 import {
@@ -36,7 +35,13 @@ import { AddCollectionsModal, type AddCollectionsPickerData } from "../component
 import { SwitchToManualModal, type SwitchToManualTarget } from "../components/SwitchToManualModal";
 import { ScheduleModal, type ScheduleTarget } from "../components/ScheduleModal";
 import { noMoveReasonLabel } from "../lib/run-reason";
-import { isOverridden, overrideWriteFields, resolveSchedule, shopDefaultSchedule } from "../lib/schedule-resolve";
+import {
+  inheritScheduleFields,
+  isOverridden,
+  overrideWriteFields,
+  resolveSchedule,
+  shopDefaultSchedule,
+} from "../lib/schedule-resolve";
 import { BulkRemoveConfirmModal } from "../components/BulkRemoveConfirmModal";
 import { PlanBar } from "../components/PlanBar";
 import { AddAllUntrackedModal } from "../components/AddAllUntrackedModal";
@@ -422,20 +427,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const formData = await request.formData();
   const actionType = formData.get("_action");
   const settings = await getOrCreateShopSettings(admin, shop);
-  const defaultSchedule = defaultScheduleForPlan(settings.plan);
-  const defaultWeekday = defaultSchedule === "WEEKLY" ? 1 : null;
-  // Every "add a collection" path seeds the same starting schedule, and
-  // scheduleWriteFields is the only thing that derives nextRunAt from it —
-  // so a new collection can't be created with a nextRunAt that disagrees
-  // with the schedule stored alongside it. Newly added collections start
-  // RUNNING, hence the default status.
-  const defaultScheduleFields = () =>
-    scheduleWriteFields(new Date(), settings.timezone, {
-      scheduleType: defaultSchedule,
-      scheduleTime: settings.defaultRunTime,
-      scheduleTime2: null,
-      scheduleWeekday: defaultWeekday,
-    });
+  // Every "add a collection" path starts the collection INHERITING the shop
+  // default rather than copying it. Writing a copy here would mean the shop
+  // default only ever governed collections that existed when it was set, and
+  // every collection added afterwards would quietly carry a frozen snapshot
+  // of it. Newly added collections start RUNNING, hence the default status.
+  const defaultScheduleFields = () => inheritScheduleFields(new Date(), settings.timezone, settings);
 
   if (actionType === "add-collections") {
     const plan = planOf(settings.plan);
