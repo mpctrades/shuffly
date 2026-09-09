@@ -15,6 +15,14 @@ import { timezoneOffsetLabel } from "../lib/schedule.server";
 // Client-safe (see time-slots.ts) — the component below renders these.
 import { normalizeHhMm } from "../lib/time-slots";
 import { SUPPORT_EMAIL, SUPPORT_MAILTO, WEBSITE_URL } from "../lib/app-config";
+// The save path lives in a lib so it can be tested without a browser — see
+// settings-form.ts for why.
+import {
+  addTag as addTagTo,
+  parseTags,
+  removeTag as removeTagFrom,
+  settingsSubmission,
+} from "../lib/settings-form";
 
 const SAVE_BAR_ID = "settings-save-bar";
 
@@ -22,12 +30,6 @@ const SAVE_BAR_ID = "settings-save-bar";
    hierarchy, and the only colour left is Polaris's own — link blue and the
    primary button — where it tells the merchant something. */
 
-function parseTags(csv: string): string[] {
-  return csv
-    .split(",")
-    .map((t) => t.trim())
-    .filter(Boolean);
-}
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { admin, session } = await authenticate.admin(request);
@@ -216,13 +218,9 @@ export default function Settings() {
   }
 
   function handleSave() {
-    fetcher.submit(
-      {
-        neverMoveTags: tags.join(","),
-        autoSwitchToManual: autoSwitchToManual ? "on" : "",
-      },
-      { method: "post" },
-    );
+    // One builder, shared with the tests, so what CI verifies is byte-for-byte
+    // what the save bar actually posts.
+    fetcher.submit(settingsSubmission({ tags, autoSwitchToManual }), { method: "post" });
   }
 
   useEffect(() => {
@@ -235,22 +233,21 @@ export default function Settings() {
   }, [fetcher.state, fetcher.data]);
 
   function addTag() {
-    const t = newTag.trim();
-    if (t) {
-      setTags((prev) =>
-        prev.some((x) => x.toLowerCase() === t.toLowerCase())
-          ? prev
-          : [...prev, t],
-      );
-      markDirty();
-    }
+    setTags((prev) => {
+      const next = addTagTo(prev, newTag);
+      if (next !== prev) markDirty();
+      return next;
+    });
     setNewTag("");
     setAddingTag(false);
   }
 
   function removeTag(tag: string) {
-    setTags((prev) => prev.filter((t) => t !== tag));
-    markDirty();
+    setTags((prev) => {
+      const next = removeTagFrom(prev, tag);
+      if (next.length !== prev.length) markDirty();
+      return next;
+    });
   }
 
   return (
