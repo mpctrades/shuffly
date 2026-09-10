@@ -1,16 +1,22 @@
 # shuffly-contact-api
 
-> **NOT CURRENTLY DEPLOYED.** The live form does not use this service.
-> `shuffly.mpctrades.com/api/contact` is proxied to the pre-existing
-> `contact-relay.service` on `127.0.0.1:3002` instead, which already sends via
-> the Gmail API to team@mpctrades.com and needed no new credential.
+> **NOT DEPLOYED.** The live form does not use this service.
+> `shuffly.mpctrades.com/api/contact` is proxied to the shared
+> `contact-relay.service` on `127.0.0.1:3002` (source: `../contact-relay/`),
+> which sends via the Gmail API to team@mpctrades.com.
 >
-> This service is kept because it is the path to *Shuffly-branded* enquiry
-> emails: the shared relay hardcodes StockPing's subject and heading, so
-> enquiries currently arrive titled `StockPing contact - Shuffly - ...`. To
-> switch over, put an SMTP App Password in `.env` (see `.env.example`), bring
-> the container up, and repoint the nginx `location = /api/contact` from 3002
-> back to 3007.
+> It used to be kept because the relay hardcoded StockPing's branding. That
+> is fixed — the relay is now product-agnostic and brands each email from the
+> host it was posted to, so Shuffly enquiries arrive as
+> `Shuffly contact — {topic} — {name}` with no code change needed here.
+>
+> What this service still offers is *full* separation: its own process, its
+> own credential, no shared dependency on a service that lives in another
+> product's home directory. Taking that step needs a sending credential of
+> its own — a Gmail App Password for team@mpctrades.com in `.env` (see
+> `.env.example`) — which is why it is not deployed. Once there is one:
+> bring the container up on 3007 and repoint the nginx
+> `location = /api/contact` from 3002 to 3007.
 
 The contact form on `shuffly.mpctrades.com` posts here. The marketing site
 itself is a single static `index.html` served by nginx; this is the only

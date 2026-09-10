@@ -1506,8 +1506,10 @@
   // Contact form -> /api/contact (same origin) -> emailed to team@mpctrades.com.
   //
   // Posts JSON over fetch so the visitor never leaves the page. The endpoint
-  // is the small express service in contact-api/, proxied by nginx on this
-  // same host, so there's no third-party form relay and no CORS.
+  // is the shared relay in contact-relay/, proxied by nginx on this same
+  // host, so there's no third-party form relay and no CORS. It brands the
+  // email per site from the Host header, so nothing here carries a product
+  // name and no key is needed client-side.
   //
   // If the request fails (offline, service down), we fall back to the
   // visitor's own mail client with the message pre-filled, so something
@@ -1582,7 +1584,9 @@
         name: val('cf-name'),
         email: val('cf-email'),
         store: val('cf-store'),
-        reason: 'Shuffly \u2014 ' + val('cf-topic'),
+        // Just the topic. The relay brands the email from the host it was
+        // posted to, so the product name doesn't belong in here any more.
+        topic: val('cf-topic'),
         message: val('cf-message'),
         company: (document.getElementById('cf-bot') && document.getElementById('cf-bot').checked) ? 'bot' : ''
       };
