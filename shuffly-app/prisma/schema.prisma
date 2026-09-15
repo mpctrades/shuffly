@@ -167,8 +167,16 @@ model ShuffleSlotClaim {
 model ShuffleRun {
   id            String    @id @default(cuid())
   shop          String
-  collectionId  String
-  collection    CollectionConfig @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+  // Nullable, and SetNull rather than Cascade, specifically so the row a
+  // removal writes to explain what happened ("sort put back to Best
+  // selling", etc.) survives its own CollectionConfig being deleted right
+  // after — a Cascade here was destroying that row before it could ever be
+  // read. `collectionTitle` is the fallback label for exactly that case;
+  // every other trigger still reads the live `collection.title` and never
+  // sets it.
+  collectionId  String?
+  collection    CollectionConfig? @relation(fields: [collectionId], references: [id], onDelete: SetNull)
+  collectionTitle String? // set only by remove/bulk-remove, for after `collection` goes null
   trigger       String // SCHEDULED | MANUAL | SOLD_OUT_REACTION | RESTOCK_REACTION | EXTERNAL_REORDER_DETECTED | PAUSED | RESUMED | SCHEDULE_CHANGED | SORT_CHANGED | SORT_RESTORED
   status        String // OK | FAILED
   movedCount    Int       @default(0)

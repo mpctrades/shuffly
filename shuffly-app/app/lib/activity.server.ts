@@ -120,6 +120,15 @@ async function fetchRows(shop: string, query: ActivityQuery, cursor: Date | null
 
 type RunRow = Awaited<ReturnType<typeof fetchRows>>[number];
 
+/** The collection's name for this row: the live `collection.title` for
+ * almost everything, falling back to the denormalized `collectionTitle` a
+ * remove/bulk-remove row carries once its `collection` has gone null (see
+ * ShuffleRun.collectionTitle), and finally a generic label for any older row
+ * orphaned before that column existed. */
+function titleOf(row: RunRow): string {
+  return row.collection?.title ?? row.collectionTitle ?? "a removed collection";
+}
+
 export async function loadActivityPage(
   shop: string,
   timezone: string,
@@ -351,8 +360,10 @@ function formatBatch(rows: RunRow[], timezone: string, now: Date): ActivityItem 
       : `${pluralize(collectionIds.size, "collection")} · ${formatSeconds(totalDurationMs)} · ${pluralize(failed.length, "collection")} failed`;
 
   const restoreOptions = rows
-    .filter((r) => r.status === "OK" && r.previousOrder && r.movedCount > 0)
-    .map((r) => ({ runId: r.id, collectionTitle: r.collection.title, movedCount: r.movedCount }));
+    // A removed collection (r.collection null) has nothing left to restore
+    // an order onto, even though its row still carries a title to display.
+    .filter((r) => r.status === "OK" && r.previousOrder && r.movedCount > 0 && r.collection)
+    .map((r) => ({ runId: r.id, collectionTitle: titleOf(r), movedCount: r.movedCount }));
 
   const { dayKey, dayLabel, time } = activityDayAndTime(head.createdAt, timezone, now);
 
@@ -385,7 +396,7 @@ function formatBatch(rows: RunRow[], timezone: string, now: Date): ActivityItem 
 function formatReactionCluster(rows: RunRow[], trigger: string, timezone: string, now: Date): ActivityItem {
   const head = rows[0];
   const totalMoved = rows.reduce((sum, r) => (r.status === "OK" ? sum + r.movedCount : sum), 0);
-  const collections = Array.from(new Set(rows.map((r) => r.collection.title))).join(", ");
+  const collections = Array.from(new Set(rows.map((r) => titleOf(r)))).join(", ");
   const isSoldOut = trigger === "SOLD_OUT_REACTION";
   const { dayKey, dayLabel, time } = activityDayAndTime(head.createdAt, timezone, now);
   const afterMs = rows.length === 1 ? head.durationMs : null;
@@ -417,7 +428,7 @@ function formatReactionCluster(rows: RunRow[], trigger: string, timezone: string
  * the standalone "Sale shuffled" title + pill, since the parent row above
  * already carries the pill/rail/restore-link treatment. */
 function formatSolo(row: RunRow, timezone: string, now: Date, batchSiblings?: RunRow[], asChild = false): ActivityItem {
-  const collectionTitle = row.collection.title;
+  const collectionTitle = titleOf(row);
   const { dayKey, dayLabel, time } = activityDayAndTime(row.createdAt, timezone, now);
   const base = {
     id: row.id,
@@ -477,7 +488,9 @@ function formatSolo(row: RunRow, timezone: string, now: Date, batchSiblings?: Ru
         // which only ever appears already-expanded under a parent whose own
         // restore already covers every collection in the batch (or offers
         // a choice between them).
-        restore: !asChild && row.previousOrder && movedCount > 0 ? { kind: "single", runId: row.id, collectionTitle } : null,
+        // A removed collection (row.collection null) has nothing left to
+        // restore an order onto, even though this row still shows its title.
+        restore: !asChild && row.previousOrder && movedCount > 0 && row.collection ? { kind: "single", runId: row.id, collectionTitle } : null,
       };
     }
     case "EXTERNAL_REORDER_DETECTED": {

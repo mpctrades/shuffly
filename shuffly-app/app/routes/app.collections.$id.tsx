@@ -210,7 +210,11 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
     }
     await db.collectionConfig.update({
       where: { id: config.id },
-      data: { status: "RUNNING", previousSortOrder: result.previousSortOrder },
+      // The sort is Manual again, so whatever health problem was recorded
+      // against this collection is resolved — clear it here rather than
+      // waiting for the next successful run to do it (matches the identical
+      // action in app.collections.tsx).
+      data: { status: "RUNNING", previousSortOrder: result.previousSortOrder, sortOrderIssueAt: null },
     });
     if (formData.get("keepOrder") === "false") {
       await runShuffleForCollection(admin, shop, config, settings.timezone, settings.neverMoveTags, "MANUAL", undefined, settings.pageSize);
@@ -263,6 +267,10 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
       data: {
         shop,
         collectionId: config.id,
+        // Denormalized: collectionId is about to go null when the delete
+        // below cascades (SetNull), and this row is the one place that
+        // summary has to survive it.
+        collectionTitle: config.title,
         trigger: "SORT_RESTORED",
         status: restored.error ? "FAILED" : "OK",
         message: restored.error

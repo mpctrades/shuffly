@@ -57,24 +57,17 @@ export async function enforcePlanEntitlements(shop: string, planId: PlanId): Pro
   const [disallowed, settings] = await Promise.all([
     db.collectionConfig.findMany({
       where: { shop, scheduleType: { notIn: plan.allowedSchedules } },
-      select: { id: true },
+      select: { id: true, scheduleTime: true },
     }),
     db.shopSettings.findUnique({ where: { shop } }),
   ]);
-  // The shop's own default schedule time, not the retired defaultRunTime
-  // seed — when a downgrade forces a collection onto a coarser cadence, the
-  // time the merchant actually chose is the right one to keep.
-  const scheduleTime = settings?.defaultScheduleTime ?? "06:00";
+  const now = new Date();
+  const timezone = settings?.timezone ?? "UTC";
+  // Fallback only for the rare row with no scheduleTime of its own — every
+  // real disallowed row already has one, since a null scheduleType can't
+  // fail the `notIn` check above.
+  const fallbackScheduleTime = settings?.defaultScheduleTime ?? "06:00";
   const scheduleWeekday = fallbackSchedule === "WEEKLY" ? 1 : null;
-  // Dropping to a schedule the new plan allows also drops the second time
-  // slot, since only the top tier has one — scheduleWriteFields nulls it for
-  // any non-TWICE_DAILY type, so that can't be forgotten here.
-  const scheduleFields = scheduleWriteFields(new Date(), settings?.timezone ?? "UTC", {
-    scheduleType: fallbackSchedule,
-    scheduleTime,
-    scheduleTime2: null,
-    scheduleWeekday,
-  });
 
   // The shop default has to be clamped too, and it is the more important of
   // the two: an inheriting collection stores NULL, so `scheduleType notIn
@@ -86,20 +79,19 @@ export async function enforcePlanEntitlements(shop: string, planId: PlanId): Pro
     settings != null && !plan.allowedSchedules.includes(settings.defaultScheduleType as (typeof plan.allowedSchedules)[number]);
   const clampedDefault = {
     defaultScheduleType: fallbackSchedule,
-    defaultScheduleTime: scheduleTime,
+    defaultScheduleTime: fallbackScheduleTime,
     defaultScheduleTime2: null,
     defaultScheduleWeekday: scheduleWeekday,
   };
   // Everything inheriting is about to run at a different time, so its
-  // advisory countdown is repaired in the same transaction.
+  // advisory countdown is repaired in the same transaction. Their own
+  // scheduleUpdatedAt is bumped too — dueSlots() reads it even for an
+  // inheriting row, and without it a default moved earlier in the day would
+  // read as a missed run instead of "just reconfigured".
   const inheriting = defaultDisallowed
     ? await db.collectionConfig.findMany({ where: { shop, scheduleType: null }, select: { id: true, status: true } })
     : [];
-  const inheritedNextRunAt = nextRunFor(
-    new Date(),
-    settings?.timezone ?? "UTC",
-    shopDefaultSchedule({ ...clampedDefault }),
-  );
+  const inheritedNextRunAt = nextRunFor(now, timezone, shopDefaultSchedule({ ...clampedDefault }));
 
   await db.$transaction([
     ...(defaultDisallowed
@@ -108,19 +100,32 @@ export async function enforcePlanEntitlements(shop: string, planId: PlanId): Pro
           ...inheriting.map((c) =>
             db.collectionConfig.update({
               where: { id: c.id },
-              data: { nextRunAt: c.status === "RUNNING" ? inheritedNextRunAt : null },
+              data: {
+                nextRunAt: c.status === "RUNNING" ? inheritedNextRunAt : null,
+                scheduleUpdatedAt: now,
+              },
             }),
           ),
         ]
       : []),
-    ...(disallowed.length > 0
-      ? [
-          db.collectionConfig.updateMany({
-            where: { id: { in: disallowed.map(({ id }) => id) } },
-            data: scheduleFields,
+    // Each collection keeps its own chosen time — only the cadence collapses
+    // to something the new plan allows, not the hour the merchant picked.
+    // scheduleUpdatedAt is stamped so the sweep's grace window treats this as
+    // "just reconfigured", not a missed run at the old cadence.
+    ...disallowed.map((c) =>
+      db.collectionConfig.update({
+        where: { id: c.id },
+        data: {
+          ...scheduleWriteFields(now, timezone, {
+            scheduleType: fallbackSchedule,
+            scheduleTime: c.scheduleTime ?? fallbackScheduleTime,
+            scheduleTime2: null,
+            scheduleWeekday,
           }),
-        ]
-      : []),
+          scheduleUpdatedAt: now,
+        },
+      }),
+    ),
     ...(!plan.canPin
       ? [
           db.collectionConfig.updateMany({

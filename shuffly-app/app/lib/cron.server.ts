@@ -129,11 +129,21 @@ export async function runDueShuffles(now: Date = new Date()): Promise<CronSweepR
 
     // Repair the advisory countdown for everything in this sweep, whether or
     // not it runs — this is what stops a stale nextRunAt from persisting.
-    for (const { config } of work) {
-      const nextRunAt = nextRunFor(new Date(), settings.timezone, resolveSchedule(config, settings));
-      if (nextRunAt?.getTime() !== config.nextRunAt?.getTime()) {
-        await db.collectionConfig.update({ where: { id: config.id }, data: { nextRunAt } });
-      }
+    // Batched into one transaction instead of awaited one at a time: with a
+    // few hundred collections due for a repair in the same tick, that was a
+    // few hundred sequential round trips every minute.
+    const repairs = work
+      .map(({ config }) => ({
+        config,
+        nextRunAt: nextRunFor(new Date(), settings.timezone, resolveSchedule(config, settings)),
+      }))
+      .filter(({ config, nextRunAt }) => nextRunAt?.getTime() !== config.nextRunAt?.getTime());
+    if (repairs.length > 0) {
+      await db.$transaction(
+        repairs.map(({ config, nextRunAt }) =>
+          db.collectionConfig.update({ where: { id: config.id }, data: { nextRunAt } }),
+        ),
+      );
     }
 
     // A slot whose time passed by more than the grace window is recorded and

@@ -22,7 +22,7 @@ import {
   type ScheduleType,
   type SlotSchedule,
 } from "../lib/schedule.server";
-import { cadenceLabel, isScheduleAllowed, isTopPlan, planOf, pruneExpiredUndoSnapshots, timeSlots } from "../lib/plans.server";
+import { cadenceLabel, enforcePlanCollectionCap, isScheduleAllowed, isTopPlan, planOf, pruneExpiredUndoSnapshots, timeSlots } from "../lib/plans.server";
 import { closeModal } from "../lib/polaris-modal";
 import { CollectionRow, type CollectionRowData } from "../components/CollectionRow";
 import {
@@ -133,9 +133,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   const recentRunsByCollectionId = new Map<string, typeof recentRuns>();
   for (const run of recentRuns) {
-    const list = recentRunsByCollectionId.get(run.collectionId) ?? [];
+    // Non-null: this query filtered on collectionId being in trackedIds, a
+    // list of still-existing collections, so a row here always has one.
+    const collectionId = run.collectionId!;
+    const list = recentRunsByCollectionId.get(collectionId) ?? [];
     if (list.length < SPARKLINE_LENGTH) list.push(run);
-    recentRunsByCollectionId.set(run.collectionId, list);
+    recentRunsByCollectionId.set(collectionId, list);
   }
 
   // "Last night": every run sharing the most recent SCHEDULED sweep's
@@ -155,7 +158,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     lastBatch = {
       totalMoved: batchRuns.reduce((sum, r) => sum + r.movedCount, 0),
       anyFailed: batchRuns.some((r) => r.status === "FAILED"),
-      failedTitles: batchRuns.filter((r) => r.status === "FAILED").map((r) => titleById.get(r.collectionId) ?? "A collection"),
+      // r.collectionId can be null for a collection removed since the batch
+      // ran; titleById has no entry for that either way, so it still falls
+      // back to the generic label.
+      failedTitles: batchRuns.filter((r) => r.status === "FAILED").map((r) => titleById.get(r.collectionId ?? "") ?? "A collection"),
       at: lastScheduledRun.createdAt,
     };
   }
@@ -547,6 +553,13 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const switched = switchedOutcomes.length;
     const failures = outcomes.filter((o) => !o.ok);
 
+    // The pre-check against `existingCount` above isn't atomic — two
+    // concurrent adds can both read the same count and both proceed. This
+    // is the actual backstop: the same reconciliation a downgrade runs,
+    // pausing (not deleting) whichever collections end up over the cap,
+    // oldest-tracked kept, with an Activity row explaining why.
+    if (added > 0) await enforcePlanCollectionCap(shop, plan.id);
+
     return data({
       ok: failures.length === 0,
       added,
@@ -575,6 +588,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       update: {},
       create: { shop, collectionGid: gid, title, ...defaultScheduleFields(), ...DEFAULT_ADD_PRESET },
     });
+    // See add-collections' identical call: the count check above isn't
+    // atomic, so this is the backstop against a concurrent add racing past it.
+    await enforcePlanCollectionCap(shop, plan.id);
     return data({ ok: true });
   }
 
@@ -605,6 +621,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     if (formData.get("keepOrder") === "false") {
       await runShuffleForCollection(admin, shop, config, settings.timezone, settings.neverMoveTags, "MANUAL", undefined, settings.pageSize);
     }
+    // See add-collections' identical call: the count check above isn't
+    // atomic, so this is the backstop against a concurrent add racing past it.
+    await enforcePlanCollectionCap(shop, plan.id);
     return data({ ok: true });
   }
 
@@ -640,6 +659,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       });
       added++;
     }
+    // See add-collections' identical call: the count check above isn't
+    // atomic, so this is the backstop against a concurrent add racing past it.
+    if (added > 0) await enforcePlanCollectionCap(shop, plan.id);
     return data({ ok: true, added, switched: switchedCount, skipped: gids.length - added });
   }
 
@@ -831,7 +853,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         }),
       ),
     );
-    return data({ ok: true, moved: inheriting.length });
+    // Field name matches set-schedule's response (`count`) on purpose — both
+    // actions share scheduleFetcher and its one toast effect below, which
+    // reads `.count`. `toDefault` is deliberately not set here: that flag
+    // means "these collections now inherit the default", not "the default's
+    // own value changed" — the two are different actions on the same page.
+    return data({ ok: true, count: inheriting.length });
   }
 
   if (actionType === "pause-all") {
@@ -932,6 +959,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
             data: {
               shop,
               collectionId: config.id,
+              // Denormalized: collectionId is about to go null when the
+              // deleteMany below cascades (SetNull), and this row is the
+              // one place that summary has to survive it.
+              collectionTitle: config.title,
               trigger: "SORT_RESTORED",
               status: result.error ? "FAILED" : "OK",
               message: result.error
@@ -964,6 +995,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       data: {
         shop,
         collectionId: config.id,
+        // Denormalized: collectionId is about to go null when the
+        // deleteMany below cascades (SetNull), and this row is the one
+        // place that summary has to survive it.
+        collectionTitle: config.title,
         trigger: "SORT_RESTORED",
         status: result.error ? "FAILED" : "OK",
         message: result.error
@@ -1526,11 +1561,13 @@ export default function Collections() {
     if (untrackedFetcher.state === "idle" && untrackedFetcher.data?.ok) {
       const added = untrackedFetcher.data.added ?? 0;
       const switched = untrackedFetcher.data.switched ?? 0;
-      shopify.toast.show(
-        switched > 0
-          ? `${added} collection${added === 1 ? "" : "s"} added — ${switched} switched to Manual sort`
-          : `${added} collection${added === 1 ? "" : "s"} added`,
-      );
+      const skipped = untrackedFetcher.data.skipped ?? 0;
+      // Same wording as add-collections' toast below — this path silently
+      // truncated to the plan's room without saying so before this.
+      const parts = [`${added} collection${added === 1 ? "" : "s"} added`];
+      if (switched > 0) parts.push(`${switched} switched to Manual sort`);
+      if (skipped > 0) parts.push(`${skipped} skipped (plan limit)`);
+      shopify.toast.show(parts.join(" — ") + ".");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- fires only on fetcher settle
   }, [untrackedFetcher.state, untrackedFetcher.data]);
@@ -1602,7 +1639,7 @@ export default function Collections() {
             accessibilityLabel={
               pauseAllIsResume
                 ? `Resume all ${trackedTotal} collections`
-                : `Pause all ${trackedTotal} collections`
+                : `Pause all ${runningCount} collections`
             }
             {...(pauseAllFetcher.state !== "idle" ? { loading: true } : {})}
           >
@@ -1823,7 +1860,9 @@ export default function Collections() {
         heading={
           pauseAllIntent === "resume"
             ? `Resume all ${trackedTotal} collection${trackedTotal === 1 ? "" : "s"}?`
-            : `Pause all ${trackedTotal} collection${trackedTotal === 1 ? "" : "s"}?`
+            // "Pause all" only ever touches the RUNNING ones — trackedTotal
+            // overstates it whenever some are already paused.
+            : `Pause all ${runningCount} collection${runningCount === 1 ? "" : "s"}?`
         }
       >
         <s-paragraph>
