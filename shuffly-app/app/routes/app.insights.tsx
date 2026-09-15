@@ -133,7 +133,12 @@ export default function Insights() {
               <Tile lead heading="Rotation fairness" tile={insights.rotationFairness} unit="/100" />
               <Tile heading="Typical wait" tile={insights.typicalWait} unit=" days" />
               <Tile
-                heading="Longest wait"
+                // Unlike the other three tiles, this doesn't move with the
+                // range picker above — it's "how long since this product's
+                // last turn", a current fact, not a windowed statistic — so
+                // it's labeled all-time rather than silently staying still
+                // while the rest of the strip updates.
+                heading="Longest wait (all-time)"
                 tile={insights.longestWait}
                 unit=" days"
                 detailOverride={insights.longestWaitProduct ?? undefined}
@@ -561,7 +566,10 @@ function WaitingLongestCard({
   return (
     <div className="shuffly-card shuffly-waiting-card">
       <div className="shuffly-card-header">
-        <s-text type="strong">Waiting longest</s-text>
+        {/* Same all-time figure as the "Longest wait" tile above, for the
+            same reason — labeled so it's clear this list doesn't move with
+            the range picker either. */}
+        <s-text type="strong">Waiting longest (all-time)</s-text>
         <s-text color="subdued">
           {rows.length} product{rows.length === 1 ? "" : "s"}
         </s-text>

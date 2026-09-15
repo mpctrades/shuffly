@@ -1,7 +1,7 @@
 import type { LoaderFunctionArgs } from "react-router";
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
-import { listAllCollections } from "../lib/collections.server";
+import { listAllCollections, sortOrderLabel } from "../lib/collections.server";
 import { getOrCreateShopSettings } from "../lib/shop-context.server";
 import { planOf } from "../lib/plans.server";
 
@@ -25,15 +25,25 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   ]);
 
   const trackedGids = new Set(tracked.map((t) => t.collectionGid));
-  const untracked = all.filter((c) => !trackedGids.has(c.id));
-  const addable = untracked.filter((c) => c.sortOrder === "MANUAL");
-  const nonManual = untracked.filter((c) => c.sortOrder !== "MANUAL");
+  // Every untracked collection is addable, automated ones included. Shuffly
+  // switches a non-Manual collection to Manual sort itself (with the
+  // merchant's confirmation) as part of adding it, so there's nothing to
+  // hide or grey out here — filtering these out was the dead end that sent
+  // merchants to Shopify admin.
+  const addable = all.filter((c) => !trackedGids.has(c.id));
   const plan = planOf(settings.plan);
 
   return {
-    addable: addable.map((c) => ({ id: c.id, title: c.title, productsCount: c.productsCount })),
-    nonManualCount: nonManual.length,
+    addable: addable.map((c) => ({
+      id: c.id,
+      title: c.title,
+      productsCount: c.productsCount,
+      sortOrder: c.sortOrder,
+      sortOrderLabel: sortOrderLabel(c.sortOrder),
+      needsManual: c.sortOrder !== "MANUAL",
+    })),
     hasMore,
+    autoSwitchToManual: settings.autoSwitchToManual,
     query: q,
     plan: { name: plan.name, maxCollections: plan.maxCollections === Infinity ? null : plan.maxCollections },
     trackedCount: tracked.length,

@@ -1,48 +1,36 @@
-import { useEffect, useState } from "react";
+import { closeModal } from "../lib/polaris-modal";
+import { IconChip } from "../components/IconChip";
+import { ScheduleModal, type ScheduleTarget } from "../components/ScheduleModal";
+import { shopDefaultSchedule } from "../lib/schedule-resolve";
+import { nextRunFor, slotsFarEnoughApart, type ScheduleType, type SlotSchedule } from "../lib/schedule.server";
+import { isScheduleAllowed, planOf, timeSlots } from "../lib/plans.server";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { data, useLoaderData, useNavigation, useFetcher } from "react-router";
 import { useAppBridge } from "@shopify/app-bridge-react";
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { getOrCreateShopSettings } from "../lib/shop-context.server";
-import { KeyValueRows } from "../components/KeyValueRows";
 import { getShopTimezone } from "../lib/collections.server";
 import { timezoneOffsetLabel } from "../lib/schedule.server";
+// Client-safe (see time-slots.ts) — the component below renders these.
+import { normalizeHhMm } from "../lib/time-slots";
+import { SUPPORT_EMAIL, SUPPORT_MAILTO, WEBSITE_URL } from "../lib/app-config";
+// The save path lives in a lib so it can be tested without a browser — see
+// settings-form.ts for why.
+import {
+  addTag as addTagTo,
+  parseTags,
+  removeTag as removeTagFrom,
+  settingsSubmission,
+} from "../lib/settings-form";
 
 const SAVE_BAR_ID = "settings-save-bar";
 
-type Tone = "success" | "warning" | "info" | "neutral";
+/* No accent colour anywhere on this page. The section headings carry the
+   hierarchy, and the only colour left is Polaris's own — link blue and the
+   primary button — where it tells the merchant something. */
 
-/** One color story for every card on this page — the same token family as
- * Insights/Help, so all three pages read as one design. "warning" is the
- * brand/orange accent used everywhere else in the app for that purpose;
- * every value is a Polaris token, the hex after each is a same-hue
- * fallback only, never the source of truth. */
-const TONE_TOKENS: Record<Tone, { accent: string; tint: string }> = {
-  success: {
-    accent: "var(--p-color-icon-success, #008060)",
-    tint: "var(--p-color-bg-fill-success-secondary, #E3F5EE)",
-  },
-  warning: {
-    accent: "var(--p-color-icon-warning, #FF4B1F)",
-    tint: "var(--p-color-bg-fill-warning-secondary, #FFF1E4)",
-  },
-  info: {
-    accent: "var(--p-color-icon-info, #1F5199)",
-    tint: "var(--p-color-bg-fill-info-secondary, #EAF2FF)",
-  },
-  neutral: {
-    accent: "var(--p-color-icon-secondary, #6b6b6b)",
-    tint: "var(--p-color-bg-fill-secondary, #F1F1F1)",
-  },
-};
-
-function parseTags(csv: string): string[] {
-  return csv
-    .split(",")
-    .map((t) => t.trim())
-    .filter(Boolean);
-}
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { admin, session } = await authenticate.admin(request);
@@ -68,9 +56,41 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       "Couldn't confirm your shop's timezone from Shopify just now — showing the last known value.";
   }
 
+  // The status row's numbers, from the same columns the Collections page
+  // reads. One indexed query, no Admin API call, no new scope.
+  const tracked = await db.collectionConfig.findMany({
+    where: { shop },
+    select: { status: true, nextRunAt: true, sortOrderIssueAt: true },
+  });
+  const soonestNextRunMs = tracked
+    .filter((t) => t.status === "RUNNING" && t.nextRunAt)
+    .map((t) => t.nextRunAt!.getTime())
+    .sort((a, b) => a - b)[0];
+  // Collections a run has already found stuck off Manual sort. Persisted by
+  // the engine, so this costs nothing here — it will not catch a sort changed
+  // since the last run, which the Collections page's live check does.
+  const needsManualSort = tracked.filter((t) => t.sortOrderIssueAt != null).length;
+  // "Ready" = running, with no sort problem a run has actually hit. Derived
+  // from the query above, so it adds nothing. It is the lagging signal, not
+  // a live sortOrder read — see the Collections page for that.
+  const readyCount = tracked.filter((t) => t.status === "RUNNING" && t.sortOrderIssueAt == null).length;
+
   return {
     settings: { ...settings, timezone },
-    timezoneLabel: `${timezone} (${timezoneOffsetLabel(timezone)})`,
+    trackedCount: tracked.length,
+    nextRunAtMs: soonestNextRunMs ?? null,
+    needsManualSort,
+    readyCount,
+    timezoneLabel: timezone,
+    timezoneOffset: timezoneOffsetLabel(timezone),
+    // The shop-wide default schedule every collection follows unless it has
+    // its own. Same shape the Collections page sends the modal.
+    shopDefault: shopDefaultSchedule(settings),
+    // Where a merchant actually changes the timezone: Shopify's own settings,
+    // because Shopify owns the value (see the Timezone row). Built from the
+    // shop domain rather than hard-coded so it is right for every store.
+    shopifyTimezoneUrl: `https://admin.shopify.com/store/${shop.replace(/\.myshopify\.com$/, "")}/settings/general`,
+    scheduleSlots: timeSlots(settings.plan),
     error,
   };
 };
@@ -81,23 +101,90 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   await getOrCreateShopSettings(admin, shop);
   const formData = await request.formData();
 
-  const defaultRunTime = String(formData.get("defaultRunTime") ?? "06:00");
+  // The schedule modal posts here on its own, separately from the settings
+  // form save. Nothing is copied onto collection rows — inheriting
+  // collections read these values live — so the only follow-up is repairing
+  // their advisory countdown.
+  if (String(formData.get("_action") ?? "") === "set-shop-default") {
+    const settings = await getOrCreateShopSettings(admin, shop);
+    const scheduleType = String(formData.get("scheduleType") ?? "WEEKLY") as ScheduleType;
+    // The shop default governs every collection that inherits it, so an
+    // unchecked cadence here re-cadences the whole shop in one POST.
+    if (!isScheduleAllowed(settings.plan, scheduleType)) {
+      return data(
+        { ok: false, error: `Your ${planOf(settings.plan).name} plan doesn't include that schedule.` },
+        { status: 400 },
+      );
+    }
+    const scheduleTime = normalizeHhMm(String(formData.get("scheduleTime") ?? "06:00"));
+    const rawTime2 = formData.get("scheduleTime2");
+    const scheduleTime2 =
+      scheduleType === "TWICE_DAILY" && rawTime2 != null && rawTime2 !== ""
+        ? normalizeHhMm(String(rawTime2))
+        : null;
+    if (scheduleTime2 != null && timeSlots(settings.plan) < 2) {
+      return data({ ok: false, error: "Two shuffles a day is a Pro feature." }, { status: 400 });
+    }
+    if (scheduleTime2 != null && !slotsFarEnoughApart(scheduleTime, scheduleTime2)) {
+      return data({ ok: false, error: "Keep the two shuffle times at least an hour apart." }, { status: 400 });
+    }
+    const rawWeekday = formData.get("scheduleWeekday");
+    const updated = await db.shopSettings.update({
+      where: { shop },
+      data: {
+        defaultScheduleType: scheduleType,
+        defaultScheduleTime: scheduleTime,
+        defaultScheduleTime2: scheduleTime2,
+        defaultScheduleWeekday:
+          scheduleType === "WEEKLY" && rawWeekday != null && rawWeekday !== "" ? Number(rawWeekday) : null,
+      },
+    });
+    const inheriting = await db.collectionConfig.findMany({ where: { shop, scheduleType: null } });
+    const nextDefault = shopDefaultSchedule(updated);
+    await db.$transaction(
+      inheriting.map((c) =>
+        db.collectionConfig.update({
+          where: { id: c.id },
+          data: {
+            scheduleUpdatedAt: new Date(),
+            nextRunAt: c.status === "RUNNING" ? nextRunFor(new Date(), updated.timezone, nextDefault) : null,
+          },
+        }),
+      ),
+    );
+    return data({ ok: true, moved: inheriting.length });
+  }
+
   const neverMoveTags = String(formData.get("neverMoveTags") ?? "");
+  const autoSwitchToManual = formData.get("autoSwitchToManual") === "on";
 
   await db.shopSettings.update({
     where: { shop },
     data: {
-      defaultRunTime,
       neverMoveTags,
+      autoSwitchToManual,
     },
   });
 
   return data({ ok: true });
 };
 
+const WEEKDAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+
 export default function Settings() {
-  const { settings, timezoneLabel, error } =
-    useLoaderData<typeof loader>();
+  const {
+    settings,
+    timezoneLabel,
+    timezoneOffset,
+    shopDefault,
+    scheduleSlots,
+    shopifyTimezoneUrl,
+    trackedCount,
+    nextRunAtMs,
+    needsManualSort,
+    readyCount,
+    error,
+  } = useLoaderData<typeof loader>();
   const navigation = useNavigation();
   const shopify = useAppBridge();
   const fetcher = useFetcher<{ ok: boolean }>();
@@ -106,7 +193,63 @@ export default function Settings() {
     navigation.location?.pathname === "/app/settings";
   const busy = fetcher.state !== "idle";
 
-  const [defaultRunTime, setDefaultRunTime] = useState(settings.defaultRunTime);
+  // Same label the Collections table shows, from the same values, so the two
+  // screens can't describe the shop default differently.
+  // Split in two so the row can show the time as its value and the cadence
+  // as the sub-line, rather than one long sentence.
+  const shopDefaultValue = useMemo(() => {
+    const day = shopDefault.scheduleWeekday != null ? WEEKDAY_NAMES[shopDefault.scheduleWeekday] : null;
+    if (shopDefault.scheduleType === "WEEKLY" && day) return `${day} ${shopDefault.scheduleTime}`;
+    if (shopDefault.scheduleType === "TWICE_DAILY")
+      return `${shopDefault.scheduleTime} and ${shopDefault.scheduleTime2 ?? "—"}`;
+    if (shopDefault.scheduleType === "DAILY") return shopDefault.scheduleTime;
+    return "Manual only";
+  }, [shopDefault]);
+  const shopDefaultCadence = useMemo(() => {
+    if (shopDefault.scheduleType === "WEEKLY") return "weekly";
+    if (shopDefault.scheduleType === "TWICE_DAILY") return "twice daily";
+    if (shopDefault.scheduleType === "DAILY") return "daily";
+    return "only when you press Shuffle";
+  }, [shopDefault]);
+
+
+  // Ticks client-side from the fixed instant, like the Collections
+  // countdown — no polling, and it can't disagree with the stored time.
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    if (nextRunAtMs == null) return;
+    const id = setInterval(() => setNowMs(Date.now()), 30_000);
+    return () => clearInterval(id);
+  }, [nextRunAtMs]);
+  const countdown = useMemo(() => {
+    if (nextRunAtMs == null) return "Not scheduled";
+    const mins = Math.max(0, Math.round((nextRunAtMs - nowMs) / 60_000));
+    const d = Math.floor(mins / 1440);
+    const h = Math.floor((mins % 1440) / 60);
+    const m = mins % 60;
+    return d > 0 ? `in ${d}d ${h}h` : h > 0 ? `in ${h}h ${m}m` : `in ${m}m`;
+  }, [nextRunAtMs, nowMs]);
+
+  const [scheduleTarget, setScheduleTarget] = useState<ScheduleTarget | null>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- showOverlay/hideOverlay are imperative methods not on the typed public props
+  const scheduleModalRef = useRef<any>(null);
+  const scheduleFetcher = useFetcher<{ ok?: boolean; error?: string; moved?: number }>();
+
+  useEffect(() => {
+    if (scheduleFetcher.state !== "idle" || !scheduleFetcher.data) return;
+    if (scheduleFetcher.data.ok) {
+      const n = scheduleFetcher.data.moved ?? 0;
+      shopify.toast.show(
+        n > 0
+          ? `Default schedule saved — ${n} collection${n === 1 ? "" : "s"} moved with it`
+          : "Default schedule saved",
+      );
+    } else {
+      shopify.toast.show(scheduleFetcher.data.error ?? "Couldn't save that schedule", { isError: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- fires only on fetcher settle
+  }, [scheduleFetcher.state, scheduleFetcher.data]);
+  const [autoSwitchToManual, setAutoSwitchToManual] = useState(settings.autoSwitchToManual);
   const [tags, setTags] = useState<string[]>(() =>
     parseTags(settings.neverMoveTags),
   );
@@ -135,7 +278,7 @@ export default function Settings() {
   }, []);
 
   function handleDiscard() {
-    setDefaultRunTime(settings.defaultRunTime);
+    setAutoSwitchToManual(settings.autoSwitchToManual);
     setTags(parseTags(settings.neverMoveTags));
     setAddingTag(false);
     setNewTag("");
@@ -144,13 +287,9 @@ export default function Settings() {
   }
 
   function handleSave() {
-    fetcher.submit(
-      {
-        defaultRunTime,
-        neverMoveTags: tags.join(","),
-      },
-      { method: "post" },
-    );
+    // One builder, shared with the tests, so what CI verifies is byte-for-byte
+    // what the save bar actually posts.
+    fetcher.submit(settingsSubmission({ tags, autoSwitchToManual }), { method: "post" });
   }
 
   useEffect(() => {
@@ -163,22 +302,21 @@ export default function Settings() {
   }, [fetcher.state, fetcher.data]);
 
   function addTag() {
-    const t = newTag.trim();
-    if (t) {
-      setTags((prev) =>
-        prev.some((x) => x.toLowerCase() === t.toLowerCase())
-          ? prev
-          : [...prev, t],
-      );
-      markDirty();
-    }
+    setTags((prev) => {
+      const next = addTagTo(prev, newTag);
+      if (next !== prev) markDirty();
+      return next;
+    });
     setNewTag("");
     setAddingTag(false);
   }
 
   function removeTag(tag: string) {
-    setTags((prev) => prev.filter((t) => t !== tag));
-    markDirty();
+    setTags((prev) => {
+      const next = removeTagFrom(prev, tag);
+      if (next.length !== prev.length) markDirty();
+      return next;
+    });
   }
 
   return (
@@ -199,74 +337,85 @@ export default function Settings() {
       {isLoading ? (
         <SettingsSkeleton />
       ) : (
-        <div
-          className="shuffly-settings-grid"
-          style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 16 }}
-        >
-          <s-stack direction="block" gap="base">
-            <SettingsCard icon="clock" tone="warning" title="Store">
-              <s-stack direction="block" gap="base">
-                <s-select
-                  label="Timezone"
-                  value={settings.timezone}
-                  details="Read from Shopify. All schedules follow it."
-                >
-                  <s-option value={settings.timezone}>{timezoneLabel}</s-option>
-                </s-select>
-                <s-text-field
-                  label="Default run time"
-                  value={defaultRunTime}
-                  details="Choose when automatic shuffles should run."
-                  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- currentTarget.value isn't in the typed event map
-                  onInput={(e: any) => {
-                    setDefaultRunTime(e.currentTarget?.value ?? "");
-                    markDirty();
+        <div className="shuffly-settings-column">
+          {/* One rule holds this page together: every control sits on the
+              same right edge, on its label's line. The layout this replaced
+              had a link at one card's top-right, a button at another's, a
+              toggle mid-row and tags bottom-left — four places to look for
+              the thing you came to change. */}
+          <SettingsGroup icon="clock" title="Schedule">
+            <SettingsRow
+              label="Timezone"
+              help="Read from your Shopify settings"
+              valueOverride={timezoneLabel}
+              subValue={timezoneOffset}
+              control={(helpId) => (
+                <s-link href={shopifyTimezoneUrl} target="_blank" aria-describedby={helpId}>
+                  Change
+                </s-link>
+              )}
+            />
+            <s-divider />
+            <SettingsRow
+              label="Default schedule"
+              badge={nextRunAtMs != null ? <s-badge>{countdown}</s-badge> : undefined}
+              help="Collections use this unless you set their own time"
+              valueOverride={shopDefaultValue}
+              subValue={shopDefaultCadence}
+              control={(helpId) => (
+                <s-button
+                  aria-describedby={helpId}
+                  accessibilityLabel="Change the default schedule"
+                  onClick={() => {
+                    setScheduleTarget({ mode: "shop-default", schedule: shopDefault as SlotSchedule });
+                    scheduleModalRef.current?.showOverlay();
                   }}
-                />
-              </s-stack>
-            </SettingsCard>
+                >
+                  Change
+                </s-button>
+              )}
+            />
+          </SettingsGroup>
 
-            <SettingsCard icon="pin" tone="warning" title="Never move these">
-              <s-stack direction="block" gap="small-200">
-                <div>
-                  <s-text type="strong">Products tagged</s-text>
-                  <div style={{ marginTop: 2 }}>
-                    <s-text color="subdued">
-                      Applies to every collection.
-                    </s-text>
-                  </div>
-                </div>
+          <SettingsGroup icon="pin" title="Never move these">
+            <SettingsRow
+              label="Products tagged"
+              help="Left exactly where they are, in every collection"
+              control={(helpId) => (
                 <s-stack direction="inline" gap="small-200" alignItems="center">
                   {tags.map((tag) => (
                     <s-clickable-chip
                       key={tag}
                       removable
-                      accessibilityLabel={`Remove ${tag}`}
+                      accessibilityLabel={`Remove the ${tag} tag`}
                       onRemove={() => removeTag(tag)}
                     >
                       {tag}
                     </s-clickable-chip>
                   ))}
                   {!addingTag && (
-                    <s-button onClick={() => setAddingTag(true)}>
-                      + Add tag
+                    <s-button
+                      aria-describedby={helpId}
+                      accessibilityLabel="Add a never-move tag"
+                      onClick={() => setAddingTag(true)}
+                    >
+                      + Add
                     </s-button>
                   )}
                 </s-stack>
-                {addingTag && (
-                  <s-grid
-                    gridTemplateColumns="1fr auto auto"
-                    gap="small"
-                    alignItems="end"
-                  >
+              )}
+            />
+            {addingTag && (
+              <>
+                <s-divider />
+                <div className="shuffly-settings-rowpad">
+                  <s-grid gridTemplateColumns="1fr auto auto" gap="small" alignItems="end">
                     <s-text-field
                       label="New tag"
                       labelAccessibilityVisibility="exclusive"
                       value={newTag}
                       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- currentTarget.value isn't in the typed event map
-                      onInput={(e: any) =>
-                        setNewTag(e.currentTarget?.value ?? "")
-                      }
+                      onInput={(e: any) => setNewTag(e.currentTarget?.value ?? "")}
                     />
                     <s-button variant="primary" onClick={addTag}>
                       Add
@@ -280,250 +429,272 @@ export default function Settings() {
                       Cancel
                     </s-button>
                   </s-grid>
-                )}
-              </s-stack>
-            </SettingsCard>
+                </div>
+              </>
+            )}
+          </SettingsGroup>
 
-          </s-stack>
+          <SettingsGroup icon="apps" title="Collections">
+            <SettingsRow
+              label="Ready to shuffle"
+              badge={
+                needsManualSort > 0 ? (
+                  <s-badge tone="warning">{needsManualSort} needs Manual sort</s-badge>
+                ) : undefined
+              }
+              help="A collection that leaves Manual sort stops being reordered"
+              valueOverride={`${readyCount} of ${trackedCount}`}
+              control={(helpId) => (
+                <s-link href="/app/collections" aria-describedby={helpId}>
+                  Review
+                </s-link>
+              )}
+            />
+            <s-divider />
+            <SettingsRow
+              label="Switch to Manual sort without asking"
+              badge={autoSwitchToManual ? <s-badge tone="success">On</s-badge> : <s-badge>Off</s-badge>}
+              help="Switches automated collections straight away instead of asking"
+              control={(helpId) => (
+                <s-switch
+                  label="Switch to Manual sort without asking"
+                  labelAccessibilityVisibility="exclusive"
+                  aria-describedby={helpId}
+                  checked={autoSwitchToManual || undefined}
+                  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- currentTarget.checked isn't in the typed event map
+                  onChange={(e: any) => {
+                    setAutoSwitchToManual(Boolean(e.currentTarget?.checked));
+                    markDirty();
+                  }}
+                />
+              )}
+            />
+          </SettingsGroup>
 
-          <s-stack direction="block" gap="base">
-            <SettingsCard
-              icon="shield-person"
-              tone="success"
-              title="What Shuffly can access"
-            >
-              <KeyValueRows
-                rows={[
-                  {
-                    label: "Read your products",
-                    value: <AccessValue text="Yes" tone="neutral" />,
-                  },
-                  {
-                    label: "Change collection order",
-                    value: <AccessValue text="Yes" tone="neutral" />,
-                  },
-                  {
-                    label: "Read inventory status",
-                    value: <AccessValue text="Yes" tone="neutral" />,
-                  },
-                  {
-                    label: "Customer data",
-                    value: <AccessValue text="No access" tone="success" />,
-                  },
-                  {
-                    label: "Orders",
-                    value: <AccessValue text="No access" tone="success" />,
-                  },
-                  {
-                    label: "Your theme",
-                    value: <AccessValue text="No access" tone="success" />,
-                  },
-                ]}
-              />
-            </SettingsCard>
-
-            <SettingsCard icon="gauge" tone="success" title="Your store speed">
-              <div
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "repeat(3, 1fr)",
-                  gap: 16,
-                }}
-              >
-                {[
-                  { value: "0 KB", label: "Page weight" },
-                  { value: "0", label: "Theme files" },
-                  { value: "0", label: "Scripts" },
-                ].map((stat) => (
-                  <div key={stat.label} style={{ textAlign: "center" }}>
-                    <div
-                      style={{
-                        fontSize: 22,
-                        fontWeight: 700,
-                        color: "var(--p-color-text-success, #008060)",
-                      }}
-                    >
-                      {stat.value}
-                    </div>
-                    <div style={{ marginTop: 4, fontSize: 12 }}>
-                      <s-text color="subdued">{stat.label}</s-text>
-                    </div>
-                  </div>
-                ))}
-              </div>
-              <CardFooterStrip>
-                <s-text color="subdued">
-                  Shuffly changes the real product order in Shopify. Nothing
-                  runs in your customers&apos; browsers.
-                </s-text>
-              </CardFooterStrip>
-            </SettingsCard>
-
-            <SettingsCard icon="apps" tone="info" title="Works alongside">
-              <KeyValueRows
-                rows={[
-                  {
-                    label: "Judge.me Reviews",
-                    value: <AccessValue text="No conflict" tone="success" />,
-                  },
-                  // Shopify's own Flow and Search & Discovery are covered by
-                  // a real compatibility statement, not live detection —
-                  // there's no signal yet for whether a shop actually has
-                  // them installed. That's why these read as fixed facts
-                  // ("no conflict with how Shuffly writes order") rather
-                  // than a connected/disconnected status. If a row like
-                  // this is ever added WITHOUT that backing fact being
-                  // true, hide it instead of shipping a guess.
-                  {
-                    label: "Shopify Flow",
-                    value: <AccessValue text="No conflict" tone="success" />,
-                  },
-                  {
-                    label: "Search & Discovery",
-                    value: <AccessValue text="No conflict" tone="success" />,
-                  },
-                ]}
-              />
-              <CardFooterStrip>
-                <s-text color="subdued">
-                  If another app also sets collection order, Shuffly tells you
-                  instead of fighting it.
-                </s-text>
-              </CardFooterStrip>
-            </SettingsCard>
-
-            <SettingsCard icon="info" tone="neutral" title="If you uninstall">
-              <s-paragraph>
-                Your collections keep the order they have. Nothing to clean up.
-                Shopify sends the deletion request 48 hours after uninstall; Shuffly deletes its stored shop data when it arrives.
-              </s-paragraph>
-            </SettingsCard>
-          </s-stack>
+          <SettingsGroup icon="email" title="Support">
+            <SettingsRow
+              label="Email us"
+              help="A run you want undone, or a feature you need"
+              control={(helpId) => (
+                <s-link href={SUPPORT_MAILTO} aria-describedby={helpId}>
+                  {SUPPORT_EMAIL}
+                </s-link>
+              )}
+            />
+            <s-divider />
+            <SettingsRow
+              label="Guides and release notes"
+              help="Answers to common questions"
+              control={(helpId) => (
+                <s-link href={WEBSITE_URL} target="_blank" aria-describedby={helpId}>
+                  Shuffly website
+                </s-link>
+              )}
+            />
+          </SettingsGroup>
         </div>
       )}
 
+      {/* Layout only, and every value is a Polaris token with a same-value
+          px fallback — a missing token falls back rather than collapsing the
+          layout. The two exceptions are genuine layout measures with no
+          token behind them: the column's max-width and the wrap breakpoint. */}
       <style>{`
-        @media (max-width: 820px) {
-          .shuffly-settings-grid { grid-template-columns: 1fr !important; }
+        .shuffly-settings-column {
+          display: flex;
+          flex-direction: column;
+          gap: var(--p-space-800, 32px);
+          /* A reading measure, not a spacing step. Past ~840px the run
+             between a label and its control gets long enough that the two
+             stop reading as one row, which is the whole point of the shared
+             right edge. */
+          max-width: 800px;
+          margin: 0 auto;
+          padding: var(--p-space-100, 4px) 0 var(--p-space-600, 24px);
+        }
+        /* Signposts, not headings — the smallest step on the scale. */
+        .shuffly-settings-grouplabel {
+          display: flex;
+          align-items: center;
+          gap: var(--p-space-200, 8px);
+          margin: 0 0 var(--p-space-300, 12px) var(--p-space-050, 2px);
+          font-size: var(--p-font-size-275, 11px);
+          font-weight: 700;
+          letter-spacing: 0.06em;
+          text-transform: uppercase;
+          color: var(--p-color-text-secondary, #6b6b6b);
+        }
+        .shuffly-icon-chip {
+          flex: none;
+          /* Same radius as the Collections bento chips. */
+          border-radius: var(--p-border-radius-200, 8px);
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+        }
+        /* The shared right edge, and the shared rhythm every row keeps. */
+        .shuffly-settings-row {
+          display: grid;
+          grid-template-columns: minmax(0, 1fr) auto;
+          gap: var(--p-space-500, 20px);
+          align-items: center;
+          min-height: var(--p-space-1600, 64px);
+          padding: var(--p-space-400, 16px) var(--p-space-500, 20px);
+        }
+        .shuffly-settings-rowpad { padding: var(--p-space-400, 16px) var(--p-space-500, 20px); }
+        .shuffly-settings-rowlabel { min-width: 0; }
+        .shuffly-settings-labelline {
+          display: flex;
+          align-items: center;
+          gap: var(--p-space-200, 8px);
+          flex-wrap: wrap;
+        }
+        .shuffly-settings-label {
+          font-size: var(--p-font-size-350, 14px);
+          font-weight: 600;
+          color: var(--p-color-text, #131110);
+        }
+        /* Help and the value's sub-line share one secondary step, so the two
+           kinds of supporting text don't disagree about their own weight. */
+        .shuffly-settings-help {
+          display: block;
+          margin-top: var(--p-space-100, 4px);
+          font-size: var(--p-font-size-325, 13px);
+          color: var(--p-color-text-secondary, #6b6b6b);
+        }
+        .shuffly-settings-control {
+          display: flex;
+          align-items: center;
+          justify-content: flex-end;
+          gap: var(--p-space-400, 16px);
+          flex-wrap: wrap;
+        }
+        .shuffly-settings-valuebox { text-align: right; }
+        .shuffly-settings-value {
+          display: block;
+          font-size: var(--p-font-size-350, 14px);
+          font-weight: 600;
+          color: var(--p-color-text, #131110);
+        }
+        .shuffly-settings-subvalue {
+          display: block;
+          font-size: var(--p-font-size-325, 13px);
+          color: var(--p-color-text-secondary, #6b6b6b);
+        }
+        /* Controls wrap beneath their label rather than squeezing. */
+        @media (max-width: 720px) {
+          .shuffly-settings-row { grid-template-columns: 1fr; align-items: start; }
+          .shuffly-settings-control { justify-content: flex-start; }
+          .shuffly-settings-valuebox { text-align: left; }
         }
       `}</style>
-    </s-page>
+
+          <ScheduleModal
+        ref={scheduleModalRef}
+        target={scheduleTarget}
+        shopDefault={shopDefault as SlotSchedule}
+        timezone={settings.timezone}
+        slots={scheduleSlots}
+        busy={scheduleFetcher.state !== "idle"}
+        onConfirm={(schedule) => {
+          closeModal(scheduleModalRef.current);
+          setScheduleTarget(null);
+          if (!schedule) return;
+          scheduleFetcher.submit(
+            {
+              _action: "set-shop-default",
+              scheduleType: schedule.scheduleType,
+              scheduleTime: schedule.scheduleTime,
+              scheduleTime2: schedule.scheduleTime2 ?? "",
+              scheduleWeekday: schedule.scheduleWeekday == null ? "" : String(schedule.scheduleWeekday),
+            },
+            { method: "post" },
+          );
+        }}
+        onCancel={() => {
+          closeModal(scheduleModalRef.current);
+          setScheduleTarget(null);
+        }}
+      />
+
+</s-page>
   );
 }
 
-/** The grey strip along the bottom of a card. Callers provide their own
- * text styling so the container stays reusable. */
-function CardFooterStrip({ children }: { children: React.ReactNode }) {
-  return (
-    <>
-      <s-divider />
-      <s-box padding="base" background="subdued">
-        {children}
-      </s-box>
-    </>
-  );
-}
-
-/** A "Yes"/"No access" style value with a small check icon before it —
- * `tone="success"` for the reassuring cases (no access, no conflict),
- * `tone="neutral"` for a plain fact that isn't good or bad news. A custom
- * SVG, not `s-icon type="check"`: that icon doesn't honor `tone` and
- * always renders green (same issue found on the Plan page's trust row),
- * which would make the "neutral" rows here — "Yes" to reading your
- * products, changing collection order — look identically reassuring to
- * the actual "No access" rows below them, on a card whose whole point is
- * that distinction. */
-function AccessValue({
-  text,
-  tone,
-}: {
-  text: string;
-  tone: "neutral" | "success";
-}) {
-  const color =
-    tone === "success" ? "var(--p-color-icon-success, #008060)" : "var(--p-color-icon-secondary, #6b6b6b)";
-  return (
-    <s-stack direction="inline" gap="small-200" alignItems="center">
-      <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
-        <path
-          d="M2.5 7.3L5.6 10.4L11.5 3.6"
-          stroke={color}
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-      </svg>
-      <s-text type="strong" tone={tone === "success" ? "success" : undefined}>
-        {text}
-      </s-text>
-    </s-stack>
-  );
-}
-
-/** The card shell shared by every card on this page — and matching the one
- * on Insights/Help: white surface, 1px border, 12px radius, subtle shadow,
- * a 3px accent bar on top, and a 32px icon chip beside the heading. */
-function SettingsCard({
+/** One section of the page: its name and what it is for on the left, its
+ * controls on the right. This is how Shopify's own settings pages are laid
+ * out, and it replaced a two-column card grid that gave every section equal
+ * weight and left a void wherever the shorter column ran out. */
+/** A group: a small uppercase label with one tinted chip, sitting ABOVE its
+ * card rather than beside it. That is what let the side column go, and with
+ * it the dead space next to every short annotation. */
+function SettingsGroup({
   icon,
-  tone,
   title,
   children,
 }: {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- s-icon's `type` union isn't worth re-declaring here
   icon: any;
-  tone: Tone;
   title: string;
   children: React.ReactNode;
 }) {
-  const tokens = TONE_TOKENS[tone];
   return (
-    <div
-      style={{
-        position: "relative",
-        background: "var(--p-color-bg-surface, #ffffff)",
-        border: "1px solid var(--p-color-border, #e3e3e3)",
-        borderRadius: 12,
-        boxShadow: "var(--p-shadow-100, 0 1px 2px rgba(23, 24, 24, 0.07))",
-        overflow: "hidden",
-      }}
-    >
-      <div
-        style={{
-          position: "absolute",
-          top: 0,
-          left: 0,
-          right: 0,
-          height: 3,
-          background: tokens.accent,
-        }}
-      />
-      <div style={{ padding: 16 }}>
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 10,
-            marginBottom: 12,
-          }}
-        >
-          <div
-            aria-hidden="true"
-            style={{
-              width: 32,
-              height: 32,
-              flex: "0 0 auto",
-              borderRadius: 8,
-              background: tokens.tint,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-            }}
-          >
-            <s-icon type={icon} tone={tone}></s-icon>
-          </div>
-          <s-heading>{title}</s-heading>
+    <section className="shuffly-settings-group">
+      <div className="shuffly-settings-grouplabel">
+        <IconChip icon={icon} />
+        <span>{title}</span>
+      </div>
+      <s-section padding="none">{children}</s-section>
+    </section>
+  );
+}
+
+/** The one row shape, used without exception.
+ *
+ * LEFT  the label at 600, an inline badge where state is worth colouring,
+ *       and one subdued line of help beneath.
+ * RIGHT the value and/or control, right-aligned and vertically centred.
+ *
+ * `control` is a function of the help text's id so the caller can hang
+ * aria-describedby on the real control — the association has to be on the
+ * focusable element, and only the caller knows which that is. */
+function SettingsRow({
+  label,
+  badge,
+  help,
+  valueOverride,
+  subValue,
+  control,
+}: {
+  label: string;
+  badge?: React.ReactNode;
+  help: string;
+  /** The row's value, shown above the sub-line. Omitted on rows where the
+   * control IS the value, like the toggle or the tag chips. */
+  valueOverride?: string;
+  subValue?: string;
+  control: (helpId: string) => React.ReactNode;
+}) {
+  const helpId = useId();
+  return (
+    <div className="shuffly-settings-row">
+      <div className="shuffly-settings-rowlabel">
+        <div className="shuffly-settings-labelline">
+          <span className="shuffly-settings-label">{label}</span>
+          {badge}
         </div>
-        {children}
+        <span id={helpId} className="shuffly-settings-help">
+          {help}
+        </span>
+      </div>
+      <div className="shuffly-settings-control">
+        {valueOverride != null && (
+          <div className="shuffly-settings-valuebox">
+            <span className="shuffly-settings-value">{valueOverride}</span>
+            {subValue && <span className="shuffly-settings-subvalue">{subValue}</span>}
+          </div>
+        )}
+        {control(helpId)}
       </div>
     </div>
   );
@@ -544,32 +715,24 @@ function Bar({ width }: { width: number }) {
 
 function SettingsSkeleton() {
   return (
-    <div
-      className="shuffly-settings-grid"
-      style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 16 }}
-    >
-      <s-stack direction="block" gap="base">
-        {[0, 1, 2].map((i) => (
-          <s-box key={i} padding="base" borderWidth="base" borderRadius="base">
-            <s-stack direction="block" gap="base">
-              <Bar width={120} />
-              <Bar width={220} />
-              <Bar width={160} />
-            </s-stack>
-          </s-box>
-        ))}
-      </s-stack>
-      <s-stack direction="block" gap="base">
-        {[0, 1, 2, 3].map((i) => (
-          <s-box key={i} padding="base" borderWidth="base" borderRadius="base">
-            <s-stack direction="block" gap="small">
-              <Bar width={140} />
-              <Bar width={140} />
-              <Bar width={140} />
-            </s-stack>
-          </s-box>
-        ))}
-      </s-stack>
+    <div className="shuffly-settings-column">
+      {[0, 1, 2, 3].map((i) => (
+        <section key={i} className="shuffly-settings-group">
+          <div className="shuffly-settings-grouplabel">
+            <Bar width={90} />
+          </div>
+          <s-section padding="none">
+            {[0, 1].map((r) => (
+              <div key={r} className="shuffly-settings-row">
+                <div className="shuffly-settings-rowlabel">
+                  <Bar width={150} />
+                  <Bar width={220} />
+                </div>
+              </div>
+            ))}
+          </s-section>
+        </section>
+      ))}
     </div>
   );
 }

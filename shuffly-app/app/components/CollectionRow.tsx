@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useFetcher } from "react-router";
+import { useAppBridge } from "@shopify/app-bridge-react";
 
 export interface CollectionRowData {
   id: string;
@@ -21,6 +22,11 @@ export interface CollectionRowData {
    * component, not by the caller. */
   preview: Array<{ id: string; initial: string; imageUrl: string | null; soldOut: boolean }>;
   scheduleLine: string; // "Daily at 06:00" or "Paused"
+  /** True when this collection has its own schedule instead of following the
+   * shop default — drives the subdued "Custom" marker in the Schedule cell. */
+  scheduleIsCustom: boolean;
+  /** The effective schedule the modal opens on. */
+  schedule: { scheduleType: string; scheduleTime: string; scheduleTime2: string | null; scheduleWeekday: number | null };
   /** Static fallback sub-line ("Resume to schedule" / "Shuffles only when
    * you press Shuffle") — empty when RUNNING with a real nextRunAt, since
    * that case renders a live ticking countdown instead (see CountdownLine
@@ -29,7 +35,20 @@ export interface CollectionRowData {
   /** Raw target instant, RUNNING collections only — this component ticks
    * its own countdown from it every second, client-side only, no polling. */
   nextRunAt: Date | null;
-  lastRun: { moved: number; whenLabel: string; failed: boolean; at: Date } | null;
+  /** The sort Shuffly switched this collection away from, as a label, or null.
+   * Only read by the bulk-remove dialog — the row itself doesn't render it. */
+  restorableSort?: string | null;
+  /** True when the collection was already Manual and we captured its order. */
+  hasOrderSnapshot?: boolean;
+  /** Shopify's current sort for this collection when it is NOT Manual
+   * ("Best selling", "Newest"), else null. Shuffly can only reorder a
+   * manually-sorted collection, so this being non-null is the row's most
+   * important fact — shuffles are silently doing nothing. */
+  wrongSortLabel: string | null;
+  /** `noMoveReason` is the clause after "0 moved — ", already turned into
+   * merchant-facing words by the loader; null when the run moved something
+   * or predates the column. */
+  lastRun: { moved: number; whenLabel: string; failed: boolean; at: Date; noMoveReason: string | null } | null;
   /** Last 7 runs, oldest first; null = no run in that slot. Renders as a
    * tiny bar chart under the last-run figures. */
   sparkline: Array<{ moved: number } | null>;
@@ -44,6 +63,12 @@ interface CollectionRowProps {
   onShuffleSettled: (id: string) => void;
   selected: boolean;
   onToggleSelect: (id: string, checked: boolean) => void;
+  /** Opens the parent's existing confirmation modal — the same one the
+   * add-collection flow uses. A sort is never switched without it. */
+  onSwitchToManual: (collection: CollectionRowData) => void;
+  /** Opens the shared schedule modal. Same callback behind the Schedule cell
+   * and the menu item, so the two can never diverge. */
+  onEditSchedule: (collection: CollectionRowData) => void;
 }
 
 const THUMB_SIZE = 26;
@@ -55,11 +80,19 @@ export function CollectionRow({
   onShuffleSettled,
   selected,
   onToggleSelect,
+  onSwitchToManual,
+  onEditSchedule,
 }: CollectionRowProps) {
+  const shopify = useAppBridge();
   const shuffleFetcher = useFetcher({ key: `shuffle-${t.id}` });
   const menuActionFetcher = useFetcher({ key: `row-action-${t.id}` });
   const lastHandledRunId = useRef<number | null>(null);
   const wasShuffling = useRef(false);
+  // Only a shuffle the merchant started from THIS row's menu gets its own
+  // pair of toasts. A bulk "Shuffle all now" drives the very same fetcher on
+  // every row at once, and 25 rows each announcing themselves on top of the
+  // page's single "Shuffle complete" is noise, not feedback.
+  const manualShuffle = useRef(false);
   const menuId = `row-menu-${t.id}`;
 
   useEffect(() => {
@@ -73,11 +106,23 @@ export function CollectionRow({
   useEffect(() => {
     if (shuffleFetcher.state !== "idle") {
       wasShuffling.current = true;
-    } else if (wasShuffling.current) {
-      wasShuffling.current = false;
-      onShuffleSettled(t.id);
+      return;
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- onShuffleSettled is stable from parent
+    if (!wasShuffling.current) return;
+    wasShuffling.current = false;
+    onShuffleSettled(t.id);
+    if (!manualShuffle.current) return;
+    manualShuffle.current = false;
+    // `data` lands in the same render the fetcher goes idle in, so the
+    // result is readable right here.
+    const result = shuffleFetcher.data as { ok?: boolean; movedCount?: number; error?: string } | undefined;
+    if (result?.ok) {
+      const moved = result.movedCount ?? 0;
+      shopify.toast.show(`${t.title} shuffled — ${moved} product${moved === 1 ? "" : "s"} moved`);
+    } else {
+      shopify.toast.show(result?.error ?? `Couldn't shuffle ${t.title}`, { isError: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- onShuffleSettled is stable from parent; data is read only on settle
   }, [shuffleFetcher.state]);
 
   const isShuffling = shuffleFetcher.state !== "idle";
@@ -94,7 +139,13 @@ export function CollectionRow({
   const displayStatus: "RUNNING" | "PAUSED" =
     optimisticAction === "pause" ? "PAUSED" : optimisticAction === "resume" ? "RUNNING" : t.status;
 
+  // The row no longer has a "Shuffle now" button to visibly go quiet, so the
+  // acknowledgement has to be the toast — fired before the submit, not after
+  // the round trip, so the merchant knows the click landed.
   function shuffleNow() {
+    if (isShuffling) return;
+    manualShuffle.current = true;
+    shopify.toast.show(`Shuffling ${t.title}…`);
     shuffleFetcher.submit({ _action: "shuffle-one", id: t.id }, { method: "post" });
   }
 
@@ -110,7 +161,11 @@ export function CollectionRow({
 
   const rowClassName = [
     "shuffly-row",
-    t.allSoldOut && "shuffly-row--sold-out",
+    // Critical beats caution: a wrong sort means shuffles silently do
+    // nothing at all, where "everything sold out" means they run and have
+    // nothing to move.
+    t.needsAttention && "shuffly-row--wrong-sort",
+    t.allSoldOut && !t.needsAttention && "shuffly-row--sold-out",
     selected && "shuffly-row--selected",
   ]
     .filter(Boolean)
@@ -158,32 +213,43 @@ export function CollectionRow({
         {/* title on a plain element, not s-text — a custom element's prop
            set can't be trusted to forward an arbitrary attribute through
            to the real DOM node it renders. */}
-        <div
-          className="shuffly-row-title"
-          title={t.title}
-          style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0, flexWrap: "nowrap" }}
-        >
-          <span
-            style={{
-              flex: "1 1 0%",
-              minWidth: 0,
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
-            }}
-          >
-            <s-text type="strong">{t.title}</s-text>
-          </span>
-          {t.settingsBadges.map((b) => (
-            <span key={b} style={{ flexShrink: 0 }}>
-              <s-badge tone="neutral">{b}</s-badge>
-            </span>
-          ))}
+        {/* The name gets the whole line to itself. Badges used to sit beside
+            it and, being flexShrink: 0, won every squeeze — "Automated
+            Collection (Copy)" became "Automated Colle…" and once even
+            vanished entirely. The name is this table's primary identifier;
+            it does not compete with a badge for width. */}
+        <div className="shuffly-row-title" title={t.title}>
+          <s-text type="strong">{t.title}</s-text>
         </div>
+        {(t.needsAttention || t.settingsBadges.length > 0) && (
+          <div className="shuffly-row-badges">
+            {t.needsAttention && <s-badge tone="critical">Not on Manual sort</s-badge>}
+            {t.settingsBadges.map((b) => (
+              <s-badge key={b} tone="neutral">
+                {b}
+              </s-badge>
+            ))}
+          </div>
+        )}
         <div className="shuffly-row-meta">
           <s-text color="subdued">{t.factsLine}</s-text>
         </div>
-        {t.allSoldOut && (
+        {t.needsAttention && (
+          // Plain words, not jargon: the merchant needs to know shuffling is
+          // stopped and what to do, not the name of an enum.
+          <div
+            style={{
+              fontSize: 12,
+              fontWeight: 600,
+              color: "var(--p-color-text-critical, #8e0b21)",
+              lineHeight: 1.3,
+            }}
+          >
+            Shuffly can&apos;t reorder this until it&apos;s back on Manual sort
+            {t.wrongSortLabel ? ` — Shopify has it on ${t.wrongSortLabel}` : ""}
+          </div>
+        )}
+        {t.allSoldOut && !t.needsAttention && (
           // Amber/caution, not brand orange — "sold out" is an attention
           // state, and orange stays reserved for the page's four sanctioned
           // spots (Add-all button, next-run chip, sparkline, selected-row
@@ -247,8 +313,25 @@ export function CollectionRow({
          labelled pair instead of sitting under a column header. */}
       <div className="shuffly-row-schedule">
         <span className="shuffly-row-mobile-label">Schedule</span>
+        {/* The primary way into the picker. A merchant who wants to change
+            when something runs clicks the thing that says when it runs — far
+            more discoverable than a menu item, which is kept as the second
+            route. A real button, so keyboard and screen readers get it too;
+            it sits above the row's stretched link like the checkbox does. */}
         <div>
-          <s-text type="strong">{displayStatus === "PAUSED" ? "Paused" : t.scheduleLine}</s-text>
+          <button
+            type="button"
+            className="shuffly-schedule-button"
+            onClick={() => onEditSchedule(t)}
+            aria-label={`Change schedule for ${t.title} — currently ${t.scheduleLine}`}
+          >
+            <s-text type="strong">{displayStatus === "PAUSED" ? "Paused" : t.scheduleLine}</s-text>
+            {t.scheduleIsCustom && (
+              <span className="shuffly-schedule-custom">
+                <s-text color="subdued">Custom</s-text>
+              </span>
+            )}
+          </button>
         </div>
         <div style={{ fontSize: 12 }}>
           {displayStatus === "RUNNING" && t.nextRunAt ? (
@@ -264,66 +347,86 @@ export function CollectionRow({
         <span className="shuffly-row-mobile-label">Last run</span>
         {t.lastRun == null ? (
           <s-text color="subdued">—</s-text>
-        ) : t.lastRun.failed ? (
-          <s-badge tone="critical">Failed</s-badge>
         ) : (
           <>
+            {/* A bare "0 moved" can't tell a merchant whether the app worked
+                and had nothing to do or quietly failed, so the count never
+                stands alone — the reason comes from the run record. A failed
+                run keeps its critical badge AND says why. */}
             <div>
-              <s-text type="strong">{t.lastRun.moved} moved</s-text>
+              {t.lastRun.failed ? (
+                <s-badge tone="critical">Failed</s-badge>
+              ) : (
+                <s-text type="strong">{t.lastRun.moved} moved</s-text>
+              )}
             </div>
+            {t.lastRun.noMoveReason && (
+              <div style={{ fontSize: 12, lineHeight: 1.3 }}>
+                {t.lastRun.failed ? (
+                  <s-text tone="critical">{t.lastRun.noMoveReason}</s-text>
+                ) : (
+                  <s-text color="subdued">— {t.lastRun.noMoveReason}</s-text>
+                )}
+              </div>
+            )}
             <div style={{ fontSize: 12 }}>
               <s-text color="subdued">{t.lastRun.whenLabel}</s-text>
             </div>
-            <Sparkline data={t.sparkline} />
+            {!t.lastRun.failed && <Sparkline data={t.sparkline} />}
           </>
         )}
       </div>
 
-      {/* Column 6 — always visible, fixed width, same on every row. Plain
-         buttons, not s-button: that component renders its own visible
-         border/shadow chrome per instance, which is what was showing as a
-         bordered panel wrapping these controls — these sit directly on
-         the row. Contents depend on status so the row never shows a
-         contradictory pair (a paused collection offering "Shuffle now"
-         right next to "Resume") and never shows more than one filled
-         button: Running gets two secondary buttons (Shuffle now, Pause);
-         Paused gets one primary/filled button (Resume) and nothing else
-         — its one-off shuffle moves into the overflow menu as "Shuffle
-         once", since "now" implies a schedule that isn't running. */}
+      {/* Column 6 — the overflow menu, and nothing else. The inline
+         "Shuffle now"/"Pause"/"Resume" buttons that used to sit here were
+         an exact duplicate of the menu's own first two items, so the
+         column carried the same two actions twice and reserved 230px on
+         every row to do it. The menu is now the single path, and the
+         column is only as wide as its trigger.
+
+         Because the trigger is the row's primary action surface now, its
+         accessible name has to name the row — a screen-reader user
+         landing on a list of 25 buttons all called "···" has nothing to
+         pick from. The visible glyph stays "···".
+
+         Contents still depend on status, so the row never offers a
+         contradictory pair: only one of Pause/Resume is ever present, and
+         a paused collection's one-off shuffle reads "Shuffle once" rather
+         than "Shuffle now" — "now" implies a schedule that isn't
+         running. */}
       <div className="shuffly-row-actions">
-        <div className="shuffly-row-quick-buttons">
-          {displayStatus === "RUNNING" ? (
-            <>
-              <button type="button" className="shuffly-row-action-btn" onClick={shuffleNow} disabled={isShuffling}>
-                {isShuffling ? "Shuffling…" : "Shuffle now"}
-              </button>
-              <button type="button" className="shuffly-row-action-btn" onClick={togglePause} disabled={isMenuBusy}>
-                Pause
-              </button>
-            </>
-          ) : (
-            <button
-              type="button"
-              className="shuffly-row-action-btn shuffly-row-action-btn--primary"
-              onClick={togglePause}
-              disabled={isMenuBusy}
-            >
-              Resume
-            </button>
+        {/* Icon-only, and NO text child — that is the whole fix for the
+            double control. Polaris adds its own disclosure chevron to a
+            menu trigger that carries a text label, so rendering "···" as
+            text got us a "···" AND a "⌄" that both opened the same menu.
+            `icon="menu-horizontal"` is the documented overflow trigger and
+            draws exactly one glyph. */}
+        <s-button
+          icon="menu-horizontal"
+          commandFor={menuId}
+          variant="tertiary"
+          accessibilityLabel={`More actions for ${t.title}`}
+        ></s-button>
+        <s-menu id={menuId} accessibilityLabel={`More actions for ${t.title}`}>
+          {/* Disabled while this collection already has a reorder in
+             flight — whether the merchant started it here or a page-level
+             "Shuffle all now" did. Two concurrent reorder jobs on one
+             collection is what Shopify rejects with
+             TOO_MANY_ATTEMPTS_TO_REORDER_PRODUCTS. */}
+          {/* First, and only when it applies: nothing else in this menu does
+              anything until the sort is back on Manual. */}
+          {t.needsAttention && (
+            <s-button icon="sort" onClick={() => onSwitchToManual(t)}>
+              Switch to Manual
+            </s-button>
           )}
-        </div>
-        <s-button command="--toggle" commandFor={menuId} variant="tertiary" accessibilityLabel={`Actions for ${t.title}`}>
-          ···
-        </s-button>
-        <s-menu id={menuId} accessibilityLabel={`Actions for ${t.title}`}>
-          {/* Mirrors the quick buttons above, plus Remove — below the
-             820px container breakpoint the standalone buttons are hidden
-             by CSS, so this is the only way to reach them there; above
-             it, it's a second path to the same actions. */}
+          <s-button icon="clock" onClick={() => onEditSchedule(t)}>
+            Set schedule…
+          </s-button>
           {displayStatus === "RUNNING" ? (
             <>
               <s-button onClick={shuffleNow} disabled={isShuffling || undefined}>
-                Shuffle now
+                {isShuffling ? "Shuffling…" : "Shuffle now"}
               </s-button>
               <s-button onClick={togglePause} disabled={isMenuBusy || undefined}>
                 Pause
@@ -335,7 +438,7 @@ export function CollectionRow({
                 Resume
               </s-button>
               <s-button onClick={shuffleNow} disabled={isShuffling || undefined}>
-                Shuffle once
+                {isShuffling ? "Shuffling…" : "Shuffle once"}
               </s-button>
             </>
           )}

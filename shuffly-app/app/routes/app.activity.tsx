@@ -86,6 +86,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const runId = String(formData.get("runId"));
   const run = await db.shuffleRun.findFirst({ where: { id: runId, shop }, include: { collection: true } });
   if (!run) return data({ ok: false, error: "That run couldn't be found." }, { status: 404 });
+  // A run whose collection was since removed from Shuffly survives (see
+  // ShuffleRun.collectionTitle) so its Activity row still reads correctly,
+  // but there's nothing left to restore an order onto.
+  if (!run.collection) return data({ ok: false, error: "That collection has been removed from Shuffly." }, { status: 410 });
   const result = await undoRun(admin, shop, run.collection, run.id);
   return data(result.ok ? { ok: true } : { ok: false, error: result.error ?? "Couldn't restore that order." });
 };

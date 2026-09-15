@@ -528,7 +528,26 @@
     transition: background-color 150ms ease;
   }
   .contact-submit:hover { background: var(--orange-dark); }
+  .contact-submit[disabled] { opacity: 0.65; cursor: default; }
+  .contact-submit[disabled]:hover { background: var(--orange); }
   .contact-note { grid-column: 1 / -1; margin: 2px 0 0; font-size: 12.5px; color: rgba(255,255,255,0.45); }
+
+  /* Submission feedback — hidden until the form actually reports back. */
+  .contact-status {
+    grid-column: 1 / -1; margin: 0; display: none; gap: 10px; align-items: flex-start;
+    border-radius: 10px; padding: 13px 15px; font-size: 14px; line-height: 1.5;
+    border: 1px solid transparent;
+  }
+  .contact-status.show { display: flex; }
+  .contact-status > span { flex: 1; min-width: 0; }
+  .contact-status.ok { background: rgba(255,255,255,0.06); border-color: rgba(255,255,255,0.16); color: #fff; }
+  .contact-status.ok::before { content: "✓"; color: var(--orange); font-weight: 800; flex: none; }
+  .contact-status.bad { background: rgba(255,75,31,0.10); border-color: rgba(255,75,31,0.45); color: #fff; }
+  .contact-status.bad::before { content: "!"; color: var(--orange); font-weight: 800; flex: none; }
+  .contact-status a { color: #fff; text-decoration: underline; text-underline-offset: 2px; }
+  .contact-status a:hover { color: var(--orange); }
+  /* Anti-spam honeypot: real people never see it, bots fill it in. */
+  .contact-hp { position: absolute; left: -9999px; width: 1px; height: 1px; overflow: hidden; }
 
   @media (max-width: 640px) {
     .contact-form { grid-template-columns: 1fr; }
@@ -1275,7 +1294,7 @@
           <h3>Still not sure?</h3>
           <p>Ask us anything before you install. We answer in one business day.</p>
         </div>
-        <a class="btn-email" href="mailto:team@mapetitecoree.com?subject=Shuffly%20question">Email us</a>
+        <a class="btn-email" href="mailto:team@mpctrades.com?subject=Shuffly%20question">Email us</a>
       </div>
     </div>
   </section>
@@ -1291,11 +1310,15 @@
           <ul class="contact-checks">
             <li>Early access is free while we build</li>
             <li>No card, no commitment, no sales call</li>
-            <li>Email us directly: <a href="mailto:team@mapetitecoree.com">team@mapetitecoree.com</a></li>
+            <li>Email us directly: <a href="mailto:team@mpctrades.com">team@mpctrades.com</a></li>
           </ul>
         </div>
 
-        <form class="contact-form" id="contact-form">
+        <form class="contact-form" id="contact-form" action="/api/contact" method="POST">
+          <div class="contact-hp" aria-hidden="true">
+            <label for="cf-bot">Leave this field empty</label>
+            <input type="checkbox" id="cf-bot" name="botcheck" tabindex="-1" autocomplete="off">
+          </div>
           <div class="contact-field">
             <label for="cf-name">Name</label>
             <input type="text" id="cf-name" name="name" placeholder="Your name" required>
@@ -1320,7 +1343,8 @@
             <label for="cf-message">Message</label>
             <textarea id="cf-message" name="message" placeholder="How many products and collections do you have, and what would you want rotating?" required></textarea>
           </div>
-          <button type="submit" class="contact-submit">Send message <span aria-hidden="true">&rarr;</span></button>
+          <button type="submit" class="contact-submit" id="cf-submit">Send message <span aria-hidden="true">&rarr;</span></button>
+          <p class="contact-status" id="cf-status" role="status" aria-live="polite"></p>
           <p class="contact-note">We usually reply within a day.</p>
         </form>
       </div>
@@ -1336,7 +1360,7 @@
       <a href="#how-it-works">How it works</a>
       <a href="#pricing">Pricing</a>
       <a href="#faq">FAQ</a>
-      <a href="mailto:team@mapetitecoree.com">Contact</a>
+      <a href="mailto:team@mpctrades.com">Contact</a>
     </div>
   </div>
 </footer>
@@ -1479,28 +1503,121 @@
 </script>
 
 <script>
-  // This is a static file with no backend to POST to, so "submitting" opens
-  // the visitor's own email client with the message pre-filled instead of
-  // silently failing against a form action that doesn't exist.
+  // Contact form -> /api/contact (same origin) -> emailed to team@mpctrades.com.
+  //
+  // Posts JSON over fetch so the visitor never leaves the page. The endpoint
+  // is the shared relay in contact-relay/, proxied by nginx on this same
+  // host, so there's no third-party form relay and no CORS. It brands the
+  // email per site from the Host header, so nothing here carries a product
+  // name and no key is needed client-side.
+  //
+  // If the request fails (offline, service down), we fall back to the
+  // visitor's own mail client with the message pre-filled, so something
+  // someone took the trouble to write never just disappears.
   (function () {
+    var SUPPORT_EMAIL = 'team@mpctrades.com';
+    var ENDPOINT = '/api/contact';
+    var ERRORS = {
+      rate_limited: 'You\u2019ve sent a few messages already \u2014 please give it an hour.',
+      invalid_fields: 'Please check your name, email and message.',
+      invalid_json: 'Sorry, that didn\u2019t go through.',
+      payload_too_large: 'That message is too long to send.',
+      send_failed: 'Sorry, that didn\u2019t go through.'
+    };
+
     var form = document.getElementById('contact-form');
     if (!form) return;
+
+    var button = document.getElementById('cf-submit');
+    var status = document.getElementById('cf-status');
+    var buttonHTML = button ? button.innerHTML : '';
+
+    function val(id) {
+      var el = document.getElementById(id);
+      return el ? String(el.value || '').trim() : '';
+    }
+
+    function say(kind, html) {
+      if (!status) return;
+      status.className = 'contact-status show ' + kind;
+      status.innerHTML = '<span>' + html + '</span>';
+    }
+
+    function clearStatus() {
+      if (!status) return;
+      status.className = 'contact-status';
+      status.innerHTML = '';
+    }
+
+    function busy(on) {
+      if (!button) return;
+      button.disabled = on;
+      button.innerHTML = on ? 'Sending…' : buttonHTML;
+    }
+
+    // Last resort: hand the message to the visitor's own mail client.
+    function mailtoFallback() {
+      var store = val('cf-store');
+      var topic = val('cf-topic');
+      var subject = 'Shuffly — ' + topic + (store ? ' — ' + store : '');
+      var lines = ['Name: ' + val('cf-name'), 'Email: ' + val('cf-email')];
+      if (store) lines.push('Store: ' + store);
+      lines.push('Topic: ' + topic, '', val('cf-message'));
+      return 'mailto:' + SUPPORT_EMAIL
+        + '?subject=' + encodeURIComponent(subject)
+        + '&body=' + encodeURIComponent(lines.join('\n'));
+    }
+
+    function failed(reason) {
+      say('bad', reason + ' You can send it straight to us instead — '
+        + '<a href="' + mailtoFallback() + '">open this in your email app</a>, '
+        + 'or write to <a href="mailto:' + SUPPORT_EMAIL + '">' + SUPPORT_EMAIL + '</a>.');
+    }
+
     form.addEventListener('submit', function (e) {
       e.preventDefault();
-      var name = form.name.value.trim();
-      var email = form.email.value.trim();
-      var store = form.store.value.trim();
-      var topic = form.topic.value;
-      var message = form.message.value.trim();
+      if (button && button.disabled) return;
+      clearStatus();
+      busy(true);
 
-      var subject = 'Shuffly — ' + topic + (store ? ' — ' + store : '');
-      var bodyLines = ['Name: ' + name, 'Email: ' + email];
-      if (store) bodyLines.push('Store: ' + store);
-      bodyLines.push('Topic: ' + topic, '', message);
+      var payload = {
+        name: val('cf-name'),
+        email: val('cf-email'),
+        store: val('cf-store'),
+        // Just the topic. The relay brands the email from the host it was
+        // posted to, so the product name doesn't belong in here any more.
+        topic: val('cf-topic'),
+        message: val('cf-message'),
+        company: (document.getElementById('cf-bot') && document.getElementById('cf-bot').checked) ? 'bot' : ''
+      };
 
-      window.location.href = 'mailto:team@mapetitecoree.com'
-        + '?subject=' + encodeURIComponent(subject)
-        + '&body=' + encodeURIComponent(bodyLines.join('\n'));
+      fetch(ENDPOINT, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify(payload)
+      })
+        .then(function (res) {
+          return res.json()
+            .catch(function () { return {}; })
+            .then(function (body) { return { ok: res.ok, body: body }; });
+        })
+        .then(function (r) {
+          if (r.ok && r.body && r.body.ok) {
+            form.reset();
+            say('ok', 'Thanks — your message is on its way to us. '
+              + 'We usually reply within one business day.');
+          } else if (r.body && r.body.error) {
+            // The relay answers with machine codes, not prose - translate
+            // them, or the visitor reads "invalid_fields" at us.
+            failed(ERRORS[r.body.error] || 'Sorry, that didn\u2019t go through.');
+          } else {
+            failed('Sorry, that didn’t go through.');
+          }
+        })
+        .catch(function () {
+          failed('Sorry, that didn’t go through.');
+        })
+        .then(function () { busy(false); });
     });
   })();
 </script>

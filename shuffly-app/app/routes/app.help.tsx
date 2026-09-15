@@ -1,14 +1,8 @@
 import { useState } from "react";
 import type { LoaderFunctionArgs } from "react-router";
-import { Link, useLoaderData } from "react-router";
-import { useAppBridge } from "@shopify/app-bridge-react";
 import { authenticate } from "../shopify.server";
-import db from "../db.server";
 import { getOrCreateShopSettings } from "../lib/shop-context.server";
-import { planOf } from "../lib/plans";
-import { KeyValueRows } from "../components/KeyValueRows";
-import en from "../locales/en.json";
-import fr from "../locales/fr.json";
+import { SUPPORT_MAILTO, WEBSITE_URL } from "../lib/app-config";
 
 interface Question {
   id: string;
@@ -137,52 +131,23 @@ const HOW_IT_WORKS: Array<{
   },
 ];
 
-// The "Contact support" card needs real, current facts about this shop — never
-// hard-coded — so a merchant's "Copy shop details" always reflects reality.
+// Every value this loader used to return (shop, plan, tracked count, last run,
+// localized strings) existed only to feed the "Copy shop details" button on
+// the Contact support card. With that card gone the page is entirely static
+// copy, so the two DB queries it cost on every Help view go with it — the
+// authenticate call stays, since this route must remain authenticated.
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { admin, session } = await authenticate.admin(request);
-  const shop = session.shop;
-  const settings = await getOrCreateShopSettings(admin, shop);
-
-  const [trackedCount, lastRun] = await Promise.all([
-    db.collectionConfig.count({ where: { shop } }),
-    db.shuffleRun.findFirst({
-      where: { shop },
-      orderBy: { createdAt: "desc" },
-      select: { createdAt: true },
-    }),
-  ]);
-
-  return {
-    shop,
-    planName: planOf(settings.plan).name,
-    trackedCount,
-    lastRunAt: lastRun ? lastRun.createdAt.toISOString() : null,
-    strings: settings.language === "fr" ? fr : en,
-  };
+  await getOrCreateShopSettings(admin, session.shop);
+  return null;
 };
 
 export default function Help() {
-  const { shop, planName, trackedCount, lastRunAt, strings: t } = useLoaderData<typeof loader>();
-  const shopify = useAppBridge();
   const [query, setQuery] = useState("");
   const [openId, setOpenId] = useState<string | null>(null);
 
   function contactSupport() {
-    window.location.href = "mailto:team@mapetitecoree.com?subject=Shuffly%20support";
-  }
-
-  function copyDetails() {
-    const lines = [
-      `Shop: ${shop}`,
-      `Plan: ${planName}`,
-      `Collections tracked: ${trackedCount}`,
-      `Last run: ${lastRunAt ?? "none yet"}`,
-    ];
-    navigator.clipboard
-      .writeText(lines.join("\n"))
-      .then(() => shopify.toast.show(t["help.contactSupport.copyToast"]))
-      .catch(() => shopify.toast.show("Couldn't copy that just now", { isError: true }));
+    window.location.href = SUPPORT_MAILTO;
   }
 
   const needle = query.trim().toLowerCase();
@@ -203,7 +168,7 @@ export default function Help() {
       <s-button
         slot="primary-action"
         variant="primary"
-        href="https://shuffly.mpctrades.com"
+        href={WEBSITE_URL}
         target="_blank"
       >
         Website
@@ -274,10 +239,7 @@ export default function Help() {
           })}
         </div>
 
-        <div
-          className="shuffly-help-grid"
-          style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 16 }}
-        >
+        <div className="shuffly-help-grid" style={{ display: "grid", gridTemplateColumns: "1fr", gap: 16 }}>
           <s-section padding="none">
             <div style={{ padding: "16px 16px 0" }}>
               <s-heading>Questions we get</s-heading>
@@ -346,93 +308,6 @@ export default function Help() {
             )}
           </s-section>
 
-          <s-stack direction="block" gap="base">
-            <s-section heading="Support">
-              <s-stack direction="block" gap="small">
-                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <div
-                    style={{
-                      width: 8,
-                      height: 8,
-                      borderRadius: "50%",
-                      background: "var(--p-color-bg-fill-success, #29845a)",
-                      flex: "none",
-                    }}
-                  />
-                  <s-text color="subdued">Support by email</s-text>
-                </div>
-                <KeyValueRows
-                  rows={[
-                    { label: "Contact method", value: "Email" },
-                    { label: "Languages", value: "English, Français" },
-                  ]}
-                />
-                <div style={{ marginTop: 4 }}>
-                  <s-button
-                    variant="secondary"
-                    inlineSize="fill"
-                    onClick={contactSupport}
-                  >
-                    Contact support
-                  </s-button>
-                </div>
-              </s-stack>
-            </s-section>
-
-            <s-section heading="Start over">
-              <s-stack direction="block" gap="small">
-                <s-text color="subdued">
-                  Re-run the two-question setup — nothing changes until you
-                  confirm.
-                </s-text>
-                <Link to="/app/onboarding">
-                  <s-button variant="secondary" inlineSize="fill">
-                    Run guided setup again
-                  </s-button>
-                </Link>
-              </s-stack>
-            </s-section>
-
-            <s-section>
-              <s-stack direction="block" gap="base">
-                <s-stack direction="inline" gap="base" alignItems="center" justifyContent="space-between">
-                  <s-stack direction="inline" gap="small" alignItems="center">
-                    <s-box background="subdued" borderRadius="base" padding="small-200">
-                      <s-icon type="email" color="base"></s-icon>
-                    </s-box>
-                    <s-heading>{t["help.contactSupport.title"]}</s-heading>
-                  </s-stack>
-                  <s-badge tone="info">{t["help.contactSupport.badge"]}</s-badge>
-                </s-stack>
-
-                <s-text color="subdued">{t["help.contactSupport.body"]}</s-text>
-
-                <s-stack direction="block" gap="small-200">
-                  <s-text type="strong">{t["help.contactSupport.listHeading"]}</s-text>
-                  <s-unordered-list>
-                    <s-list-item>
-                      <s-text color="subdued">{t["help.contactSupport.listItem1"]}</s-text>
-                    </s-list-item>
-                    <s-list-item>
-                      <s-text color="subdued">{t["help.contactSupport.listItem2"]}</s-text>
-                    </s-list-item>
-                    <s-list-item>
-                      <s-text color="subdued">{t["help.contactSupport.listItem3"]}</s-text>
-                    </s-list-item>
-                  </s-unordered-list>
-                </s-stack>
-
-                <s-stack direction="inline" gap="small">
-                  <s-button variant="primary" href="mailto:team@mapetitecoree.com">
-                    {t["help.contactSupport.emailButton"]}
-                  </s-button>
-                  <s-button onClick={copyDetails}>
-                    {t["help.contactSupport.copyButton"]}
-                  </s-button>
-                </s-stack>
-              </s-stack>
-            </s-section>
-          </s-stack>
         </div>
       </s-stack>
 

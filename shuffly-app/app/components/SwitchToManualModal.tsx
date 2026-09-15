@@ -1,11 +1,16 @@
 import { forwardRef, useEffect, useState } from "react";
 import { useModalDismissWorkaround } from "../lib/polaris-modal";
+import { ManualSortConsequences, ReorderDelayNote } from "./ManualSortWarning";
 
 export interface SwitchToManualTarget {
+  /** Empty for a collection Shuffly doesn't track yet — see `mode`. */
   id: string;
   gid: string;
   title: string;
   sortOrderLabel: string;
+  /** "tracked" = already added, just switch it. "untracked" = switch it AND
+   * add it in the same click, which is the one-click flow Fix 04 is about. */
+  mode: "tracked" | "untracked";
 }
 
 interface SwitchToManualModalProps {
@@ -37,11 +42,17 @@ export const SwitchToManualModal = forwardRef<any, SwitchToManualModalProps>(fun
     >
       {target && (
         <>
+          {/* The brief's required sentence, stated plainly and with the
+              collection's actual current sort named — never a silent change. */}
           <s-paragraph>
-            It&apos;s currently sorted by <s-text type="strong">{target.sortOrderLabel}</s-text>. Shopify only lets
-            an app set exact positions when a collection uses Manual sort, so Shuffly needs to switch it before it
-            can start shuffling.
+            This will change your collection sort from{" "}
+            <s-text type="strong">{target.sortOrderLabel}</s-text> to{" "}
+            <s-text type="strong">Manual</s-text>. Shopify only lets an app set exact positions on a
+            manually-sorted collection.
           </s-paragraph>
+
+          <ManualSortConsequences sortOrderLabel={target.sortOrderLabel} />
+
           <s-switch
             label="Keep the current order to start with"
             checked={keepOrder}
@@ -50,10 +61,15 @@ export const SwitchToManualModal = forwardRef<any, SwitchToManualModalProps>(fun
           />
           <s-paragraph>
             {keepOrder
-              ? "Nothing visibly changes for customers right now — it keeps showing what it's showing."
-              : "It'll shuffle right away instead of just sitting in its current order."}{" "}
-            You can always switch it back to {target.sortOrderLabel} sort from Shopify admin.
+              ? "Nothing visibly changes for customers right now — it keeps showing what it's showing, and the first scheduled shuffle takes it from there."
+              : "It'll shuffle right away instead of just sitting in its current order."}
+            {target.mode === "untracked" && " Shuffly starts shuffling it on your schedule from here."}
           </s-paragraph>
+          {!keepOrder && (
+            <s-paragraph>
+              <ReorderDelayNote />
+            </s-paragraph>
+          )}
         </>
       )}
       <s-button
@@ -63,7 +79,7 @@ export const SwitchToManualModal = forwardRef<any, SwitchToManualModalProps>(fun
         disabled={!target || busy || undefined}
         {...(busy ? { loading: true } : {})}
       >
-        Switch to Manual
+        {target?.mode === "untracked" ? "Switch & start shuffling" : "Switch to Manual"}
       </s-button>
       <s-button slot="secondary-actions" onClick={onCancel}>
         Cancel
