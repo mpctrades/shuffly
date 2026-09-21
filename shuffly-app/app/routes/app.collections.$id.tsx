@@ -1,4 +1,4 @@
-import { isOverridden, resolveSchedule } from "../lib/schedule-resolve";
+import { isOverridden, overrideWriteFields, resolveSchedule, shopDefaultSchedule } from "../lib/schedule-resolve";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { data, useLoaderData, useNavigation, useFetcher, Form, redirect } from "react-router";
@@ -13,18 +13,16 @@ import {
   formatNextRun,
   nextRunFor,
   normalizeHhMm,
-  scheduleWriteFields,
   slotsFarEnoughApart,
-  timezoneOffsetLabel,
   type ScheduleType,
+  type SlotSchedule,
 } from "../lib/schedule-core";
-// Client-safe (see time-slots.ts) — the component below renders these.
-import { defaultSecondSlot, timeOptionsIncluding } from "../lib/time-slots";
+import { ShuffleScheduleModal, type ScheduleTarget } from "../components/ShuffleScheduleModal";
 import { SwitchToManualModal, type SwitchToManualTarget } from "../components/SwitchToManualModal";
 import { ReorderDelayNote } from "../components/ManualSortWarning";
 import { RemoveCollectionModal } from "../components/RemoveCollectionModal";
 import { closeModal, useModalDismissWorkaround } from "../lib/polaris-modal";
-import { planOf, pruneExpiredUndoSnapshots, timeSlots } from "../lib/plans.server";
+import { isScheduleAllowed, planOf, pruneExpiredUndoSnapshots, timeSlots } from "../lib/plans.server";
 
 const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 const RULES_SAVE_BAR_ID = "collection-rules-save-bar";
@@ -86,8 +84,10 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     productCount: totalCount,
     preview,
     runs,
-    timezone: settings.timezone,
-    timezoneLabel: `${settings.timezone} (${timezoneOffsetLabel(settings.timezone)})`,
+    // One field for one value. This page used to send the same timezone
+    // three ways (raw, labelled-with-offset, and "name") because three
+    // different controls each wanted their own spelling of it; the modal
+    // names the timezone itself, once, so the other two had no readers left.
     timezoneName: settings.timezone,
     nextRunLabel: formatNextRun(config.nextRunAt, settings.timezone),
     // Drives the remove dialog's copy — it must only offer what these two
@@ -100,6 +100,13 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     // Same helper the plan bar composes "N time slots" from — so the picker
     // that offers the slot and the copy that advertises it cannot disagree.
     canPickSecondSlot: timeSlots(plan.id) >= 2,
+    // The schedule modal's own inputs. `planId` is what gates the frequency
+    // grid (via PLANS[].allowedSchedules, the field the scheduler enforces),
+    // and `shopDefault` is what "Use shop default" both resets to and
+    // previews — the same object the Collections page sends it.
+    planId: plan.id,
+    scheduleSlots: timeSlots(plan.id),
+    shopDefault: shopDefaultSchedule(settings),
     canPin: plan.canPin,
     undoRetentionDays: plan.undoRetentionDays,
   };
@@ -123,63 +130,87 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
     const pushSoldOutToEnd = formData.get("pushSoldOutToEnd") === "on";
     const boostNewArrivals = formData.get("boostNewArrivals") === "on";
     const giveEveryoneATurn = formData.get("giveEveryoneATurn") === "on";
-    const scheduleType = String(formData.get("scheduleType") ?? "DAILY") as ScheduleType;
-    if (!plan.allowedSchedules.includes(scheduleType)) {
-      return data({ ok: false, error: "That schedule isn't available on your plan." }, { status: 400 });
-    }
-    const scheduleTime = String(formData.get("scheduleTime") ?? "06:00");
-    const scheduleWeekdayRaw = formData.get("scheduleWeekday");
-    const scheduleWeekday = scheduleWeekdayRaw != null && scheduleWeekdayRaw !== "" ? Number(scheduleWeekdayRaw) : null;
 
-    // The second slot only exists on a plan that allows TWICE_DAILY, and the
-    // schedule-type guard above already rejects that type for other plans —
-    // so a submitted second time can't slip past by itself.
-    const scheduleTime2Raw = formData.get("scheduleTime2");
-    const scheduleTime2 =
-      scheduleType === SECOND_SLOT_SCHEDULE && scheduleTime2Raw != null && scheduleTime2Raw !== ""
-        ? String(scheduleTime2Raw)
-        : null;
-    if (scheduleTime2 != null && !slotsFarEnoughApart(scheduleTime, scheduleTime2)) {
-      return data(
-        { ok: false, error: "Keep the two shuffle times at least an hour apart." },
-        { status: 400 },
-      );
+    // Schedule is deliberately NOT part of this form any more. It is edited
+    // in the shared schedule modal and saved by `set-schedule` below — the
+    // same component and the same write path the Collections table uses. The
+    // four dropdowns that used to live here were the one schedule UI in the
+    // app that had drifted: no cadence cards, no inheritance, no way back to
+    // the shop default, and a second-slot field visible on every cadence.
+    await db.collectionConfig.update({
+      where: { id: config.id },
+      data: { pins, pushSoldOutToEnd, boostNewArrivals, giveEveryoneATurn },
+    });
+    return data({ ok: true });
+  }
+
+  // The schedule, saved on its own. A near-copy of the Collections page's
+  // `set-schedule` for a single id, and for the same reason: an override is
+  // four columns written together, or four columns nulled together to go
+  // back to inheriting. Nothing else may write them.
+  if (actionType === "set-schedule") {
+    const toDefault = String(formData.get("scheduleMode") ?? "") === "default";
+
+    let override: ReturnType<typeof overrideWriteFields>;
+    if (toDefault) {
+      override = overrideWriteFields(null);
+    } else {
+      const scheduleType = String(formData.get("scheduleType") ?? "DAILY") as ScheduleType;
+      // Checked here, not only in the UI — a hand-rolled POST must not be
+      // able to buy a cadence the plan doesn't include.
+      if (!isScheduleAllowed(settings.plan, scheduleType)) {
+        return data(
+          { ok: false, error: `Your ${plan.name} plan doesn't include that schedule.` },
+          { status: 400 },
+        );
+      }
+      const scheduleTime = normalizeHhMm(String(formData.get("scheduleTime") ?? "06:00"));
+      const rawTime2 = formData.get("scheduleTime2");
+      const scheduleTime2 =
+        scheduleType === SECOND_SLOT_SCHEDULE && rawTime2 != null && rawTime2 !== ""
+          ? normalizeHhMm(String(rawTime2))
+          : null;
+      if (scheduleTime2 != null && timeSlots(settings.plan) < 2) {
+        return data({ ok: false, error: "Two shuffles a day is a Pro feature." }, { status: 400 });
+      }
+      if (scheduleTime2 != null && !slotsFarEnoughApart(scheduleTime, scheduleTime2)) {
+        return data(
+          { ok: false, error: "Keep the two shuffle times at least an hour apart." },
+          { status: 400 },
+        );
+      }
+      const rawWeekday = formData.get("scheduleWeekday");
+      override = overrideWriteFields({
+        scheduleType,
+        scheduleTime,
+        scheduleTime2,
+        scheduleWeekday: rawWeekday != null && rawWeekday !== "" ? Number(rawWeekday) : null,
+      });
     }
 
     // Compared against what the collection actually runs on today, which may
-    // be the shop default rather than anything stored on this row. Saving
-    // here always writes an explicit override — editing a single collection's
-    // schedule is what "override" means.
-    const effective = resolveSchedule(config, settings);
+    // be the shop default rather than anything stored on this row — and
+    // against whether it was inheriting at all, since switching to a custom
+    // schedule identical to the default is still a real change.
+    const before = resolveSchedule(config, settings);
+    const after = resolveSchedule({ ...config, ...override }, settings);
+    const summaryOf = (sch: typeof before) =>
+      scheduleSummary(sch.scheduleType, sch.scheduleTime, sch.scheduleTime2 ?? null, sch.scheduleWeekday);
     const scheduleChanged =
-      scheduleType !== effective.scheduleType ||
-      normalizeHhMm(scheduleTime) !== normalizeHhMm(effective.scheduleTime) ||
-      (scheduleTime2 == null ? null : normalizeHhMm(scheduleTime2)) !== effective.scheduleTime2 ||
-      scheduleWeekday !== effective.scheduleWeekday ||
-      !isOverridden(config);
+      summaryOf(before) !== summaryOf(after) || isOverridden(config) !== (override.scheduleType != null);
 
     await db.collectionConfig.update({
       where: { id: config.id },
       data: {
-        pins,
-        pushSoldOutToEnd,
-        boostNewArrivals,
-        giveEveryoneATurn,
+        ...override,
+        // The countdown is derived from the EFFECTIVE schedule, so a row
+        // that just went back to inheriting points at the shop default's
+        // next run rather than at its own former time.
+        nextRunAt: config.status === "RUNNING" ? nextRunFor(new Date(), settings.timezone, after) : null,
         // Stamped only when a schedule field actually moved. The sweep uses
         // it to tell "the worker was down, run this late" apart from "the
         // merchant just moved this slot into the past, don't back-fire".
         ...(scheduleChanged ? { scheduleUpdatedAt: new Date() } : {}),
-        // One helper derives every schedule field *and* nextRunAt together,
-        // so the stored countdown can never disagree with the stored time —
-        // and the cron sweep re-reads the time each pass anyway, so this
-        // save takes effect on the very next sweep with nothing left queued
-        // at the old time.
-        ...scheduleWriteFields(
-          new Date(),
-          settings.timezone,
-          { scheduleType, scheduleTime, scheduleTime2, scheduleWeekday },
-          config.status === "RUNNING" ? "RUNNING" : "PAUSED",
-        ),
       },
     });
 
@@ -193,7 +224,9 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
           collectionId: config.id,
           trigger: "SCHEDULE_CHANGED",
           status: "OK",
-          message: `Schedule changed to ${scheduleSummary(scheduleType, scheduleTime, scheduleTime2, scheduleWeekday)}`,
+          message: `Schedule changed to ${summaryOf(after)}${
+            override.scheduleType == null ? " (shop default)" : ""
+          } — was ${summaryOf(before)}`,
         },
       });
     }
@@ -299,13 +332,13 @@ export default function Workspace() {
     preview,
     runs,
     nextRunLabel,
-    timezoneLabel,
     timezoneName,
     restorable,
-    allowedSchedules,
-    canPickSecondSlot,
     canPin,
     undoRetentionDays,
+    planId,
+    scheduleSlots,
+    shopDefault,
   } = useLoaderData<typeof loader>();
   const navigation = useNavigation();
   const busy = navigation.state !== "idle";
@@ -329,40 +362,30 @@ export default function Workspace() {
   const [pushSoldOutToEnd, setPushSoldOutToEnd] = useState(config.pushSoldOutToEnd);
   const [boostNewArrivals, setBoostNewArrivals] = useState(config.boostNewArrivals);
   const [giveEveryoneATurn, setGiveEveryoneATurn] = useState(config.giveEveryoneATurn);
-  const [scheduleType, setScheduleType] = useState(config.scheduleType);
-  const [scheduleTime, setScheduleTime] = useState(config.scheduleTime);
-  // Pre-filled with a sensible second slot (12h apart, which is what
-  // twice-daily used to derive) so a Pro merchant switching to twice-daily
-  // isn't handed an empty field.
-  const [scheduleTime2, setScheduleTime2] = useState(
-    config.scheduleTime2 ?? defaultSecondSlot(config.scheduleTime),
-  );
-  const [scheduleWeekday, setScheduleWeekday] = useState(config.scheduleWeekday ?? 1);
   const [rulesDirty, setRulesDirty] = useState(false);
 
-  // Recomputed in the browser from the controlled state, not read back from
-  // the loader — the whole point is that the merchant sees what their choice
-  // means *before* they save it. Same nextRunFor the sweep and the loader
-  // use, so the preview can't disagree with what actually happens.
-  const previewNextRunLabel = useMemo(() => {
-    if (config.status !== "RUNNING") return "—";
-    const next = nextRunFor(new Date(), timezoneName, {
-      scheduleType: scheduleType as ScheduleType,
-      scheduleTime,
-      scheduleTime2: scheduleType === SECOND_SLOT_SCHEDULE && canPickSecondSlot ? scheduleTime2 : null,
-      scheduleWeekday: scheduleType === "WEEKLY" ? scheduleWeekday : null,
-    });
-    return formatNextRun(next, timezoneName);
-  }, [config.status, timezoneName, scheduleType, scheduleTime, scheduleTime2, scheduleWeekday, canPickSecondSlot]);
+  // The schedule is no longer part of the rules form: it opens the same
+  // modal the Collections table and the Settings page use, and saves through
+  // its own action. That is the whole point of the rebuild — this page used
+  // to be the one place with a different schedule UI.
+  const scheduleFetcher = useFetcher<{ ok: boolean; error?: string }>();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- showOverlay/hideOverlay are imperative methods not on the typed public props
+  const scheduleModalRef = useRef<any>(null);
+  const [scheduleTarget, setScheduleTarget] = useState<ScheduleTarget | null>(null);
 
-  const showSecondSlot = scheduleType === SECOND_SLOT_SCHEDULE || canPickSecondSlot;
-  const secondSlotLocked = !canPickSecondSlot;
-  const firstSlotOptions = timeOptionsIncluding(config.scheduleTime, scheduleTime);
-  const secondSlotOptions = timeOptionsIncluding(config.scheduleTime2, scheduleTime2);
-  const slotsClash =
-    scheduleType === SECOND_SLOT_SCHEDULE &&
-    canPickSecondSlot &&
-    !slotsFarEnoughApart(scheduleTime, scheduleTime2);
+  // The effective schedule, in the words the Collections table uses for the
+  // same collection — one summary function, so the two screens can't
+  // describe one schedule differently.
+  const scheduleLine = useMemo(
+    () =>
+      scheduleSummary(
+        config.scheduleType,
+        config.scheduleTime,
+        config.scheduleTime2,
+        config.scheduleWeekday,
+      ),
+    [config.scheduleType, config.scheduleTime, config.scheduleTime2, config.scheduleWeekday],
+  );
 
   function markRulesDirty() {
     if (!rulesDirty) {
@@ -386,10 +409,6 @@ export default function Workspace() {
     setPushSoldOutToEnd(config.pushSoldOutToEnd);
     setBoostNewArrivals(config.boostNewArrivals);
     setGiveEveryoneATurn(config.giveEveryoneATurn);
-    setScheduleType(config.scheduleType);
-    setScheduleTime(config.scheduleTime);
-    setScheduleTime2(config.scheduleTime2 ?? defaultSecondSlot(config.scheduleTime));
-    setScheduleWeekday(config.scheduleWeekday ?? 1);
     setRulesDirty(false);
     shopify.saveBar.hide(RULES_SAVE_BAR_ID);
   }
@@ -424,6 +443,53 @@ export default function Workspace() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- fires only on fetcher settle
   }, [switchFetcher.state, switchFetcher.data]);
 
+  function openScheduleModal() {
+    setScheduleTarget({
+      mode: "collection",
+      id: config.id,
+      title: config.title,
+      productCount,
+      // Already resolved by the loader, so a collection that inherits opens
+      // showing the default it inherits rather than an empty form.
+      schedule: {
+        scheduleType: config.scheduleType as ScheduleType,
+        scheduleTime: config.scheduleTime,
+        scheduleTime2: config.scheduleTime2,
+        scheduleWeekday: config.scheduleWeekday,
+      },
+      isCustom: config.scheduleIsOverridden,
+    });
+    scheduleModalRef.current?.showOverlay();
+  }
+
+  function confirmSchedule(schedule: SlotSchedule | null) {
+    closeModal(scheduleModalRef.current);
+    setScheduleTarget(null);
+    scheduleFetcher.submit(
+      schedule == null
+        ? { _action: "set-schedule", scheduleMode: "default" }
+        : {
+            _action: "set-schedule",
+            scheduleMode: "custom",
+            scheduleType: schedule.scheduleType,
+            scheduleTime: schedule.scheduleTime,
+            scheduleTime2: schedule.scheduleTime2 ?? "",
+            scheduleWeekday: schedule.scheduleWeekday == null ? "" : String(schedule.scheduleWeekday),
+          },
+      { method: "post" },
+    );
+  }
+
+  useEffect(() => {
+    if (scheduleFetcher.state !== "idle" || !scheduleFetcher.data) return;
+    if (scheduleFetcher.data.ok) {
+      shopify.toast.show("Schedule updated");
+    } else {
+      shopify.toast.show(scheduleFetcher.data.error ?? "Couldn't save that schedule", { isError: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- fires only on fetcher settle
+  }, [scheduleFetcher.state, scheduleFetcher.data]);
+
   function saveRules() {
     rulesFetcher.submit(
       {
@@ -432,12 +498,6 @@ export default function Workspace() {
         pushSoldOutToEnd: pushSoldOutToEnd ? "on" : "",
         boostNewArrivals: boostNewArrivals ? "on" : "",
         giveEveryoneATurn: giveEveryoneATurn ? "on" : "",
-        scheduleType,
-        scheduleTime,
-        // Only sent when the plan actually has the entitlement — the action
-        // ignores it otherwise, but there's no reason to send it.
-        scheduleTime2: scheduleType === SECOND_SLOT_SCHEDULE && canPickSecondSlot ? scheduleTime2 : "",
-        scheduleWeekday: String(scheduleWeekday),
       },
       { method: "post" },
     );
@@ -498,11 +558,7 @@ export default function Workspace() {
 
       <s-section heading="Rules" slot="aside">
         <ui-save-bar id={RULES_SAVE_BAR_ID}>
-          <button
-            variant="primary"
-            onClick={saveRules}
-            disabled={rulesFetcher.state !== "idle" || slotsClash || undefined}
-          >
+          <button variant="primary" onClick={saveRules} disabled={rulesFetcher.state !== "idle" || undefined}>
             Save
           </button>
           <button onClick={discardRules}>Discard</button>
@@ -554,104 +610,54 @@ export default function Workspace() {
               markRulesDirty();
             }}
           />
-          <s-select
-            label="Schedule"
-            value={scheduleType}
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- currentTarget.value isn't in the typed event map
-            onChange={(e: any) => {
-              setScheduleType(e.currentTarget?.value ?? "DAILY");
-              markRulesDirty();
-            }}
-          >
-            {allowedSchedules.includes("DAILY") && <s-option value="DAILY">Daily</s-option>}
-            {allowedSchedules.includes("TWICE_DAILY") && <s-option value="TWICE_DAILY">Twice daily</s-option>}
-            {allowedSchedules.includes("WEEKLY") && <s-option value="WEEKLY">Weekly</s-option>}
-            {allowedSchedules.includes("MANUAL") && <s-option value="MANUAL">Only when I press Shuffle</s-option>}
-          </s-select>
-          {scheduleType !== "MANUAL" && (
-            <>
-              <s-select
-                label={scheduleType === SECOND_SLOT_SCHEDULE ? "First shuffle at" : "Shuffle at"}
-                value={scheduleTime}
-                details={`${timezoneLabel} — your store's own time`}
-                // eslint-disable-next-line @typescript-eslint/no-explicit-any -- currentTarget.value isn't in the typed event map
-                onChange={(e: any) => {
-                  setScheduleTime(e.currentTarget?.value ?? "06:00");
-                  markRulesDirty();
-                }}
-              >
-                {firstSlotOptions.map((t) => (
-                  <s-option key={t} value={t}>
-                    {t}
-                  </s-option>
-                ))}
-              </s-select>
-
-              {showSecondSlot && (
-                <>
-                  <s-select
-                    label="Second shuffle at"
-                    value={scheduleTime2}
-                    disabled={secondSlotLocked || scheduleType !== SECOND_SLOT_SCHEDULE || undefined}
-                    details={
-                      secondSlotLocked
-                        ? "Two shuffles a day is a Pro feature."
-                        : scheduleType === SECOND_SLOT_SCHEDULE
-                          ? undefined
-                          : "Set the schedule to Twice daily to use this."
-                    }
-                    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- currentTarget.value isn't in the typed event map
-                    onChange={(e: any) => {
-                      setScheduleTime2(e.currentTarget?.value ?? "18:00");
-                      markRulesDirty();
-                    }}
-                  >
-                    {secondSlotOptions.map((t) => (
-                      <s-option key={t} value={t}>
-                        {t}
-                      </s-option>
-                    ))}
-                  </s-select>
-                  {secondSlotLocked && (
-                    <s-paragraph>
-                      <s-text color="subdued">Shuffle twice a day on Pro. </s-text>
-                      <s-link href="/app/plan">Upgrade to Pro</s-link>
-                    </s-paragraph>
-                  )}
-                  {slotsClash && !secondSlotLocked && (
-                    <s-paragraph>
-                      <s-text tone="critical">Keep the two shuffle times at least an hour apart.</s-text>
-                    </s-paragraph>
-                  )}
-                </>
-              )}
-            </>
-          )}
-          <s-select
-            label="Weekday (for weekly)"
-            disabled={scheduleType !== "WEEKLY" || undefined}
-            value={String(scheduleWeekday)}
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- currentTarget.value isn't in the typed event map
-            onChange={(e: any) => {
-              setScheduleWeekday(Number(e.currentTarget?.value ?? 1));
-              markRulesDirty();
-            }}
-          >
-            {WEEKDAYS.map((w, i) => (
-              <s-option key={w} value={String(i)}>
-                {w}
-              </s-option>
-            ))}
-          </s-select>
-          <s-paragraph>
-            Next run <s-text type="strong">{previewNextRunLabel}</s-text>
-            {rulesDirty && previewNextRunLabel !== nextRunLabel && (
-              <>
-                {" "}
-                <s-text color="subdued">(once you save)</s-text>
-              </>
-            )}
-          </s-paragraph>
+          {/* The schedule, as a row that opens the shared modal — not as
+              four dropdowns inline. Saving it is a separate action from the
+              rules save bar, because a schedule write is four columns that
+              have to move together (or be nulled together, to go back to
+              following the shop default). */}
+          <div className="shuffly-wsched-row">
+            <div className="shuffly-wsched-label">
+              <div className="shuffly-wsched-labelline">
+                <s-text type="strong">Shuffle schedule</s-text>
+                {config.scheduleIsOverridden ? (
+                  <s-badge tone="info">Custom</s-badge>
+                ) : (
+                  <s-badge tone="neutral">Shop default</s-badge>
+                )}
+              </div>
+              <s-text color="subdued">
+                {config.status === "RUNNING" ? `${scheduleLine} · next run ${nextRunLabel}` : scheduleLine}
+              </s-text>
+            </div>
+            <s-button
+              onClick={openScheduleModal}
+              {...(scheduleFetcher.state !== "idle" ? { loading: true } : {})}
+            >
+              Edit
+            </s-button>
+          </div>
+          <style>{`
+            .shuffly-wsched-row {
+              display: flex;
+              align-items: center;
+              justify-content: space-between;
+              gap: var(--p-space-400, 16px);
+              padding: var(--p-space-300, 12px) var(--p-space-400, 16px);
+              border: 1px solid var(--p-color-border, #e3e3e3);
+              border-radius: var(--p-border-radius-300, 12px);
+            }
+            .shuffly-wsched-label { min-width: 0; }
+            .shuffly-wsched-labelline {
+              display: flex;
+              align-items: center;
+              gap: var(--p-space-200, 8px);
+              flex-wrap: wrap;
+              margin-bottom: var(--p-space-050, 2px);
+            }
+            @media (max-width: 480px) {
+              .shuffly-wsched-row { flex-direction: column; align-items: stretch; }
+            }
+          `}</style>
         </s-stack>
       </s-section>
 
@@ -750,6 +756,21 @@ export default function Workspace() {
           {undoRetentionDays === 1 ? "" : "s"} on your plan.
         </s-paragraph>
       </s-section>
+
+      <ShuffleScheduleModal
+        ref={scheduleModalRef}
+        target={scheduleTarget}
+        shopDefault={shopDefault as SlotSchedule}
+        timezone={timezoneName}
+        slots={scheduleSlots}
+        planId={planId}
+        busy={scheduleFetcher.state !== "idle"}
+        onConfirm={confirmSchedule}
+        onCancel={() => {
+          closeModal(scheduleModalRef.current);
+          setScheduleTarget(null);
+        }}
+      />
 
       <SwitchToManualModal
         ref={switchModalRef}

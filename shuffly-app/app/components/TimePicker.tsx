@@ -126,6 +126,7 @@ export function TimePicker({
   onChange,
   disabled,
   details,
+  hideLabel = false,
 }: {
   label: string;
   value: string;
@@ -133,8 +134,14 @@ export function TimePicker({
   onChange: (next: string) => void;
   disabled?: boolean;
   /** Replaces the default "HH:MM · timezone" line when the caller has
-   * something more useful to say, e.g. why the field is locked. */
-  details?: string;
+   * something more useful to say, e.g. why the field is locked. `null`
+   * suppresses the line entirely — for a caller that already states the
+   * timezone once for a whole group of times, rather than under each one. */
+  details?: string | null;
+  /** Hide the visible label without losing it: the trigger's
+   * accessibilityLabel still carries it, so a screen reader hears the field
+   * name even where the layout names it in a column header instead. */
+  hideLabel?: boolean;
 }) {
   const popoverId = `time-popover-${useId().replace(/[^a-zA-Z0-9_-]/g, "")}`;
   const gridRef = useRef<HTMLDivElement>(null);
@@ -169,9 +176,11 @@ export function TimePicker({
 
   return (
     <div>
-      <div style={{ marginBottom: "var(--p-space-100, 4px)" }}>
-        <s-text>{label}</s-text>
-      </div>
+      {!hideLabel && (
+        <div style={{ marginBottom: "var(--p-space-100, 4px)" }}>
+          <s-text>{label}</s-text>
+        </div>
+      )}
       {/* The trigger announces the value it holds, so a screen reader hears
           "Time, 06:00" rather than just "Time". */}
       <s-button
@@ -181,9 +190,11 @@ export function TimePicker({
       >
         {current}
       </s-button>
-      <div style={{ marginTop: "var(--p-space-100, 4px)" }}>
-        <s-text color="subdued">{details ?? `${current} · ${timezone}`}</s-text>
-      </div>
+      {details !== null && (
+        <div style={{ marginTop: "var(--p-space-100, 4px)" }}>
+          <s-text color="subdued">{details ?? `${current} · ${timezone}`}</s-text>
+        </div>
+      )}
 
       <s-popover id={popoverId} inlineSize="280px">
         <s-box padding="base">

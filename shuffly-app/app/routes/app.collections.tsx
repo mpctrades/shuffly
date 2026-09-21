@@ -4,7 +4,7 @@ import { data, useLoaderData, useFetcher, useFetchers, useNavigation, useRevalid
 import { useAppBridge } from "@shopify/app-bridge-react";
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
-import { getOrCreateShopSettings } from "../lib/shop-context.server";
+import { confirmShopTimezone, getOrCreateShopSettings } from "../lib/shop-context.server";
 import {
   captureOriginalOrder,
   hydrateTrackedCollections,
@@ -33,7 +33,7 @@ import {
 import { ShuffleAllConfirmModal } from "../components/ShuffleAllConfirmModal";
 import { AddCollectionsModal, type AddCollectionsPickerData } from "../components/AddCollectionsModal";
 import { SwitchToManualModal, type SwitchToManualTarget } from "../components/SwitchToManualModal";
-import { ScheduleModal, type ScheduleTarget } from "../components/ScheduleModal";
+import { ShuffleScheduleModal, type ScheduleTarget } from "../components/ShuffleScheduleModal";
 import { noMoveReasonLabel } from "../lib/run-reason";
 import {
   inheritScheduleFields,
@@ -92,7 +92,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // tracked-collections workspace. The full catalogue scan and aggregate
   // count used by the optional "Not shuffled yet" card live in a resource
   // route and run only after the merchant asks to see that card.
-  const [hydratedTracked, latestRuns, recentRuns, lastScheduledRun] = await Promise.all([
+  const [hydratedTracked, latestRuns, recentRuns, lastScheduledRun, confirmedTimezone] = await Promise.all([
     // Every tracked collection's live sort order/product count/thumbnails,
     // fetched by exact id — bounded by how many collections are tracked,
     // never by how many exist in the store (unlike a full-catalogue scan).
@@ -125,7 +125,19 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           orderBy: { createdAt: "desc" },
         })
       : Promise.resolve(null),
+    // Shopify owns the timezone; our column is a cache the shop/update
+    // webhook keeps fresh. A missed webhook used to leave this page — every
+    // "next run" on it, and the schedule modal it opens — quietly an hour or
+    // more out, with only the Settings page able to notice and repair it.
+    // Riding in this Promise.all costs no extra wall-clock: it resolves
+    // alongside the collection hydration, which is the slow call here.
+    confirmShopTimezone(admin, shop, settings.timezone),
   ]);
+
+  // Every time this loader formats or computes below is a wall clock in the
+  // shop's timezone, so they all read the confirmed value rather than the
+  // possibly-stale column it came from.
+  const timezone = confirmedTimezone.timezone;
 
   const hydrationFailed = hydratedTracked == null;
   const liveByGid = hydratedTracked ?? new Map();
@@ -269,7 +281,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     const lastRun = latestRun
       ? {
           moved: latestRun.movedCount,
-          whenLabel: lastRunLabel(latestRun.createdAt, settings.timezone, now),
+          whenLabel: lastRunLabel(latestRun.createdAt, timezone, now),
           failed: latestRun.status === "FAILED",
           at: latestRun.createdAt,
           // Null for runs recorded before noMoveReason existed, and for any
@@ -298,6 +310,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       wrongSortLabel: r.needsAttention ? (live ? sortOrderLabel(live.sortOrder) : null) : null,
       allSoldOut: r.allSoldOut,
       factsLine: factsParts.join(" · "),
+      productCount: liveCount,
       settingsBadges,
       preview: previewByGid.get(c.collectionGid) ?? [],
       scheduleLine,
@@ -334,14 +347,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     runningCount,
     pausedCount,
     nextRunAtMs: soonestNextRunMs ?? null,
-    nextRunLabel: soonestNextRunMs ? dayRelativeClockLabel(new Date(soonestNextRunMs), settings.timezone, now) : null,
+    nextRunLabel: soonestNextRunMs ? dayRelativeClockLabel(new Date(soonestNextRunMs), timezone, now) : null,
     totalProductsInRotation,
     productsActuallyMoving,
     lastBatch,
     // When on, the add dialog is skipped entirely and the switch happens
     // straight away — revocable on the Settings page.
     autoSwitchToManual: settings.autoSwitchToManual,
-    timezone: settings.timezone,
+    timezone,
     // The live shop default every inheriting row follows. Sent as one object
     // so the modal, the Settings link copy and the "Use shop default" reset
     // all read the same values.
@@ -1320,6 +1333,7 @@ export default function Collections() {
       mode: "collection",
       id: r.id,
       title: r.title,
+      productCount: r.productCount,
       schedule: r.schedule as SlotSchedule,
       isCustom: r.scheduleIsCustom,
     });
@@ -1883,12 +1897,13 @@ export default function Collections() {
         </s-button>
       </s-modal>
 
-      <ScheduleModal
+      <ShuffleScheduleModal
         ref={scheduleModalRef}
         target={scheduleTarget}
         shopDefault={shopDefault as SlotSchedule}
         timezone={timezone}
         slots={scheduleSlots}
+        planId={planId}
         busy={scheduleFetcher.state !== "idle"}
         onConfirm={confirmSchedule}
         onCancel={() => {

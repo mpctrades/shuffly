@@ -1,6 +1,6 @@
 import { closeModal } from "../lib/polaris-modal";
 import { IconChip } from "../components/IconChip";
-import { ScheduleModal, type ScheduleTarget } from "../components/ScheduleModal";
+import { ShuffleScheduleModal, type ScheduleTarget } from "../components/ShuffleScheduleModal";
 import { shopDefaultSchedule } from "../lib/schedule-resolve";
 import { nextRunFor, slotsFarEnoughApart, type ScheduleType, type SlotSchedule } from "../lib/schedule.server";
 import { isScheduleAllowed, planOf, timeSlots } from "../lib/plans.server";
@@ -10,8 +10,7 @@ import { data, useLoaderData, useNavigation, useFetcher } from "react-router";
 import { useAppBridge } from "@shopify/app-bridge-react";
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
-import { getOrCreateShopSettings } from "../lib/shop-context.server";
-import { getShopTimezone } from "../lib/collections.server";
+import { confirmShopTimezone, getOrCreateShopSettings } from "../lib/shop-context.server";
 import { timezoneOffsetLabel } from "../lib/schedule.server";
 // Client-safe (see time-slots.ts) — the component below renders these.
 import { normalizeHhMm } from "../lib/time-slots";
@@ -39,22 +38,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   // The shop's timezone is Shopify's own setting, not ours — re-confirm it
   // live on every load (and self-heal our cache) rather than trusting a
-  // value that could have gone stale since install.
-  let timezone = settings.timezone;
-  let error: string | null = null;
-  try {
-    const live = await getShopTimezone(admin);
-    if (live && live !== settings.timezone) {
-      await db.shopSettings.update({
-        where: { shop },
-        data: { timezone: live },
-      });
-    }
-    if (live) timezone = live;
-  } catch {
-    error =
-      "Couldn't confirm your shop's timezone from Shopify just now — showing the last known value.";
-  }
+  // value that could have gone stale since install. Shared with the
+  // Collections loader, which needs the identical repair: two copies of
+  // this would eventually disagree about which value won.
+  const { timezone, error } = await confirmShopTimezone(admin, shop, settings.timezone);
 
   // The status row's numbers, from the same columns the Collections page
   // reads. One indexed query, no Admin API call, no new scope.
@@ -589,12 +576,13 @@ export default function Settings() {
         }
       `}</style>
 
-          <ScheduleModal
+          <ShuffleScheduleModal
         ref={scheduleModalRef}
         target={scheduleTarget}
         shopDefault={shopDefault as SlotSchedule}
         timezone={settings.timezone}
         slots={scheduleSlots}
+        planId={settings.plan}
         busy={scheduleFetcher.state !== "idle"}
         onConfirm={(schedule) => {
           closeModal(scheduleModalRef.current);

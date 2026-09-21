@@ -15,6 +15,9 @@ export interface CollectionRowData {
   allSoldOut: boolean;
   /** Facts only — no settings, no state. "10 products · 1 sold out". */
   factsLine: string;
+  /** The live product count on its own, unmixed with the sold-out figure —
+   * the schedule modal's subtitle needs the number, not the sentence. */
+  productCount: number;
   /** Only the settings that are actually on — "Sold-out last", "2 pins" —
    * never a full list of everything the collection could have configured. */
   settingsBadges: string[];

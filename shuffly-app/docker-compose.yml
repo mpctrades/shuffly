@@ -11,12 +11,20 @@ services:
     # taken by other apps on this box.
     ports:
       - "127.0.0.1:3004:3000"
-    # SQLite lives at prisma/dev.sqlite (relative to schema.prisma) - mount
-    # the whole prisma/ dir as a named volume so the db file survives
-    # container rebuilds/redeploys. Docker seeds the volume from the image
-    # contents (schema + migrations) on first run.
+    # SQLite lives at prisma/data/dev.sqlite (relative to schema.prisma), and
+    # ONLY that data directory is a named volume.
+    #
+    # This used to mount the whole prisma/ dir, which shadowed the schema and
+    # migrations/ baked into the image: the container kept reading whatever
+    # the volume was seeded with on first run, so every deploy after the first
+    # silently ignored new migrations while reporting "No pending migrations
+    # to apply". Migrations had to be docker cp'd in by hand to recover.
+    #
+    # Mounting one level deeper keeps the data persistent and lets the schema
+    # and migrations come from the image on every deploy, which is the whole
+    # point of shipping them in it.
     volumes:
-      - shuffly_data:/app/prisma
+      - shuffly_data:/app/prisma/data
 
 networks:
   internal:

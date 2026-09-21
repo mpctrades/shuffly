@@ -10,7 +10,20 @@ generator client {
 // See https://www.prisma.io/docs/orm/reference/prisma-schema-reference#string for more information
 datasource db {
   provider = "sqlite"
-  url      = "file:dev.sqlite"
+  // The database file lives in prisma/data/, NOT directly in prisma/.
+  //
+  // That one level of nesting is load-bearing in production: the container
+  // persists the database with a Docker named volume, and a volume mounted
+  // at /app/prisma would shadow this schema and the migrations/ directory
+  // shipped in the image — so a deploy carrying a new migration would leave
+  // the container still running the migrations the volume was first seeded
+  // with, silently, with `migrate deploy` reporting "no pending migrations".
+  // Mounting prisma/data instead persists only the data and leaves the
+  // schema and migrations to come from the image, where they belong.
+  //
+  // Still a relative path, so local development and the container resolve it
+  // the same way.
+  url      = "file:data/dev.sqlite"
 }
 
 model Session {

@@ -37,6 +37,11 @@ vi.mock("../db.server", () => ({
 
 vi.mock("./shop-context.server", () => ({
   getOrCreateShopSettings: mocks.getOrCreateShopSettings,
+  // Loader-only, like getShopTimezone below — stubbed so the route's import
+  // resolves. These tests drive the action.
+  confirmShopTimezone: vi
+    .fn()
+    .mockResolvedValue({ timezone: "America/New_York", error: null }),
 }));
 
 // Only the loader touches this; stubbed so importing the route doesn't pull

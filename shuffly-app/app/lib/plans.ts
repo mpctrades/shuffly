@@ -153,6 +153,25 @@ export function isScheduleAllowed(
   );
 }
 
+/**
+ * The cheapest plan whose `allowedSchedules` includes this cadence, or null
+ * when no plan offers it at all.
+ *
+ * This is what the locked cards in the frequency grid are badged with. The
+ * badge deliberately names the tier that actually unlocks the cadence rather
+ * than saying "Pro" everywhere: on Free, daily is a *Starter* feature, and a
+ * card that says "Pro" sends the merchant one tier too far. Derived from
+ * PLAN_TIERS, so repricing or inserting a tier re-badges every card with
+ * nothing to update by hand.
+ */
+export function cheapestPlanWith(scheduleType: string): PlanDefinition | null {
+  return (
+    PLAN_TIERS.find((plan) =>
+      plan.allowedSchedules.includes(scheduleType as PlanDefinition["allowedSchedules"][number]),
+    ) ?? null
+  );
+}
+
 /** "25 collections" / "Unlimited collections". The noun is part of the
  * label so an uncapped plan doesn't have to read "Unlimited 25 collections". */
 export function collectionCapLabel(planId: string | null | undefined): string {
