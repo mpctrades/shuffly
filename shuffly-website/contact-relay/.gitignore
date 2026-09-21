@@ -1,0 +1,4 @@
+node_modules/
+.env
+submissions.log
+index.js.bak-*

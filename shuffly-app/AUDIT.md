@@ -10,7 +10,7 @@ Audit only. No code changed. All line numbers are current as of this commit.
 | **Shopify library** | `@shopify/shopify-app-react-router` `^1.2.1` (server auth/billing/webhooks) + `@shopify/app-bridge-react` `^4.2.4` (`useAppBridge()` hook only — App Bridge itself loads from the CDN, see A1). |
 | **Pinned API version** | Admin GraphQL: `ApiVersion.July26` (`app/shopify.server.ts:78`). Webhooks: `api_version = "2026-07"` (`shopify.app.toml:13`). |
 | **Hosting** | Self-hosted single container — `Dockerfile` (node:20-alpine, `npm run build` then `npm run docker-start`). `application_url` is `https://dev.shuffly.mpctrades.com`, which is currently the local `shopify app dev` tunnel, not a separately deployed environment (verified live against this repo's working tree in a prior session). |
-| **Database** | SQLite via Prisma (`prisma/schema.prisma:12-13`, `provider = "sqlite"`, `url = "file:dev.sqlite"` — hardcoded, not env-driven; single-file DB, consistent with the single-container Dockerfile). |
+| **Database** | SQLite via Prisma (`prisma/schema.prisma:12-13`, `provider = "sqlite"`, `url = "file:data/dev.sqlite"` — hardcoded, not env-driven; single-file DB, consistent with the single-container Dockerfile). |
 | **Background jobs** | In-process `setInterval` poller, one process, no queue (`app/lib/scheduler.server.ts:20-29`, polls every 60s). Fallback for multi-replica/serverless: external cron hits `POST /api/cron/run-shuffles` (`app/routes/api.cron.run-shuffles.tsx`), gated by a `CRON_SECRET` bearer check that fails closed in production if unset (lines 13-26). |
 | **shopify.app.toml** | `shuffly-app/shopify.app.toml` (repo root of the app package). |
 

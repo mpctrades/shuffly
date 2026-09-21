@@ -42,7 +42,7 @@ npm test             # vitest — pure logic: shuffle algorithm, scheduling/time
 npm run build        # production build
 ```
 
-The dev database is a local SQLite file (`prisma/dev.sqlite`). Run `npx prisma studio` to browse it.
+The dev database is a local SQLite file (`prisma/data/dev.sqlite`). Run `npx prisma studio` to browse it.
 
 ## Before submitting to the App Store
 
