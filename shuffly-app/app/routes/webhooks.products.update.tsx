@@ -30,12 +30,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return new Response();
   }
 
-  try {
-    await reactToSoldOutProduct(admin, shop, productGid);
-  } catch (err) {
+  // Answer inside Shopify's 5-second window; the reorder runs afterwards.
+  void reactToSoldOutProduct(admin, shop, productGid).catch((err) => {
     console.error(`[webhook:products/update] failed for ${shop}, product ${productGid}:`, err);
-    return new Response(null, { status: 500 });
-  }
+  });
 
   return new Response();
 };

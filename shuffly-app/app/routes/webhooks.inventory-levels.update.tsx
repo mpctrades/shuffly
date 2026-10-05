@@ -1,4 +1,5 @@
 import type { ActionFunctionArgs } from "react-router";
+import type { AdminApiContext } from "@shopify/shopify-app-react-router/server";
 
 import { reactToSoldOutProduct } from "../lib/sold-out-reaction.server";
 import { authenticate } from "../shopify.server";
@@ -35,6 +36,19 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     ?.inventory_item_id;
   if (!inventoryItemId) return new Response();
 
+  // Shopify gives us 5 seconds to answer, and the lookups below are several
+  // round trips to the Admin API — from our host that can blow the budget.
+  // Acknowledge now (the HMAC is already verified) and react afterwards; a
+  // missed reaction is corrected by the next scheduled shuffle anyway.
+  void reactToInventoryItem(admin, shop, inventoryItemId);
+  return new Response();
+};
+
+async function reactToInventoryItem(
+  admin: AdminApiContext,
+  shop: string,
+  inventoryItemId: number,
+): Promise<void> {
   try {
     const response = await admin.graphql(
       `#graphql
@@ -81,8 +95,5 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       `[webhook:inventory_levels/update] failed for ${shop}, inventory item ${inventoryItemId}:`,
       err,
     );
-    return new Response(null, { status: 500 });
   }
-
-  return new Response();
-};
+}
