@@ -13,6 +13,7 @@ import { bumpTurnCounts, computeShuffledOrder, type ShuffleProductInput } from "
 import { nextRunFor } from "./schedule.server";
 import { recordProductPositions, recordKnownProducts, invalidateInsightsCache } from "./insights.server";
 import { undoRetentionCutoff } from "./plans";
+import { isRateLimitError } from "./admin-graphql.server";
 import { isNotManualSortError, resolveNoMoveReason } from "./run-reason";
 import { resolveSchedule } from "./schedule-resolve";
 
@@ -77,11 +78,61 @@ export async function runShuffleForCollection(
   config: CollectionConfig,
   timezone: string,
   neverMoveTagsCsv: string,
-  trigger: "SCHEDULED" | "MANUAL" | "SOLD_OUT_REACTION" | "RESTOCK_REACTION",
+  trigger: ShuffleTrigger,
   batchId?: string,
   pageSize = 24,
 ): Promise<ShuffleRunSummary> {
   const started = Date.now();
+  try {
+    return await shuffleCollection(admin, shop, config, timezone, neverMoveTagsCsv, trigger, batchId, pageSize, started);
+  } catch (err) {
+    // Anything that throws — Shopify still throttling after our retries, a
+    // network failure, a bad response — used to escape with no Activity row
+    // at all: the merchant saw nothing, and a scheduled slot was silently
+    // consumed. Every attempt now leaves a FAILED run behind.
+    const message = isRateLimitError(err)
+      ? trigger === "SCHEDULED"
+        ? "Shopify was too busy to finish this shuffle. It will run again at the next scheduled time."
+        : "Shopify was too busy to finish this shuffle. Try again in a minute."
+      : `Shuffle failed: ${err instanceof Error ? err.message : String(err)}`;
+    console.error(`[shuffle] ${shop} ${config.collectionGid} failed:`, err);
+    const durationMs = Date.now() - started;
+    try {
+      await db.shuffleRun.create({
+        data: {
+          shop,
+          collectionId: config.id,
+          trigger,
+          batchId,
+          status: "FAILED",
+          movedCount: 0,
+          pinnedCount: 0,
+          soldOutCount: 0,
+          durationMs,
+          noMoveReason: "FAILED",
+          message,
+        },
+      });
+    } catch (logErr) {
+      console.error("[shuffle] couldn't record the failed run:", logErr);
+    }
+    return { ok: false, error: message, movedCount: 0, pinnedCount: 0, soldOutCount: 0, durationMs, message };
+  }
+}
+
+type ShuffleTrigger = "SCHEDULED" | "MANUAL" | "SOLD_OUT_REACTION" | "RESTOCK_REACTION";
+
+async function shuffleCollection(
+  admin: AdminApiContext,
+  shop: string,
+  config: CollectionConfig,
+  timezone: string,
+  neverMoveTagsCsv: string,
+  trigger: ShuffleTrigger,
+  batchId: string | undefined,
+  pageSize: number,
+  started: number,
+): Promise<ShuffleRunSummary> {
   const { sortOrder, products } = await getCollectionProductsInOrder(admin, config.collectionGid);
 
   // Record what customers actually saw today, in this exact order — real

@@ -6,6 +6,8 @@
 
 import type { AdminApiContext } from "@shopify/shopify-app-react-router/server";
 
+import { adminGraphql } from "./admin-graphql.server";
+
 export interface ShopifyProductSummary {
   id: string; // gid://shopify/Product/...
   title: string;
@@ -24,7 +26,7 @@ export interface ShopifyCollectionSummary {
 }
 
 export async function getShopTimezone(admin: AdminApiContext): Promise<string> {
-  const res = await admin.graphql(`#graphql
+  const res = await adminGraphql(admin, `#graphql
     query ShopTimezone { shop { ianaTimezone } }`);
   const json = await res.json();
   return json.data?.shop?.ianaTimezone ?? "UTC";
@@ -33,14 +35,14 @@ export async function getShopTimezone(admin: AdminApiContext): Promise<string> {
 /** The shop's own contact email — used as a fallback on the Settings page
  * when the current session isn't tied to a specific staff member's email. */
 export async function getShopContactEmail(admin: AdminApiContext): Promise<string | null> {
-  const res = await admin.graphql(`#graphql
+  const res = await adminGraphql(admin, `#graphql
     query ShopEmail { shop { email } }`);
   const json = await res.json();
   return json.data?.shop?.email ?? null;
 }
 
 export async function getTotalCollectionsCount(admin: AdminApiContext): Promise<number> {
-  const res = await admin.graphql(`#graphql
+  const res = await adminGraphql(admin, `#graphql
     query TotalCollections { collectionsCount { count } }`);
   const json = await res.json();
   return json.data?.collectionsCount?.count ?? 0;
@@ -75,7 +77,7 @@ export async function listAllCollections(
   for (;;) {
     const remaining = limit - out.length;
     if (remaining <= 0) break;
-    const res: Response = await admin.graphql(
+    const res: Response = await adminGraphql(admin,
       `#graphql
       query ShopCollections($first: Int!, $after: String, $query: String) {
         collections(first: $first, after: $after, sortKey: TITLE, query: $query) {
@@ -143,7 +145,7 @@ export async function hydrateTrackedCollections(
 ): Promise<Map<string, HydratedCollection>> {
   const out = new Map<string, HydratedCollection>();
   if (ids.length === 0) return out;
-  const res = await admin.graphql(
+  const res = await adminGraphql(admin,
     `#graphql
     query HydrateTrackedCollections($ids: [ID!]!, $thumbs: Int!) {
       nodes(ids: $ids) {
@@ -230,7 +232,7 @@ export async function fetchSortOrders(
   for (let i = 0; i < ids.length; i += 250) {
     const chunk = ids.slice(i, i + 250);
     if (chunk.length === 0) continue;
-    const res = await admin.graphql(
+    const res = await adminGraphql(admin,
       `#graphql
       query SortOrders($ids: [ID!]!) {
         nodes(ids: $ids) {
@@ -263,7 +265,7 @@ export async function getCollectionPreviewAndCount(
   collectionGid: string,
   previewSize = 16,
 ): Promise<{ sortOrder: string; totalCount: number; preview: ShopifyProductSummary[] }> {
-  const res = await admin.graphql(
+  const res = await adminGraphql(admin,
     `#graphql
     query CollectionPreview($id: ID!, $first: Int!) {
       collection(id: $id) {
@@ -306,7 +308,7 @@ export async function getCollectionProductsInOrder(
   let after: string | null = null;
   let sortOrder = "MANUAL";
   for (;;) {
-    const res: Response = await admin.graphql(
+    const res: Response = await adminGraphql(admin,
       `#graphql
       query CollectionProducts($id: ID!, $first: Int!, $after: String) {
         collection(id: $id) {
@@ -355,7 +357,7 @@ export async function getCollectionGidsContainingProduct(
   admin: AdminApiContext,
   productGid: string,
 ): Promise<string[]> {
-  const res = await admin.graphql(
+  const res = await adminGraphql(admin,
     `#graphql
     query ProductCollections($id: ID!) {
       product(id: $id) {
@@ -380,7 +382,7 @@ export async function fetchProductThumbnails(
 ): Promise<Map<string, { title: string; imageUrl: string | null }>> {
   const out = new Map<string, { title: string; imageUrl: string | null }>();
   if (productGids.length === 0) return out;
-  const res = await admin.graphql(
+  const res = await adminGraphql(admin,
     `#graphql
     query ProductThumbnails($ids: [ID!]!) {
       nodes(ids: $ids) {
@@ -410,7 +412,7 @@ export async function setCollectionManualSort(
   admin: AdminApiContext,
   collectionGid: string,
 ): Promise<{ ok: boolean; error?: string; previousSortOrder?: string }> {
-  const currentRes = await admin.graphql(
+  const currentRes = await adminGraphql(admin,
     `#graphql
     query CurrentSortOrder($id: ID!) { collection(id: $id) { id sortOrder } }`,
     { variables: { id: collectionGid } },
@@ -418,7 +420,7 @@ export async function setCollectionManualSort(
   const currentJson = await currentRes.json();
   const previousSortOrder: string | undefined = currentJson.data?.collection?.sortOrder;
 
-  const res = await admin.graphql(
+  const res = await adminGraphql(admin,
     `#graphql
     mutation SetManualSort($id: ID!) {
       collectionUpdate(collection: {id: $id, sortOrder: MANUAL}) {
@@ -547,7 +549,7 @@ async function sendMoves(
   moves: Array<{ id: string; newPosition: string }>,
   mustWaitForJob: boolean,
 ): Promise<ReorderResult> {
-  const res = await admin.graphql(
+  const res = await adminGraphql(admin,
     `#graphql
     mutation ReorderCollectionProducts($id: ID!, $moves: [MoveInput!]!) {
       collectionReorderProducts(id: $id, moves: $moves) {
@@ -593,7 +595,7 @@ async function sendMoves(
 async function pollJob(admin: AdminApiContext, jobId: string, maxWaitMs = 15_000): Promise<boolean> {
   const start = Date.now();
   while (Date.now() - start < maxWaitMs) {
-    const res = await admin.graphql(
+    const res = await adminGraphql(admin,
       `#graphql
       query PollJob($id: ID!) { job(id: $id) { id done } }`,
       { variables: { id: jobId } },
@@ -664,7 +666,7 @@ export async function restoreCollectionSort(
   collectionGid: string,
   sortOrder: string,
 ): Promise<{ ok: boolean; error?: string }> {
-  const res = await admin.graphql(
+  const res = await adminGraphql(admin,
     `#graphql
     mutation RestoreCollectionSort($id: ID!, $sortOrder: CollectionSortOrder!) {
       collectionUpdate(collection: {id: $id, sortOrder: $sortOrder}) {
