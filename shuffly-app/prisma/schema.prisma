@@ -276,3 +276,19 @@ model ProductPosition {
   @@index([shop, dateKey])
   @@index([shop, productGid, dateKey])
 }
+
+// One row per webhook delivery we've acted on, keyed by Shopify's
+// X-Shopify-Webhook-Id — which stays the same when Shopify retries a
+// delivery. A second arrival of the same id is acknowledged and skipped, so a
+// retried sold-out webhook can't reorder a collection or log an Activity row
+// twice. Pruned after 7 days by the scheduler sweep; Shopify stops retrying
+// long before that.
+model ProcessedWebhook {
+  id         String   @id // X-Shopify-Webhook-Id
+  shop       String
+  topic      String
+  receivedAt DateTime @default(now())
+
+  @@index([receivedAt])
+  @@index([shop])
+}

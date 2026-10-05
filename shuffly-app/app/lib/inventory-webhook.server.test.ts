@@ -5,6 +5,7 @@ const mocks = vi.hoisted(() => ({
   authenticateWebhook: vi.fn(),
   reactToSoldOutProduct: vi.fn(),
   shopHasSoldOutReaction: vi.fn(),
+  isDuplicateDelivery: vi.fn(),
 }));
 
 vi.mock("../shopify.server", () => ({
@@ -14,6 +15,10 @@ vi.mock("../shopify.server", () => ({
 vi.mock("./sold-out-reaction.server", () => ({
   reactToSoldOutProduct: mocks.reactToSoldOutProduct,
   shopHasSoldOutReaction: mocks.shopHasSoldOutReaction,
+}));
+
+vi.mock("./webhook-dedupe.server", () => ({
+  isDuplicateDelivery: mocks.isDuplicateDelivery,
 }));
 
 import { drainBackgroundTasks } from "./background.server";
@@ -36,6 +41,7 @@ describe("inventory_levels/update webhook", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.shopHasSoldOutReaction.mockResolvedValue(true);
+    mocks.isDuplicateDelivery.mockResolvedValue(false);
   });
 
   it("ignores a webhook when no Admin context is available", async () => {
@@ -141,5 +147,25 @@ describe("inventory_levels/update webhook", () => {
     expect(response.status).toBe(200);
     expect(graphql).not.toHaveBeenCalled();
     expect(mocks.reactToSoldOutProduct).not.toHaveBeenCalled();
+  });
+
+  it("acknowledges a duplicate delivery without doing anything", async () => {
+    mocks.isDuplicateDelivery.mockResolvedValue(true);
+    const graphql = vi.fn();
+    mocks.authenticateWebhook.mockResolvedValue({
+      shop: "shop.myshopify.com",
+      admin: { graphql },
+      payload: { inventory_item_id: 123 },
+      topic: "INVENTORY_LEVELS_UPDATE",
+      webhookId: "wh-retried",
+    });
+
+    const response = await action(actionArgs());
+    await drainBackgroundTasks(1000);
+
+    expect(response.status).toBe(200);
+    expect(mocks.isDuplicateDelivery).toHaveBeenCalledWith("wh-retried", "shop.myshopify.com", "INVENTORY_LEVELS_UPDATE");
+    expect(mocks.shopHasSoldOutReaction).not.toHaveBeenCalled();
+    expect(graphql).not.toHaveBeenCalled();
   });
 });

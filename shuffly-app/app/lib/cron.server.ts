@@ -39,6 +39,7 @@ import { unauthenticated } from "../shopify.server";
 import { runShuffleForCollection } from "./shuffle-engine.server";
 import { dueSlots, nextRunFor, type MissedSlot } from "./schedule.server";
 import { pruneExpiredUndoSnapshotsForAllShops } from "./plans.server";
+import { pruneProcessedWebhooks } from "./webhook-dedupe.server";
 
 export interface CronSweepResult {
   checked: number;
@@ -95,6 +96,11 @@ export async function runDueShuffles(now: Date = new Date()): Promise<CronSweepR
     await pruneExpiredUndoSnapshotsForAllShops(now);
   } catch (err) {
     console.error("[cron] undo snapshot prune failed:", err);
+  }
+  try {
+    await pruneProcessedWebhooks(now);
+  } catch (err) {
+    console.error("[cron] processed-webhook prune failed:", err);
   }
 
   // Advisory prefilter — see the note at the top of this file. `nextRunAt:
