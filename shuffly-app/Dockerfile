@@ -1,4 +1,5 @@
-FROM node:20-alpine
+# Node 22 LTS — Node 20 stopped receiving security fixes in April 2026.
+FROM node:22-alpine
 RUN apk add --no-cache openssl
 
 EXPOSE 3000
