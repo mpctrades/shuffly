@@ -1,7 +1,8 @@
 import type { ActionFunctionArgs } from "react-router";
 import type { AdminApiContext } from "@shopify/shopify-app-react-router/server";
 
-import { reactToSoldOutProduct } from "../lib/sold-out-reaction.server";
+import { runInBackground } from "../lib/background.server";
+import { reactToSoldOutProduct, shopHasSoldOutReaction } from "../lib/sold-out-reaction.server";
 import { authenticate } from "../shopify.server";
 
 interface InventoryLevelUpdatePayload {
@@ -40,7 +41,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   // round trips to the Admin API — from our host that can blow the budget.
   // Acknowledge now (the HMAC is already verified) and react afterwards; a
   // missed reaction is corrected by the next scheduled shuffle anyway.
-  void reactToInventoryItem(admin, shop, inventoryItemId);
+  runInBackground(`inventory_levels/update ${shop} item ${inventoryItemId}`, () =>
+    reactToInventoryItem(admin, shop, inventoryItemId),
+  );
   return new Response();
 };
 
@@ -49,12 +52,18 @@ async function reactToInventoryItem(
   shop: string,
   inventoryItemId: number,
 ): Promise<void> {
+  // Nothing opted in means nothing this webhook could move — skip the
+  // Admin API lookup entirely.
+  if (!(await shopHasSoldOutReaction(shop))) return;
+
   try {
     const response = await admin.graphql(
       `#graphql
       query InventoryItemProduct($id: ID!) {
         inventoryItem(id: $id) {
-          variants(first: 250) {
+          # An inventory item belongs to one variant in practice; 10 keeps
+          # headroom without paying query cost for 250 that never exist.
+          variants(first: 10) {
             nodes {
               product {
                 id

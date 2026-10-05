@@ -137,6 +137,18 @@ export async function enforcePlanEntitlements(shop: string, planId: PlanId): Pro
   ]);
 }
 
+/** pruneExpiredUndoSnapshots for every shop — run by each scheduler sweep,
+ * so a plan's retention window holds for shops whose merchant never opens
+ * the app, not only when a page happens to load. */
+export async function pruneExpiredUndoSnapshotsForAllShops(now = new Date()): Promise<number> {
+  const shops = await db.shopSettings.findMany({ select: { shop: true, plan: true } });
+  let pruned = 0;
+  for (const { shop, plan } of shops) {
+    pruned += await pruneExpiredUndoSnapshots(shop, planOf(plan).id, now);
+  }
+  return pruned;
+}
+
 /** Remove reversible order snapshots after the active plan's retention
  * window. The run record remains available as activity history. */
 export async function pruneExpiredUndoSnapshots(

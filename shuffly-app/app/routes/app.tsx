@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import type { HeadersFunction, LoaderFunctionArgs } from "react-router";
+import type { HeadersFunction, LoaderFunctionArgs, ShouldRevalidateFunction } from "react-router";
 import { Outlet, useNavigate, useRouteError } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { AppProvider } from "@shopify/shopify-app-react-router/react";
@@ -27,6 +27,20 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   }
 
   return null;
+};
+
+// This layout's loader only reconciles the plan (throttled), so a background
+// poll — a page calling revalidator.revalidate() on the same URL with no form
+// submission — has nothing to gain from re-running it. Navigations and form
+// submissions keep React Router's default behavior.
+export const shouldRevalidate: ShouldRevalidateFunction = ({
+  formMethod,
+  currentUrl,
+  nextUrl,
+  defaultShouldRevalidate,
+}) => {
+  if (!formMethod && currentUrl.href === nextUrl.href) return false;
+  return defaultShouldRevalidate;
 };
 
 function EmbeddedAppProvider({ children }: { children: React.ReactNode }) {

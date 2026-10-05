@@ -22,7 +22,7 @@ import { SwitchToManualModal, type SwitchToManualTarget } from "../components/Sw
 import { ReorderDelayNote } from "../components/ManualSortWarning";
 import { RemoveCollectionModal } from "../components/RemoveCollectionModal";
 import { closeModal, useModalDismissWorkaround } from "../lib/polaris-modal";
-import { isScheduleAllowed, planOf, pruneExpiredUndoSnapshots, timeSlots } from "../lib/plans.server";
+import { isScheduleAllowed, planOf, timeSlots } from "../lib/plans.server";
 
 const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 const RULES_SAVE_BAR_ID = "collection-rules-save-bar";
@@ -35,17 +35,26 @@ const SECOND_SLOT_SCHEDULE: ScheduleType = "TWICE_DAILY";
 export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   const { admin, session } = await authenticate.admin(request);
   const shop = session.shop;
-  const config = await db.collectionConfig.findFirst({ where: { id: params.id, shop } });
+  const [config, settings] = await Promise.all([
+    db.collectionConfig.findFirst({ where: { id: params.id, shop } }),
+    getOrCreateShopSettings(admin, shop),
+  ]);
   if (!config) throw new Response("Not found", { status: 404 });
 
-  const settings = await getOrCreateShopSettings(admin, shop);
   const plan = planOf(settings.plan);
-  await pruneExpiredUndoSnapshots(shop, plan.id);
   // Only fetches the 16 products this page actually renders, plus Shopify's
   // own aggregate count — not the whole collection (see
   // getCollectionPreviewAndCount's doc comment). The real shuffle re-fetches
-  // the full ordered list itself when it runs.
-  const { sortOrder, totalCount, preview: previewProducts } = await getCollectionPreviewAndCount(admin, config.collectionGid, 16);
+  // the full ordered list itself when it runs. The run history doesn't
+  // depend on it, so both go out together.
+  const [{ sortOrder, totalCount, preview: previewProducts }, runRows] = await Promise.all([
+    getCollectionPreviewAndCount(admin, config.collectionGid, 16),
+    db.shuffleRun.findMany({
+      where: { collectionId: config.id },
+      orderBy: { createdAt: "desc" },
+      take: 20,
+    }),
+  ]);
   const neverMoveTags = new Set(
     settings.neverMoveTags.split(",").map((t) => t.trim().toLowerCase()).filter(Boolean),
   );
@@ -62,11 +71,6 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     neverMove: p.tags.some((t) => neverMoveTags.has(t.toLowerCase())),
   }));
 
-  const runRows = await db.shuffleRun.findMany({
-    where: { collectionId: config.id },
-    orderBy: { createdAt: "desc" },
-    take: 20,
-  });
   // Formatted server-side, in the shop's own timezone, with a fixed locale —
   // `new Date(...).toLocaleString()` in the component would use whatever
   // locale/timezone each *runtime* defaults to, which differs between the

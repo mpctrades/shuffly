@@ -22,7 +22,7 @@ import {
   type ScheduleType,
   type SlotSchedule,
 } from "../lib/schedule.server";
-import { cadenceLabel, enforcePlanCollectionCap, isScheduleAllowed, isTopPlan, planOf, pruneExpiredUndoSnapshots, timeSlots } from "../lib/plans.server";
+import { cadenceLabel, enforcePlanCollectionCap, isScheduleAllowed, isTopPlan, planOf, timeSlots } from "../lib/plans.server";
 import { closeModal } from "../lib/polaris-modal";
 import { CollectionRow, type CollectionRowData } from "../components/CollectionRow";
 import {
@@ -75,6 +75,10 @@ interface UntrackedCollectionsData {
 
 // ============================== loader ==============================
 
+/** The shop/update webhook keeps the cached timezone fresh; this page only
+ * double-checks it live once per window rather than on every 5s poll. */
+const TIMEZONE_CONFIRM_MAX_AGE_MS = 5 * 60_000;
+
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { admin, session } = await authenticate.admin(request);
   const shop = session.shop;
@@ -84,7 +88,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     getOrCreateShopSettings(admin, shop),
     db.collectionConfig.findMany({ where: { shop }, orderBy: { createdAt: "asc" } }),
   ]);
-  await pruneExpiredUndoSnapshots(shop, planOf(settings.plan).id);
   const trackedIds = tracked.map((t) => t.id);
   const trackedGidsForHydration = tracked.map((t) => t.collectionGid);
 
@@ -92,7 +95,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // tracked-collections workspace. The full catalogue scan and aggregate
   // count used by the optional "Not shuffled yet" card live in a resource
   // route and run only after the merchant asks to see that card.
-  const [hydratedTracked, latestRuns, recentRuns, lastScheduledRun, confirmedTimezone] = await Promise.all([
+  const [hydratedTracked, latestRuns, recentRuns, lastScheduled, confirmedTimezone] = await Promise.all([
     // Every tracked collection's live sort order/product count/thumbnails,
     // fetched by exact id — bounded by how many collections are tracked,
     // never by how many exist in the store (unlike a full-catalogue scan).
@@ -119,19 +122,29 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           take: Math.max(50, trackedIds.length * 20),
         })
       : Promise.resolve([]),
+    // The latest SCHEDULED run, then every run sharing its batchId — chained
+    // here so the second query starts as soon as the first returns, rather
+    // than after the whole Promise.all (Shopify hydration included).
     trackedIds.length
-      ? db.shuffleRun.findFirst({
-          where: { shop, collectionId: { in: trackedIds }, trigger: "SCHEDULED" },
-          orderBy: { createdAt: "desc" },
-        })
-      : Promise.resolve(null),
+      ? db.shuffleRun
+          .findFirst({
+            where: { shop, collectionId: { in: trackedIds }, trigger: "SCHEDULED" },
+            orderBy: { createdAt: "desc" },
+          })
+          .then(async (run) => ({
+            run,
+            batchRuns: run?.batchId
+              ? await db.shuffleRun.findMany({ where: { shop, batchId: run.batchId } })
+              : [],
+          }))
+      : Promise.resolve({ run: null, batchRuns: [] }),
     // Shopify owns the timezone; our column is a cache the shop/update
     // webhook keeps fresh. A missed webhook used to leave this page — every
     // "next run" on it, and the schedule modal it opens — quietly an hour or
     // more out, with only the Settings page able to notice and repair it.
     // Riding in this Promise.all costs no extra wall-clock: it resolves
     // alongside the collection hydration, which is the slow call here.
-    confirmShopTimezone(admin, shop, settings.timezone),
+    confirmShopTimezone(admin, shop, settings.timezone, { maxAgeMs: TIMEZONE_CONFIRM_MAX_AGE_MS }),
   ]);
 
   // Every time this loader formats or computes below is a wall clock in the
@@ -162,10 +175,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     failedTitles: string[];
     at: Date;
   } | null = null;
+  const { run: lastScheduledRun, batchRuns } = lastScheduled;
   if (lastScheduledRun?.batchId) {
-    const batchRuns = await db.shuffleRun.findMany({
-      where: { shop, batchId: lastScheduledRun.batchId },
-    });
     const titleById = new Map(tracked.map((t) => [t.id, t.title]));
     lastBatch = {
       totalMoved: batchRuns.reduce((sum, r) => sum + r.movedCount, 0),

@@ -84,4 +84,27 @@ describe("confirmShopTimezone", () => {
     expect(result).toEqual({ timezone: "Asia/Seoul", error: null });
     expect(mocks.shopSettingsUpdate).not.toHaveBeenCalled();
   });
+
+  it("skips the live check inside maxAgeMs of the last confirmation, and checks again after", async () => {
+    const shop = "throttle-test.myshopify.com";
+    mocks.getShopTimezone.mockResolvedValue("Asia/Seoul");
+
+    await confirmShopTimezone(admin, shop, "Asia/Seoul", { maxAgeMs: 300_000, now: 1_000_000 });
+    const within = await confirmShopTimezone(admin, shop, "Asia/Seoul", { maxAgeMs: 300_000, now: 1_200_000 });
+    expect(within).toEqual({ timezone: "Asia/Seoul", error: null });
+    expect(mocks.getShopTimezone).toHaveBeenCalledTimes(1);
+
+    await confirmShopTimezone(admin, shop, "Asia/Seoul", { maxAgeMs: 300_000, now: 1_400_000 });
+    expect(mocks.getShopTimezone).toHaveBeenCalledTimes(2);
+  });
+
+  it("always checks live when no maxAgeMs is given (the Settings page)", async () => {
+    const shop = "settings-test.myshopify.com";
+    mocks.getShopTimezone.mockResolvedValue("Asia/Seoul");
+
+    await confirmShopTimezone(admin, shop, "Asia/Seoul");
+    await confirmShopTimezone(admin, shop, "Asia/Seoul");
+
+    expect(mocks.getShopTimezone).toHaveBeenCalledTimes(2);
+  });
 });

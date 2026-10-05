@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   findMany: vi.fn(),
+  count: vi.fn(),
   update: vi.fn(),
   runCreate: vi.fn(),
   transaction: vi.fn(),
@@ -16,7 +17,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("../db.server", () => ({
   default: {
-    collectionConfig: { findMany: mocks.findMany, update: mocks.update },
+    collectionConfig: { findMany: mocks.findMany, count: mocks.count, update: mocks.update },
     shuffleRun: { create: mocks.runCreate },
     $transaction: mocks.transaction,
   },
@@ -27,7 +28,7 @@ vi.mock("./collections.server", () => ({
   reorderCollectionProducts: mocks.reorderCollectionProducts,
 }));
 
-import { reactToSoldOutProduct } from "./sold-out-reaction.server";
+import { reactToSoldOutProduct, shopHasSoldOutReaction } from "./sold-out-reaction.server";
 
 const SHOP = "shuffly-test.myshopify.com";
 const PRODUCT = "gid://shopify/Product/1";
@@ -53,13 +54,33 @@ describe("reactToSoldOutProduct", () => {
     mocks.transaction.mockImplementation((ops: unknown[]) => Promise.all(ops));
   });
 
-  it("does nothing when the product isn't in any tracked collection", async () => {
-    mocks.getCollectionGidsContainingProduct.mockResolvedValue([]);
+  it("doesn't ask Shopify anything when the shop has no opted-in running collection", async () => {
+    mocks.findMany.mockResolvedValue([]);
 
     await reactToSoldOutProduct(admin, SHOP, PRODUCT);
 
-    expect(mocks.findMany).not.toHaveBeenCalled();
+    expect(mocks.getCollectionGidsContainingProduct).not.toHaveBeenCalled();
     expect(mocks.reorderCollectionProducts).not.toHaveBeenCalled();
+  });
+
+  it("does nothing when the product isn't in any opted-in collection", async () => {
+    mocks.findMany.mockResolvedValue([config()]);
+    mocks.getCollectionGidsContainingProduct.mockResolvedValue(["gid://shopify/Collection/other"]);
+
+    await reactToSoldOutProduct(admin, SHOP, PRODUCT);
+
+    expect(mocks.reorderCollectionProducts).not.toHaveBeenCalled();
+    expect(mocks.runCreate).not.toHaveBeenCalled();
+  });
+
+  it("reports whether a shop has anything a sold-out webhook could move", async () => {
+    mocks.count.mockResolvedValueOnce(0).mockResolvedValueOnce(2);
+
+    expect(await shopHasSoldOutReaction(SHOP)).toBe(false);
+    expect(await shopHasSoldOutReaction(SHOP)).toBe(true);
+    expect(mocks.count).toHaveBeenCalledWith({
+      where: { shop: SHOP, status: "RUNNING", pushSoldOutToEnd: true },
+    });
   });
 
   it("moves the product to the end and logs a run when it has never reacted before", async () => {

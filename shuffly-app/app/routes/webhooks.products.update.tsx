@@ -1,5 +1,6 @@
 import type { ActionFunctionArgs } from "react-router";
 import { authenticate } from "../shopify.server";
+import { runInBackground } from "../lib/background.server";
 import { reactToSoldOutProduct } from "../lib/sold-out-reaction.server";
 
 interface ProductUpdateVariant {
@@ -31,9 +32,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   }
 
   // Answer inside Shopify's 5-second window; the reorder runs afterwards.
-  void reactToSoldOutProduct(admin, shop, productGid).catch((err) => {
-    console.error(`[webhook:products/update] failed for ${shop}, product ${productGid}:`, err);
-  });
+  runInBackground(`products/update ${shop} product ${productGid}`, () =>
+    reactToSoldOutProduct(admin, shop, productGid),
+  );
 
   return new Response();
 };

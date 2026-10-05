@@ -13,6 +13,9 @@ export async function getOrCreateShopSettings(admin: AdminApiContext, shop: stri
   return settings;
 }
 
+/** When each shop's timezone was last confirmed live, in this process. */
+const lastConfirmedAt = new Map<string, number>();
+
 /**
  * Re-confirm the shop's timezone against Shopify, and self-heal our cache.
  *
@@ -36,10 +39,19 @@ export async function confirmShopTimezone(
   admin: AdminApiContext,
   shop: string,
   cached: string,
+  { maxAgeMs = 0, now = Date.now() }: { maxAgeMs?: number; now?: number } = {},
 ): Promise<{ timezone: string; error: string | null }> {
+  // A caller that tolerates a few minutes' staleness skips the Admin API when
+  // this process confirmed (and, if needed, repaired) the cache recently —
+  // the Collections page re-runs its loader every 5s while a run is pending.
+  const confirmedAt = lastConfirmedAt.get(shop);
+  if (maxAgeMs > 0 && confirmedAt != null && now - confirmedAt < maxAgeMs) {
+    return { timezone: cached, error: null };
+  }
   try {
     const live = await getShopTimezone(admin);
     if (!live) return { timezone: cached, error: null };
+    lastConfirmedAt.set(shop, now);
     if (live !== cached) {
       await db.shopSettings.update({ where: { shop }, data: { timezone: live } });
     }

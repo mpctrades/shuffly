@@ -38,6 +38,7 @@ import db from "../db.server";
 import { unauthenticated } from "../shopify.server";
 import { runShuffleForCollection } from "./shuffle-engine.server";
 import { dueSlots, nextRunFor, type MissedSlot } from "./schedule.server";
+import { pruneExpiredUndoSnapshotsForAllShops } from "./plans.server";
 
 export interface CronSweepResult {
   checked: number;
@@ -87,6 +88,15 @@ async function pruneOldSlotClaims(now: Date): Promise<void> {
 }
 
 export async function runDueShuffles(now: Date = new Date()): Promise<CronSweepResult> {
+  // Housekeeping first, before the early return for a quiet minute. Undo
+  // retention used to be enforced only by page loaders, so a shop nobody
+  // opened kept expired snapshots indefinitely.
+  try {
+    await pruneExpiredUndoSnapshotsForAllShops(now);
+  } catch (err) {
+    console.error("[cron] undo snapshot prune failed:", err);
+  }
+
   // Advisory prefilter — see the note at the top of this file. `nextRunAt:
   // null` is included because a row that has never been scheduled (or was
   // written by a path that didn't set it) must still be evaluated.

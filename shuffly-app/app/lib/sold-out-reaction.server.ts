@@ -6,6 +6,15 @@ import {
   reorderCollectionProducts,
 } from "./collections.server";
 
+/** Every running collection with "sold-out to the end" on, for this shop. */
+const optedIn = (shop: string) => ({ shop, status: "RUNNING", pushSoldOutToEnd: true });
+
+/** Whether a sold-out webhook for this shop could change anything at all —
+ * checked before spending an Admin API call to find out what sold out. */
+export async function shopHasSoldOutReaction(shop: string): Promise<boolean> {
+  return (await db.collectionConfig.count({ where: optedIn(shop) })) > 0;
+}
+
 /**
  * Move a sold-out product to the end of every running, opted-in collection.
  *
@@ -18,19 +27,16 @@ export async function reactToSoldOutProduct(
   shop: string,
   productGid: string,
 ): Promise<void> {
+  // Our own table first: a shop with nothing running "sold-out to the end"
+  // has no reason to ask Shopify which collections hold this product, and
+  // that lookup used to run on every sold-out webhook regardless.
+  const opted = await db.collectionConfig.findMany({ where: optedIn(shop) });
+  if (opted.length === 0) return;
+
   const memberGids = new Set(
     await getCollectionGidsContainingProduct(admin, productGid),
   );
-  if (memberGids.size === 0) return;
-
-  const candidates = await db.collectionConfig.findMany({
-    where: {
-      shop,
-      status: "RUNNING",
-      pushSoldOutToEnd: true,
-      collectionGid: { in: Array.from(memberGids) },
-    },
-  });
+  const candidates = opted.filter((config) => memberGids.has(config.collectionGid));
 
   for (const config of candidates) {
     let lastKnownOrder: string[] | null = null;

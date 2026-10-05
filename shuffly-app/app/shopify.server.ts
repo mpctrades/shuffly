@@ -9,6 +9,7 @@ import {
 import { PrismaSessionStorage } from "@shopify/shopify-app-session-storage-prisma";
 import prisma from "./db.server";
 import { startInProcessSchedulerOnce } from "./lib/scheduler.server";
+import { installGracefulShutdownOnce } from "./lib/background.server";
 
 // Shuffly is on **Shopify managed pricing**: the plans merchants actually
 // see and buy are defined in the Partner Dashboard, and Shopify refuses
@@ -79,6 +80,10 @@ const shopify = shopifyApp({
     : {}),
 });
 
+// Installed before the scheduler and independently of it: webhook background
+// work needs draining on shutdown even when DISABLE_IN_PROCESS_SCHEDULER is
+// set. See app/lib/background.server.ts.
+installGracefulShutdownOnce();
 // Started once per server process — see app/lib/scheduler.server.ts.
 startInProcessSchedulerOnce();
 

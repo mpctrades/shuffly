@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   authenticateWebhook: vi.fn(),
   reactToSoldOutProduct: vi.fn(),
+  shopHasSoldOutReaction: vi.fn(),
 }));
 
 vi.mock("../shopify.server", () => ({
@@ -12,8 +13,10 @@ vi.mock("../shopify.server", () => ({
 
 vi.mock("./sold-out-reaction.server", () => ({
   reactToSoldOutProduct: mocks.reactToSoldOutProduct,
+  shopHasSoldOutReaction: mocks.shopHasSoldOutReaction,
 }));
 
+import { drainBackgroundTasks } from "./background.server";
 import { action } from "../routes/webhooks.inventory-levels.update";
 
 function actionArgs(): ActionFunctionArgs {
@@ -32,6 +35,7 @@ function actionArgs(): ActionFunctionArgs {
 describe("inventory_levels/update webhook", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.shopHasSoldOutReaction.mockResolvedValue(true);
   });
 
   it("ignores a webhook when no Admin context is available", async () => {
@@ -87,6 +91,8 @@ describe("inventory_levels/update webhook", () => {
     });
 
     const response = await action(actionArgs());
+    // The handler answers first and reacts afterwards.
+    await drainBackgroundTasks(1000);
 
     expect(response.status).toBe(200);
     expect(graphql).toHaveBeenCalledWith(expect.stringContaining("inventoryItem"), {
@@ -100,7 +106,7 @@ describe("inventory_levels/update webhook", () => {
     );
   });
 
-  it("returns 500 so Shopify retries GraphQL failures", async () => {
+  it("answers 200 before its GraphQL lookup, and logs a failure without reacting", async () => {
     const graphql = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ errors: [{ message: "temporary failure" }] })),
     );
@@ -109,11 +115,31 @@ describe("inventory_levels/update webhook", () => {
       admin: { graphql },
       payload: { inventory_item_id: 123 },
     });
-    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
 
     const response = await action(actionArgs());
+    expect(response.status).toBe(200);
+    await drainBackgroundTasks(1000);
 
-    expect(response.status).toBe(500);
+    expect(graphql).toHaveBeenCalledTimes(1);
+    expect(consoleError).toHaveBeenCalled();
+    expect(mocks.reactToSoldOutProduct).not.toHaveBeenCalled();
+  });
+
+  it("skips the Admin API entirely when the shop has nothing opted in", async () => {
+    mocks.shopHasSoldOutReaction.mockResolvedValue(false);
+    const graphql = vi.fn();
+    mocks.authenticateWebhook.mockResolvedValue({
+      shop: "shop.myshopify.com",
+      admin: { graphql },
+      payload: { inventory_item_id: 123 },
+    });
+
+    const response = await action(actionArgs());
+    await drainBackgroundTasks(1000);
+
+    expect(response.status).toBe(200);
+    expect(graphql).not.toHaveBeenCalled();
     expect(mocks.reactToSoldOutProduct).not.toHaveBeenCalled();
   });
 });

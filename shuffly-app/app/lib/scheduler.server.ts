@@ -9,6 +9,7 @@
 // instead, and set DISABLE_IN_PROCESS_SCHEDULER=1 so replicas don't race.
 
 import { runDueShuffles } from "./cron.server";
+import { onShutdown, runInBackground } from "./background.server";
 
 declare global {
   // eslint-disable-next-line no-var
@@ -22,12 +23,28 @@ export function startInProcessSchedulerOnce() {
   if (globalThis.__shufflySchedulerStarted) return;
   globalThis.__shufflySchedulerStarted = true;
 
-  setInterval(() => {
-    runDueShuffles().catch((err) => {
+  // A sweep over a few 2,000-product collections can outlast the 60s
+  // interval. Slot claims already stop a collection running twice, but
+  // overlapping sweeps still stack up Admin API traffic, so a tick that finds
+  // the previous sweep unfinished just skips.
+  let sweeping = false;
+  const interval = setInterval(() => {
+    if (sweeping) {
       // eslint-disable-next-line no-console
-      console.error("[shuffly scheduler] sweep failed", err);
-    });
+      console.log("[shuffly scheduler] previous sweep still running, skipping this tick");
+      return;
+    }
+    sweeping = true;
+    // Registered as background work so a deploy lets it finish instead of
+    // cutting a reorder off half-applied.
+    runInBackground("scheduler sweep", () =>
+      runDueShuffles().finally(() => {
+        sweeping = false;
+      }),
+    );
   }, POLL_INTERVAL_MS);
+
+  onShutdown(() => clearInterval(interval));
 
   // eslint-disable-next-line no-console
   console.log(`[shuffly scheduler] started, polling every ${POLL_INTERVAL_MS / 1000}s`);

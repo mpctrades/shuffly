@@ -15,4 +15,8 @@ COPY . .
 
 RUN npm run build
 
-CMD ["npm", "run", "docker-start"]
+# Node itself, not `npm run`: npm doesn't forward SIGTERM, so a deploy used to
+# kill the app outright after Docker's timeout, mid-reorder. `exec` makes node
+# the process that receives the signal; app/lib/background.server.ts then lets
+# in-flight work finish. Migrations still run first, as docker-start did.
+CMD ["sh", "-c", "npm run setup && exec node node_modules/@react-router/serve/bin.js ./build/server/index.js"]

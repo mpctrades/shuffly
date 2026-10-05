@@ -258,20 +258,20 @@ function daysBetweenTurnsFor(rows: Array<{ productGid: string; dateKey: string }
   return { value: median(gaps), hasData: gaps.length > 0 };
 }
 
-/** Standard pairwise-mean-difference form of the Gini coefficient — 0 means
- * perfectly even (every product has the same number of turns), 1 means
- * maximally uneven (one product has every turn, the rest have none). O(n²)
- * is fine here: even a large tracked catalogue is a few hundred products,
- * not the kind of scale that needs a sorted-cumulative-sum shortcut. */
-function giniCoefficient(values: number[]): number {
+/** Gini coefficient — 0 means perfectly even (every product has the same
+ * number of turns), 1 means maximally uneven (one product has every turn, the
+ * rest have none). The sorted form, equal to the pairwise mean difference
+ * Σ|xᵢ−xⱼ| / (2n·Σx) but O(n log n): the values here are every
+ * product-collection pair in the shop, and a few 2,000-product collections
+ * made the pairwise loop hundreds of millions of steps on the event loop. */
+export function giniCoefficient(values: number[]): number {
   const n = values.length;
   const sum = values.reduce((a, b) => a + b, 0);
   if (n === 0 || sum === 0) return 0;
-  let sumAbsDiff = 0;
-  for (let i = 0; i < n; i++) {
-    for (let j = 0; j < n; j++) sumAbsDiff += Math.abs(values[i] - values[j]);
-  }
-  return sumAbsDiff / (2 * n * sum);
+  const sorted = [...values].sort((a, b) => a - b);
+  let weighted = 0;
+  for (let i = 0; i < n; i++) weighted += (2 * (i + 1) - n - 1) * sorted[i];
+  return weighted / (n * sum);
 }
 
 function fairnessLabelFor(score: number): string {
