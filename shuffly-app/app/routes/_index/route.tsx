@@ -76,7 +76,7 @@ export default function App() {
               </svg>
             </div>
             <strong>Shuffle on a schedule</strong>
-            <p>Daily, twice daily, or weekly — fully automatic.</p>
+            <p>From every hour to weekly, set per collection — fully automatic.</p>
             <div className={styles.spacer} />
           </li>
           <li>

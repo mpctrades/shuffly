@@ -75,13 +75,17 @@ function upgradeBenefits(current: PlanDefinition, next: PlanDefinition): string[
     );
   }
 
-  const gainsTwiceDaily =
-    next.allowedSchedules.includes("TWICE_DAILY") &&
-    !current.allowedSchedules.includes("TWICE_DAILY");
+  const gainsInterval =
+    next.allowedSchedules.includes("INTERVAL") && !current.allowedSchedules.includes("INTERVAL");
   const gainsDaily =
     next.allowedSchedules.includes("DAILY") && !current.allowedSchedules.includes("DAILY");
-  if (gainsTwiceDaily) gains.push("Shuffle twice a day, not just once");
+  // "Unlimited" never appears without "as often as every hour" (listing rule).
+  if (gainsInterval) gains.push("Unlimited shuffles — as often as every hour");
   else if (gainsDaily) gains.push("Daily shuffles at a time you pick");
+  if (next.newArrivalsFeatures && !current.newArrivalsFeatures) {
+    gains.push("Reshuffle automatically when new products arrive");
+    gains.push("Keep new arrivals on top");
+  }
 
   if (next.canPin && !current.canPin) gains.push("Pin your best sellers to the top");
 
@@ -97,8 +101,8 @@ function upgradeBenefits(current: PlanDefinition, next: PlanDefinition): string[
  * straight from PLANS. Balances the "Your plan" card against the upsell and
  * answers "what am I actually on?" without a price table. */
 function currentPlanSummary(plan: PlanDefinition): string[] {
-  const schedule = plan.allowedSchedules.includes("TWICE_DAILY")
-    ? "Shuffle up to twice a day"
+  const schedule = plan.allowedSchedules.includes("INTERVAL")
+    ? "Unlimited shuffles — as often as every hour"
     : plan.allowedSchedules.includes("DAILY")
       ? "Daily shuffles at a time you pick"
       : "Weekly shuffles";
@@ -111,6 +115,10 @@ function currentPlanSummary(plan: PlanDefinition): string[] {
     `${plan.undoRetentionDays}-day undo history`,
   ];
   if (plan.canPin) lines.push("Pin your best sellers to the top");
+  if (plan.newArrivalsFeatures) {
+    lines.push("Reshuffle automatically when new products arrive");
+    lines.push("Keep new arrivals on top");
+  }
   return lines;
 }
 

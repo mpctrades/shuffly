@@ -96,7 +96,10 @@ export function PlanBar({ planId, trackedCount, loading = false }: PlanBarProps)
 
           <p className="shuffly-plan-bar-detail">
             You&apos;re on <strong>{plan.name}</strong> · {cadenceLabel(planId)} ·{" "}
-            {collectionCapLabel(planId)} · {slots} time slot{slots === 1 ? "" : "s"}
+            {collectionCapLabel(planId)}
+            {/* "N time slots" stopped describing Pro once it could run every
+                hour; the cadence label already says it. */}
+            {plan.allowedSchedules.includes("INTERVAL") ? null : <> · {slots} time slot{slots === 1 ? "" : "s"}</>}
           </p>
 
           <div className="shuffly-plan-bar-actions">
