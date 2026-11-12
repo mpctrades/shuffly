@@ -12,15 +12,20 @@
 
 export type PlanId = "FREE" | "STARTER" | "PRO";
 
+type PlanSchedule = "DAILY" | "TWICE_DAILY" | "WEEKLY" | "MANUAL" | "INTERVAL";
+
 export interface PlanDefinition {
   id: PlanId;
   name: string;
   price: number; // USD / month
   maxCollections: number; // Infinity = unlimited
-  allowedSchedules: Array<"DAILY" | "TWICE_DAILY" | "WEEKLY" | "MANUAL">;
+  allowedSchedules: PlanSchedule[];
   undoRetentionDays: number;
   insights: boolean;
   canPin: boolean;
+  /** Feature B ("reshuffle when new products arrive"), Feature C ("keep new
+   * arrivals on top") and the one-click "New arrivals" preset. Pro only. */
+  newArrivalsFeatures: boolean;
 }
 
 export const PLANS: Record<PlanId, PlanDefinition> = {
@@ -33,6 +38,7 @@ export const PLANS: Record<PlanId, PlanDefinition> = {
     undoRetentionDays: 1,
     insights: true,
     canPin: false,
+    newArrivalsFeatures: false,
   },
   STARTER: {
     id: "STARTER",
@@ -43,16 +49,21 @@ export const PLANS: Record<PlanId, PlanDefinition> = {
     undoRetentionDays: 7,
     insights: true,
     canPin: true,
+    newArrivalsFeatures: false,
   },
   PRO: {
     id: "PRO",
     name: "Pro",
     price: 7.99,
     maxCollections: Infinity,
-    allowedSchedules: ["DAILY", "TWICE_DAILY", "WEEKLY", "MANUAL"],
+    // "Unlimited": any interval down to the 1-hour floor (INTERVAL_HOURS in
+    // schedule-core). TWICE_DAILY stays allowed so existing Pro schedules
+    // keep running untouched; the picker only shows it while it's selected.
+    allowedSchedules: ["INTERVAL", "DAILY", "TWICE_DAILY", "WEEKLY", "MANUAL"],
     undoRetentionDays: 30,
     insights: true,
     canPin: true,
+    newArrivalsFeatures: true,
   },
 };
 
@@ -120,6 +131,7 @@ export function isTopPlan(planId: string | null | undefined): boolean {
  */
 export function cadenceLabel(planId: string | null | undefined): string {
   const plan = planOf(planId);
+  if (plan.allowedSchedules.includes("INTERVAL")) return "Unlimited shuffles — as often as every hour";
   if (plan.allowedSchedules.includes("TWICE_DAILY")) return "2 shuffles a day";
   if (plan.allowedSchedules.includes("DAILY")) return "1 shuffle a day";
   if (plan.allowedSchedules.includes("WEEKLY")) return "Weekly shuffle";
@@ -147,10 +159,23 @@ export function timeSlots(planId: string | null | undefined): number {
 export function isScheduleAllowed(
   planId: string | null | undefined,
   scheduleType: string,
+  intervalHours?: number | null,
 ): boolean {
-  return planOf(planId).allowedSchedules.includes(
-    scheduleType as PlanDefinition["allowedSchedules"][number],
-  );
+  if (!planOf(planId).allowedSchedules.includes(scheduleType as PlanSchedule)) return false;
+  // The interval itself is validated too, so a hand-rolled POST can't ask
+  // for "every 0.25 hours" on Pro: 1 hour is the floor on every plan.
+  if (scheduleType === "INTERVAL") return INTERVAL_CHOICES.includes(intervalHours as number);
+  return true;
+}
+
+/** Mirrors INTERVAL_HOURS in schedule-core.ts. Duplicated (and pinned by a
+ * test) rather than imported, so this client-safe module stays free of the
+ * scheduling maths. */
+const INTERVAL_CHOICES: readonly number[] = [1, 2, 3, 4, 6, 12];
+
+/** Feature B / Feature C / the "New arrivals" preset. */
+export function canUseNewArrivals(planId: string | null | undefined): boolean {
+  return planOf(planId).newArrivalsFeatures;
 }
 
 /**

@@ -7,7 +7,21 @@ import { defaultSecondSlot, normalizeHhMm, parseHhMm } from "./time-slots";
 // Re-exported so server-side callers can keep importing it from here.
 export { normalizeHhMm };
 
-export type ScheduleType = "DAILY" | "TWICE_DAILY" | "WEEKLY" | "MANUAL";
+/** INTERVAL ("every N hours", Pro) was added in Update 2. TWICE_DAILY is a
+ * legacy value since then: it keeps running exactly as before for the
+ * collections that have it, but the frequency picker no longer offers it. */
+export type ScheduleType = "DAILY" | "TWICE_DAILY" | "WEEKLY" | "MANUAL" | "INTERVAL";
+
+/** Every interval the picker offers. 1 hour is the floor on every plan — the
+ * technical safety limit from brief §8, not a plan cap. */
+export const INTERVAL_HOURS = [1, 2, 3, 4, 6, 12] as const;
+export type IntervalHours = (typeof INTERVAL_HOURS)[number];
+
+export function isIntervalHours(value: unknown): value is IntervalHours {
+  return INTERVAL_HOURS.includes(value as IntervalHours);
+}
+
+const HOUR_MS = 3_600_000;
 
 interface LocalParts {
   year: number;
@@ -87,6 +101,39 @@ export interface SlotSchedule {
    * relied on. */
   scheduleTime2?: string | null;
   scheduleWeekday: number | null; // 0=Sunday..6=Saturday, WEEKLY only
+  /** INTERVAL only: run every N hours. */
+  intervalHours?: number | null;
+  /** INTERVAL only: the moment the merchant saved it. Runs fall on
+   * anchor + k·interval (k >= 1), in absolute time — so they are immune to
+   * DST by construction: "every 2 hours" stays 2 real hours apart across a
+   * clock change, the way a merchant reading "every 2 hours" expects. */
+  intervalAnchorAt?: Date | null;
+}
+
+/** The interval in ms, clamped to the 1-hour floor whatever was stored. */
+function intervalMs(schedule: SlotSchedule): number {
+  const hours = isIntervalHours(schedule.intervalHours) ? schedule.intervalHours : 1;
+  return Math.max(1, hours) * HOUR_MS;
+}
+
+/** The most recent interval slot at or before `now`, or null when the first
+ * one (anchor + interval) hasn't come yet. */
+export function latestIntervalSlot(now: Date, schedule: SlotSchedule): Date | null {
+  const anchor = schedule.intervalAnchorAt?.getTime();
+  if (anchor == null) return null;
+  const step = intervalMs(schedule);
+  const k = Math.floor((now.getTime() - anchor) / step);
+  if (k < 1) return null;
+  return new Date(anchor + k * step);
+}
+
+/** The first interval slot strictly after `now`. A missing anchor means
+ * "just saved": the first run is one interval from now. */
+export function nextIntervalSlot(now: Date, schedule: SlotSchedule): Date {
+  const step = intervalMs(schedule);
+  const anchor = schedule.intervalAnchorAt?.getTime() ?? now.getTime();
+  const k = Math.max(1, Math.floor((now.getTime() - anchor) / step) + 1);
+  return new Date(anchor + k * step);
 }
 
 /** What happened when a wall-clock time was turned into a real instant.
@@ -173,7 +220,7 @@ export function resolveLocalTime(
  * 18:00/09:00 can't make an already-fired slot look unfired.
  */
 export function slotTimesFor(schedule: SlotSchedule): Array<{ slot: number; time: string }> {
-  if (schedule.scheduleType === "MANUAL") return [];
+  if (schedule.scheduleType === "MANUAL" || schedule.scheduleType === "INTERVAL") return [];
   const first = { slot: 0, time: normalizeHhMm(schedule.scheduleTime) };
   if (schedule.scheduleType !== "TWICE_DAILY") return [first];
   // Null scheduleTime2 = a row from before merchants could pick the second
@@ -252,6 +299,9 @@ export function dueSlots(
   scheduleUpdatedAt: Date | null = null,
   graceMs = GRACE_WINDOW_MS,
 ): { due: DueSlot[]; missed: MissedSlot[] } {
+  if (schedule.scheduleType === "INTERVAL") {
+    return dueIntervalSlots(now, schedule, scheduleUpdatedAt, graceMs);
+  }
   const slots = slotTimesFor(schedule);
   if (slots.length === 0) return { due: [], missed: [] };
 
@@ -299,6 +349,34 @@ export function dueSlots(
   };
 }
 
+/** Interval slots are keyed by their own UTC instant ("I" + ISO), so the
+ * same ShuffleSlotClaim unique constraint that stops a daily slot firing
+ * twice also stops an hourly one — and an "I…" key can never collide with a
+ * daily "YYYY-MM-DD" key on the same collection. */
+export function intervalDateKey(at: Date): string {
+  return `I${at.toISOString()}`;
+}
+
+/** Only the latest slot is ever considered: a container that was down for
+ * five hours on an hourly schedule runs once on its way back, not five
+ * times — the same "never fire a backlog" rule as the daily slots. */
+function dueIntervalSlots(
+  now: Date,
+  schedule: SlotSchedule,
+  scheduleUpdatedAt: Date | null,
+  graceMs: number,
+): { due: DueSlot[]; missed: MissedSlot[] } {
+  const at = latestIntervalSlot(now, schedule);
+  if (!at) return { due: [], missed: [] };
+  if (scheduleUpdatedAt && at.getTime() < scheduleUpdatedAt.getTime()) return { due: [], missed: [] };
+  const age = now.getTime() - at.getTime();
+  const dateKey = intervalDateKey(at);
+  if (age <= graceMs) {
+    return { due: [{ slot: 0, dateKey, at, resolution: "exact", late: age > SWEEP_TOLERANCE_MS }], missed: [] };
+  }
+  return { due: [], missed: [{ slot: 0, dateKey, at }] };
+}
+
 /** A run starting within this of its slot time counts as on time — the sweep
  * only polls every 60s, so a slot is essentially never hit to the second. */
 const SWEEP_TOLERANCE_MS = 5 * 60_000;
@@ -312,6 +390,7 @@ const SWEEP_TOLERANCE_MS = 5 * 60_000;
  * index-backed instead of scanning every RUNNING collection.
  */
 export function nextRunFor(now: Date, timezone: string, schedule: SlotSchedule): Date | null {
+  if (schedule.scheduleType === "INTERVAL") return nextIntervalSlot(now, schedule);
   const slots = slotTimesFor(schedule);
   if (slots.length === 0) return null;
 
@@ -357,12 +436,16 @@ export function scheduleWriteFields(
         ? normalizeHhMm(schedule.scheduleTime2)
         : null,
     scheduleWeekday: schedule.scheduleWeekday,
+    intervalHours: schedule.scheduleType === "INTERVAL" ? schedule.intervalHours ?? 1 : null,
+    intervalAnchorAt: schedule.scheduleType === "INTERVAL" ? schedule.intervalAnchorAt ?? now : null,
   };
   return {
     scheduleType: normalized.scheduleType,
     scheduleTime: normalized.scheduleTime,
     scheduleTime2: normalized.scheduleTime2,
     scheduleWeekday: normalized.scheduleWeekday,
+    intervalHours: normalized.intervalHours ?? null,
+    intervalAnchorAt: normalized.intervalAnchorAt ?? null,
     nextRunAt: status === "RUNNING" ? nextRunFor(now, timezone, normalized) : null,
   };
 }
@@ -392,6 +475,13 @@ export function formatNextRun(nextRunAt: Date | null, timezone: string): string 
     hour: "numeric",
     minute: "2-digit",
   }).format(nextRunAt);
+}
+
+/** "HH:MM" wall clock of `instant` in `timeZone` — e.g. the time of day an
+ * hourly schedule's anchor fell on, kept when a downgrade turns it daily. */
+export function localHhMm(instant: Date, timeZone: string): string {
+  const p = localPartsInTz(instant, timeZone);
+  return `${String(p.hour).padStart(2, "0")}:${String(p.minute).padStart(2, "0")}`;
 }
 
 /** The wall-clock hour (0-23) `instant` falls on in `timeZone` — used to pick

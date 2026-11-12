@@ -41,7 +41,11 @@ import {
   overrideWriteFields,
   resolveSchedule,
   shopDefaultSchedule,
+  shopDefaultWriteFields,
 } from "../lib/schedule-resolve";
+import { bulkStaggerMs, parseScheduleForm, withIntervalAnchor } from "../lib/schedule-form.server";
+import { repairInheritingCountdowns } from "../lib/schedule-writes.server";
+import { intervalLabel } from "../lib/schedule-cadences";
 import { BulkRemoveConfirmModal } from "../components/BulkRemoveConfirmModal";
 import { PlanBar } from "../components/PlanBar";
 import { AddAllUntrackedModal } from "../components/AddAllUntrackedModal";
@@ -748,49 +752,23 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const configs = await db.collectionConfig.findMany({ where: { id: { in: ids }, shop } });
     if (configs.length === 0) return data({ ok: false, error: "Nothing to update." }, { status: 400 });
 
-    let override: ReturnType<typeof overrideWriteFields>;
-    if (toDefault) {
-      override = overrideWriteFields(null);
-    } else {
-      const scheduleType = String(formData.get("scheduleType") ?? "WEEKLY") as ScheduleType;
-      // The cadence is a plan entitlement and is checked here, not only in
-      // the UI. Without this a hand-rolled POST could set DAILY on Free —
-      // and TWICE_DAILY too, since the slot guard below only fires when a
-      // second time comes with it.
-      if (!isScheduleAllowed(settings.plan, scheduleType)) {
-        return data(
-          { ok: false, error: `Your ${planOf(settings.plan).name} plan doesn't include that schedule.` },
-          { status: 400 },
-        );
-      }
-      const scheduleTime = normalizeHhMm(String(formData.get("scheduleTime") ?? "06:00"));
-      const rawTime2 = formData.get("scheduleTime2");
-      const scheduleTime2 =
-        scheduleType === "TWICE_DAILY" && rawTime2 != null && rawTime2 !== ""
-          ? normalizeHhMm(String(rawTime2))
-          : null;
-      // The second slot is a plan entitlement, checked here and not only in
-      // the UI — a hand-rolled POST must not be able to buy it for free.
-      if (scheduleTime2 != null && timeSlots(settings.plan) < 2) {
-        return data({ ok: false, error: "Two shuffles a day is a Pro feature." }, { status: 400 });
-      }
-      if (scheduleTime2 != null && !slotsFarEnoughApart(scheduleTime, scheduleTime2)) {
-        return data({ ok: false, error: "Keep the two shuffle times at least an hour apart." }, { status: 400 });
-      }
-      const rawWeekday = formData.get("scheduleWeekday");
-      override = overrideWriteFields({
-        scheduleType,
-        scheduleTime,
-        scheduleTime2,
-        scheduleWeekday: rawWeekday != null && rawWeekday !== "" ? Number(rawWeekday) : null,
-      });
+    let parsed: SlotSchedule | null = null;
+    if (!toDefault) {
+      // Plan + interval validation lives in one place for every write path.
+      const result = parseScheduleForm(formData, settings.plan);
+      if (!result.ok) return data({ ok: false, error: result.error, code: result.code }, { status: result.status });
+      parsed = result.schedule;
     }
+    const now = new Date();
 
-    const writes = configs.flatMap((c) => {
+    const writes = configs.flatMap((c, index) => {
       const before = resolveSchedule(c, settings);
+      const override = overrideWriteFields(
+        parsed ? withIntervalAnchor(before, parsed, now, configs.length > 1 ? bulkStaggerMs(index) : 0) : null,
+      );
       const after = resolveSchedule({ ...c, ...override }, settings);
       const changed = scheduleSummary(before) !== scheduleSummary(after) || isOverridden(c) !== (override.scheduleType != null);
-      const nextRunAt = c.status === "RUNNING" ? nextRunFor(new Date(), settings.timezone, after) : null;
+      const nextRunAt = c.status === "RUNNING" ? nextRunFor(now, settings.timezone, after) : null;
       return [
         db.collectionConfig.update({
           where: { id: c.id },
@@ -825,64 +803,25 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   // collection with a null override follows these values live — so the only
   // extra work is repairing the advisory countdown on those rows.
   if (actionType === "set-shop-default") {
-    const scheduleType = String(formData.get("scheduleType") ?? "WEEKLY") as ScheduleType;
-    // The cadence is a plan entitlement and is checked here, not only in
-    // the UI. Without this a hand-rolled POST could set DAILY on Free —
-    // and TWICE_DAILY too, since the slot guard below only fires when a
-    // second time comes with it.
-    if (!isScheduleAllowed(settings.plan, scheduleType)) {
-      return data(
-        { ok: false, error: `Your ${planOf(settings.plan).name} plan doesn't include that schedule.` },
-        { status: 400 },
-      );
-    }
-    const scheduleTime = normalizeHhMm(String(formData.get("scheduleTime") ?? "06:00"));
-    const rawTime2 = formData.get("scheduleTime2");
-    const scheduleTime2 =
-      scheduleType === "TWICE_DAILY" && rawTime2 != null && rawTime2 !== ""
-        ? normalizeHhMm(String(rawTime2))
-        : null;
-    if (scheduleTime2 != null && timeSlots(settings.plan) < 2) {
-      return data({ ok: false, error: "Two shuffles a day is a Pro feature." }, { status: 400 });
-    }
-    if (scheduleTime2 != null && !slotsFarEnoughApart(scheduleTime, scheduleTime2)) {
-      return data({ ok: false, error: "Keep the two shuffle times at least an hour apart." }, { status: 400 });
-    }
-    const rawWeekday = formData.get("scheduleWeekday");
-    const scheduleWeekday = rawWeekday != null && rawWeekday !== "" ? Number(rawWeekday) : null;
-
+    const result = parseScheduleForm(formData, settings.plan);
+    if (!result.ok) return data({ ok: false, error: result.error, code: result.code }, { status: result.status });
+    const now = new Date();
+    const nextDefaultInput = withIntervalAnchor(shopDefaultSchedule(settings), result.schedule, now);
     const updated = await db.shopSettings.update({
       where: { shop },
-      data: {
-        defaultScheduleType: scheduleType,
-        defaultScheduleTime: scheduleTime,
-        defaultScheduleTime2: scheduleTime2,
-        defaultScheduleWeekday: scheduleType === "WEEKLY" ? scheduleWeekday : null,
-      },
+      data: shopDefaultWriteFields(nextDefaultInput),
     });
 
     // Everything inheriting just moved. nextRunAt is only an advisory cache
     // (the sweep recomputes it anyway), but leaving it stale would show the
     // merchant the old countdown until the next sweep touched each row.
-    const inheriting = await db.collectionConfig.findMany({ where: { shop, scheduleType: null } });
-    const nextDefault = shopDefaultSchedule(updated);
-    await db.$transaction(
-      inheriting.map((c) =>
-        db.collectionConfig.update({
-          where: { id: c.id },
-          data: {
-            scheduleUpdatedAt: new Date(),
-            nextRunAt: c.status === "RUNNING" ? nextRunFor(new Date(), updated.timezone, nextDefault) : null,
-          },
-        }),
-      ),
-    );
+    const moved = await repairInheritingCountdowns(shop, updated, now);
     // Field name matches set-schedule's response (`count`) on purpose — both
     // actions share scheduleFetcher and its one toast effect below, which
     // reads `.count`. `toDefault` is deliberately not set here: that flag
     // means "these collections now inherit the default", not "the default's
     // own value changed" — the two are different actions on the same page.
-    return data({ ok: true, count: inheriting.length });
+    return data({ ok: true, count: moved });
   }
 
   if (actionType === "pause-all") {
@@ -1072,6 +1011,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
  * records old -> new. Built on the same label helper the table cell uses, so
  * the log and the row can't describe the same schedule differently. */
 function scheduleSummary(s: SlotSchedule): string {
+  if (s.scheduleType === "INTERVAL") return intervalLabel(s.intervalHours);
   return scheduleLabel(s.scheduleType, s.scheduleTime, s.scheduleWeekday, s.scheduleTime2 ?? null);
 }
 

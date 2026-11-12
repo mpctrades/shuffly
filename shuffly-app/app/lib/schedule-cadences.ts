@@ -62,3 +62,10 @@ export function cadenceOption(type: ScheduleType): CadenceOption {
 export function cadenceSummary(type: ScheduleType): string {
   return cadenceOption(type).summary;
 }
+
+/** "Every hour" / "Every 6 hours". English-only fallback for server-written
+ * Activity text; the UI renders interval labels through the i18n dictionary. */
+export function intervalLabel(hours: number | null | undefined): string {
+  const h = hours ?? 1;
+  return h === 1 ? "Every hour" : `Every ${h} hours`;
+}

@@ -13,8 +13,10 @@ import {
   planOf,
   timeSlots,
   isScheduleAllowed,
+  canUseNewArrivals,
   undoRetentionCutoff,
 } from "./plans";
+import { INTERVAL_HOURS } from "./schedule-core";
 
 describe("planOf", () => {
   it("resolves a known plan id", () => {
@@ -121,12 +123,17 @@ describe("cadenceLabel", () => {
     // daily shuffle, so the copy must not claim one.
     expect(cadenceLabel("FREE")).toBe("Weekly shuffle");
     expect(cadenceLabel("STARTER")).toBe("1 shuffle a day");
-    expect(cadenceLabel("PRO")).toBe("2 shuffles a day");
+    expect(cadenceLabel("PRO")).toBe("Unlimited shuffles — as often as every hour");
   });
 
   it("never claims a cadence the plan doesn't allow", () => {
     for (const plan of Object.values(PLANS)) {
       const label = cadenceLabel(plan.id);
+      // Listing rule: "Unlimited" never appears without "as often as every hour".
+      if (label.startsWith("Unlimited")) {
+        expect(label).toContain("as often as every hour");
+        expect(plan.allowedSchedules).toContain("INTERVAL");
+      }
       if (label === "2 shuffles a day") expect(plan.allowedSchedules).toContain("TWICE_DAILY");
       if (label === "1 shuffle a day") expect(plan.allowedSchedules).toContain("DAILY");
       if (label === "Weekly shuffle") expect(plan.allowedSchedules).toContain("WEEKLY");
@@ -289,8 +296,34 @@ describe("isScheduleAllowed", () => {
     // promise a cadence the app then refuses.
     for (const plan of Object.values(PLANS)) {
       for (const t of plan.allowedSchedules) {
-        expect(isScheduleAllowed(plan.id, t)).toBe(true);
+        // An interval schedule is only allowed with a valid interval.
+        expect(isScheduleAllowed(plan.id, t, t === "INTERVAL" ? 1 : undefined)).toBe(true);
       }
     }
+  });
+});
+
+describe("isScheduleAllowed — intervals", () => {
+  it("only Pro may run on an interval, and only on the offered intervals", () => {
+    for (const h of INTERVAL_HOURS) {
+      expect(isScheduleAllowed("PRO", "INTERVAL", h)).toBe(true);
+      expect(isScheduleAllowed("STARTER", "INTERVAL", h)).toBe(false);
+      expect(isScheduleAllowed("FREE", "INTERVAL", h)).toBe(false);
+    }
+    expect(isScheduleAllowed("PRO", "INTERVAL", 0.5)).toBe(false);
+    expect(isScheduleAllowed("PRO", "INTERVAL", null)).toBe(false);
+  });
+
+  it("the new-arrivals features are Pro-only", () => {
+    expect(canUseNewArrivals("PRO")).toBe(true);
+    expect(canUseNewArrivals("STARTER")).toBe(false);
+    expect(canUseNewArrivals("FREE")).toBe(false);
+  });
+
+  it("prices and collection caps are unchanged by Update 2", () => {
+    expect([PLANS.FREE.price, PLANS.STARTER.price, PLANS.PRO.price]).toEqual([0, 3.99, 7.99]);
+    expect([PLANS.FREE.maxCollections, PLANS.STARTER.maxCollections, PLANS.PRO.maxCollections]).toEqual([25, 100, Infinity]);
+    expect(PLANS.FREE.allowedSchedules).toEqual(["WEEKLY", "MANUAL"]);
+    expect(PLANS.STARTER.allowedSchedules).toEqual(["DAILY", "WEEKLY", "MANUAL"]);
   });
 });

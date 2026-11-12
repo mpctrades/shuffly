@@ -1,4 +1,6 @@
 import { isOverridden, overrideWriteFields, resolveSchedule, shopDefaultSchedule } from "../lib/schedule-resolve";
+import { parseScheduleForm, withIntervalAnchor } from "../lib/schedule-form.server";
+import { intervalLabel } from "../lib/schedule-cadences";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { data, useLoaderData, useNavigation, useFetcher, Form, redirect } from "react-router";
@@ -159,37 +161,10 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
     if (toDefault) {
       override = overrideWriteFields(null);
     } else {
-      const scheduleType = String(formData.get("scheduleType") ?? "DAILY") as ScheduleType;
-      // Checked here, not only in the UI — a hand-rolled POST must not be
-      // able to buy a cadence the plan doesn't include.
-      if (!isScheduleAllowed(settings.plan, scheduleType)) {
-        return data(
-          { ok: false, error: `Your ${plan.name} plan doesn't include that schedule.` },
-          { status: 400 },
-        );
-      }
-      const scheduleTime = normalizeHhMm(String(formData.get("scheduleTime") ?? "06:00"));
-      const rawTime2 = formData.get("scheduleTime2");
-      const scheduleTime2 =
-        scheduleType === SECOND_SLOT_SCHEDULE && rawTime2 != null && rawTime2 !== ""
-          ? normalizeHhMm(String(rawTime2))
-          : null;
-      if (scheduleTime2 != null && timeSlots(settings.plan) < 2) {
-        return data({ ok: false, error: "Two shuffles a day is a Pro feature." }, { status: 400 });
-      }
-      if (scheduleTime2 != null && !slotsFarEnoughApart(scheduleTime, scheduleTime2)) {
-        return data(
-          { ok: false, error: "Keep the two shuffle times at least an hour apart." },
-          { status: 400 },
-        );
-      }
-      const rawWeekday = formData.get("scheduleWeekday");
-      override = overrideWriteFields({
-        scheduleType,
-        scheduleTime,
-        scheduleTime2,
-        scheduleWeekday: rawWeekday != null && rawWeekday !== "" ? Number(rawWeekday) : null,
-      });
+      // Plan + interval validation shared with every other write path.
+      const result = parseScheduleForm(formData, settings.plan, "DAILY");
+      if (!result.ok) return data({ ok: false, error: result.error, code: result.code }, { status: result.status });
+      override = overrideWriteFields(withIntervalAnchor(resolveSchedule(config, settings), result.schedule, new Date()));
     }
 
     // Compared against what the collection actually runs on today, which may
@@ -199,7 +174,9 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
     const before = resolveSchedule(config, settings);
     const after = resolveSchedule({ ...config, ...override }, settings);
     const summaryOf = (sch: typeof before) =>
-      scheduleSummary(sch.scheduleType, sch.scheduleTime, sch.scheduleTime2 ?? null, sch.scheduleWeekday);
+      sch.scheduleType === "INTERVAL"
+        ? intervalLabel(sch.intervalHours)
+        : scheduleSummary(sch.scheduleType, sch.scheduleTime, sch.scheduleTime2 ?? null, sch.scheduleWeekday);
     const scheduleChanged =
       summaryOf(before) !== summaryOf(after) || isOverridden(config) !== (override.scheduleType != null);
 

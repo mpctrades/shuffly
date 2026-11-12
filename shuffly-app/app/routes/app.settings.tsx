@@ -1,7 +1,9 @@
 import { closeModal } from "../lib/polaris-modal";
 import { IconChip } from "../components/IconChip";
 import { ShuffleScheduleModal, type ScheduleTarget } from "../components/ShuffleScheduleModal";
-import { shopDefaultSchedule } from "../lib/schedule-resolve";
+import { shopDefaultSchedule, shopDefaultWriteFields } from "../lib/schedule-resolve";
+import { parseScheduleForm, withIntervalAnchor } from "../lib/schedule-form.server";
+import { repairInheritingCountdowns } from "../lib/schedule-writes.server";
 import { nextRunFor, slotsFarEnoughApart, type ScheduleType, type SlotSchedule } from "../lib/schedule.server";
 import { isScheduleAllowed, planOf, timeSlots } from "../lib/plans.server";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
@@ -94,52 +96,17 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   // their advisory countdown.
   if (String(formData.get("_action") ?? "") === "set-shop-default") {
     const settings = await getOrCreateShopSettings(admin, shop);
-    const scheduleType = String(formData.get("scheduleType") ?? "WEEKLY") as ScheduleType;
-    // The shop default governs every collection that inherits it, so an
-    // unchecked cadence here re-cadences the whole shop in one POST.
-    if (!isScheduleAllowed(settings.plan, scheduleType)) {
-      return data(
-        { ok: false, error: `Your ${planOf(settings.plan).name} plan doesn't include that schedule.` },
-        { status: 400 },
-      );
-    }
-    const scheduleTime = normalizeHhMm(String(formData.get("scheduleTime") ?? "06:00"));
-    const rawTime2 = formData.get("scheduleTime2");
-    const scheduleTime2 =
-      scheduleType === "TWICE_DAILY" && rawTime2 != null && rawTime2 !== ""
-        ? normalizeHhMm(String(rawTime2))
-        : null;
-    if (scheduleTime2 != null && timeSlots(settings.plan) < 2) {
-      return data({ ok: false, error: "Two shuffles a day is a Pro feature." }, { status: 400 });
-    }
-    if (scheduleTime2 != null && !slotsFarEnoughApart(scheduleTime, scheduleTime2)) {
-      return data({ ok: false, error: "Keep the two shuffle times at least an hour apart." }, { status: 400 });
-    }
-    const rawWeekday = formData.get("scheduleWeekday");
+    // The shop default governs every collection that inherits it, so the
+    // plan check matters even more here than on a single collection.
+    const result = parseScheduleForm(formData, settings.plan);
+    if (!result.ok) return data({ ok: false, error: result.error, code: result.code }, { status: result.status });
+    const now = new Date();
     const updated = await db.shopSettings.update({
       where: { shop },
-      data: {
-        defaultScheduleType: scheduleType,
-        defaultScheduleTime: scheduleTime,
-        defaultScheduleTime2: scheduleTime2,
-        defaultScheduleWeekday:
-          scheduleType === "WEEKLY" && rawWeekday != null && rawWeekday !== "" ? Number(rawWeekday) : null,
-      },
+      data: shopDefaultWriteFields(withIntervalAnchor(shopDefaultSchedule(settings), result.schedule, now)),
     });
-    const inheriting = await db.collectionConfig.findMany({ where: { shop, scheduleType: null } });
-    const nextDefault = shopDefaultSchedule(updated);
-    await db.$transaction(
-      inheriting.map((c) =>
-        db.collectionConfig.update({
-          where: { id: c.id },
-          data: {
-            scheduleUpdatedAt: new Date(),
-            nextRunAt: c.status === "RUNNING" ? nextRunFor(new Date(), updated.timezone, nextDefault) : null,
-          },
-        }),
-      ),
-    );
-    return data({ ok: true, moved: inheriting.length });
+    const moved = await repairInheritingCountdowns(shop, updated, now);
+    return data({ ok: true, moved });
   }
 
   const neverMoveTags = String(formData.get("neverMoveTags") ?? "");

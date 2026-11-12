@@ -15,7 +15,14 @@ const shop = {
   defaultScheduleWeekday: 1, // Monday
 };
 
-const inheriting = { scheduleType: null, scheduleTime: null, scheduleTime2: null, scheduleWeekday: null };
+const inheriting = {
+  scheduleType: null,
+  scheduleTime: null,
+  scheduleTime2: null,
+  scheduleWeekday: null,
+  intervalHours: null,
+  intervalAnchorAt: null,
+};
 
 describe("resolveSchedule", () => {
   it("follows the shop default when the collection stores no schedule", () => {
@@ -24,6 +31,8 @@ describe("resolveSchedule", () => {
       scheduleTime: "06:00",
       scheduleTime2: null,
       scheduleWeekday: 1,
+      intervalHours: null,
+      intervalAnchorAt: null,
     });
   });
 
@@ -49,6 +58,8 @@ describe("resolveSchedule", () => {
       scheduleTime: "09:30",
       scheduleTime2: null,
       scheduleWeekday: 5,
+      intervalHours: null,
+      intervalAnchorAt: null,
     });
   });
 
@@ -88,6 +99,8 @@ describe("overrideWriteFields", () => {
       scheduleTime: "06:00",
       scheduleTime2: "18:00",
       scheduleWeekday: 1,
+      intervalHours: null,
+      intervalAnchorAt: null,
     });
     expect(written.scheduleTime2).toBeNull();
   });
@@ -119,6 +132,8 @@ describe("shopDefaultSchedule", () => {
       scheduleTime: "06:00",
       scheduleTime2: null,
       scheduleWeekday: 1,
+      intervalHours: null,
+      intervalAnchorAt: null,
     });
   });
 });
