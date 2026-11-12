@@ -2104,7 +2104,8 @@ export default function Collections() {
         .shuffly-card-window { width: 110px; }
         .shuffly-card-subtle { color: var(--p-color-text-secondary, #616161); font-size: 13px; }
         .shuffly-card-next { white-space: nowrap; }
-        .shuffly-card-unlock { font-size: 13px; }
+        .shuffly-card-fixed { padding-top: 0; gap: 12px; }
+        .shuffly-card-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; flex: none; }
         .shuffly-card-footer {
           display: flex;
           align-items: center;
@@ -2113,16 +2114,6 @@ export default function Collections() {
           border-top: 1px solid var(--p-color-border-secondary, #ebebeb);
           padding-top: 12px;
         }
-        .shuffly-card-linkbutton {
-          border: 0;
-          background: none;
-          padding: 0;
-          font: inherit;
-          color: var(--p-color-text-link, #005bd3);
-          text-decoration: underline;
-          cursor: pointer;
-        }
-        .shuffly-card-linkbutton:disabled { opacity: 0.5; cursor: default; }
         .shuffly-card-alert { border-radius: 8px; padding: 8px 12px; font-size: 13px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
         .shuffly-card-alert--critical { background: var(--p-color-bg-surface-critical, #fee9e8); color: var(--p-color-text-critical, #8e0b21); }
         .shuffly-card-alert--caution { background: var(--p-color-bg-surface-caution, #fff8db); color: var(--p-color-text-caution, #4f4700); }
@@ -2145,6 +2136,7 @@ export default function Collections() {
           .shuffly-card-grid { grid-template-columns: minmax(0, 1fr); row-gap: 4px; }
           .shuffly-card-label { padding-top: 8px; }
           .shuffly-card-footer, .shuffly-card-preset { flex-direction: column; align-items: stretch; }
+          .shuffly-card-actions { justify-content: flex-start; }
         }
 
         .shuffly-status-row {

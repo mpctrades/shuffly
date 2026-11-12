@@ -338,9 +338,9 @@ export function CollectionCard({
             {nextLine}
           </span>
           {anyLocked && (
-            <Link to="/app/plan" className="shuffly-card-unlock">
+            <s-button variant="tertiary" icon="lock" href="/app/plan">
               {t("card.unlockPro")}
-            </Link>
+            </s-button>
           )}
         </div>
 
@@ -392,19 +392,25 @@ export function CollectionCard({
             <s-badge tone="info">{t("badge.pro")}</s-badge>
           </div>
           {!proFeatures && (
-            <Link to="/app/plan" className="shuffly-card-unlock">
-              {t("card.unlockPro")}
-            </Link>
+            <div>
+              <s-button variant="tertiary" icon="lock" href="/app/plan">
+                {t("card.unlockPro")}
+              </s-button>
+            </div>
           )}
         </div>
 
         <div className="shuffly-card-label">{t("card.fixedProducts")}</div>
-        <div className="shuffly-card-value">
+        <div className="shuffly-card-value shuffly-card-inline shuffly-card-fixed">
           <span>{fixedParts.length > 0 ? fixedParts.join(" · ") : t("card.noFixed")}</span>
-          {" · "}
-          <Link to={`/app/collections/${card.id}`} aria-label={t("card.editFixedFor", { title: card.title })}>
+          <s-button
+            variant="secondary"
+            icon="edit"
+            href={`/app/collections/${card.id}`}
+            accessibilityLabel={t("card.editFixedFor", { title: card.title })}
+          >
             {t("card.edit")}
-          </Link>
+          </s-button>
         </div>
       </div>
 
@@ -414,44 +420,42 @@ export function CollectionCard({
         </div>
       )}
 
-      {/* Footer */}
+      {/* Footer: the facts on the left, every action as a real button on
+          the right (Undo, the preset, Shuffle now) — easy targets to tap,
+          nothing that reads as an underlined text link. */}
       <div className="shuffly-card-footer">
         <div className="shuffly-card-subtle" suppressHydrationWarning>
           {lastRun ? t("card.lastRun", { when: formatWhen(new Date(lastRun.at), new Date(now), timezone, t) }) : t("card.notShuffledYet")}
           {" · "}
           {t.plural("card.products", card.productCount)}
+        </div>
+        <div className="shuffly-card-actions">
           {card.canUndo && (
-            <>
-              {" · "}
-              <button
-                type="button"
-                className="shuffly-card-linkbutton"
-                aria-label={t("card.undoFor", { title: card.title })}
-                disabled={undoFetcher.state !== "idle"}
-                onClick={() => undoFetcher.submit({ _action: "undo-last", id: card.id }, { method: "post" })}
-              >
-                {t("card.undo")}
-              </button>
-            </>
+            <s-button
+              variant="secondary"
+              icon="undo"
+              accessibilityLabel={t("card.undoFor", { title: card.title })}
+              onClick={() => undoFetcher.submit({ _action: "undo-last", id: card.id }, { method: "post" })}
+              {...(undoFetcher.state !== "idle" ? { loading: true } : {})}
+            >
+              {t("card.undo")}
+            </s-button>
           )}
           {!card.suggestPreset && !presetApplied && !card.presetPending && (
-            <>
-              {" · "}
-              <button type="button" className="shuffly-card-linkbutton" onClick={applyPreset}>
-                {t("preset.link")}
-                {!proFeatures ? ` (${t("badge.pro")})` : ""}
-              </button>
-            </>
+            <s-button variant="secondary" icon="wand" onClick={applyPreset} {...(presetFetcher.state !== "idle" ? { loading: true } : {})}>
+              {t("preset.link")}
+              {!proFeatures ? ` · ${t("badge.pro")}` : ""}
+            </s-button>
           )}
+          <s-button
+            variant="primary"
+            onClick={shuffleNow}
+            disabled={isShuffling || card.sortPaused || undefined}
+            {...(isShuffling ? { loading: true } : {})}
+          >
+            {status === "PAUSED" ? t("card.shuffleOnce") : t("card.shuffleNow")}
+          </s-button>
         </div>
-        <s-button
-          variant="primary"
-          onClick={shuffleNow}
-          disabled={isShuffling || card.sortPaused || undefined}
-          {...(isShuffling ? { loading: true } : {})}
-        >
-          {status === "PAUSED" ? t("card.shuffleOnce") : t("card.shuffleNow")}
-        </s-button>
       </div>
     </div>
   );
