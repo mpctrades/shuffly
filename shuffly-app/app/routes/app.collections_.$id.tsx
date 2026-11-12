@@ -1,3 +1,8 @@
+// File name: the trailing underscore in "app.collections_" keeps this page
+// OUT of the Collections list's layout. Without it, React Router nests it as
+// a child of app.collections.tsx, which renders no <Outlet />, so opening a
+// collection changed the URL but kept showing the list. URL is unchanged:
+// /app/collections/:id.
 import { isOverridden, overrideWriteFields, resolveSchedule, shopDefaultSchedule } from "../lib/schedule-resolve";
 import { parseScheduleForm, withIntervalAnchor } from "../lib/schedule-form.server";
 import { intervalLabel } from "../lib/schedule-cadences";

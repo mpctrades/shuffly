@@ -500,7 +500,7 @@ export function timezoneOffsetLabel(timeZone: string, at: Date = new Date()): st
 
 /** Activity feed timestamp, in the shop's timezone: "Today 06:00",
  * "Yesterday 14:22", then "20 Aug 06:00". Still used by the Workspace
- * history tab (app.collections.$id.tsx) — kept as-is; the Activity feed
+ * history tab (app.collections_.$id.tsx) — kept as-is; the Activity feed
  * itself uses activityDayAndTime below instead, which splits this same
  * logic into a separate day heading + time-only row label. */
 export function formatActivityTimestamp(instant: Date, timeZone: string, now: Date): string {

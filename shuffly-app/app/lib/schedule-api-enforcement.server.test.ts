@@ -44,7 +44,7 @@ vi.mock("./shop-context.server", () => ({
 }));
 
 import { action as collectionsAction } from "../routes/app.collections";
-import { action as workspaceAction } from "../routes/app.collections.$id";
+import { action as workspaceAction } from "../routes/app.collections_.$id";
 import { action as settingsAction } from "../routes/app.settings";
 
 function post(fields: Record<string, string>): Request {
