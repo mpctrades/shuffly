@@ -41,6 +41,23 @@ export async function recordProductPositions(
   const page1 = productsInOrder.slice(0, pageSize);
   if (page1.length === 0) return;
 
+  // One row per (collection, product, local day) — Update 2. Every metric
+  // reads ProductPosition at day granularity (which products held page 1 on
+  // which days, plus each one's latest availability), so a second run on the
+  // same day only needs to add the products that are new to page 1 today and
+  // refresh the rest. Before hourly schedules a product rarely appeared twice
+  // a day; at 24 runs a day the old row-per-run table grew 24x faster for no
+  // metric's benefit. "Since install" history is untouched.
+  const already = await db.productPosition.findMany({
+    where: { shop, collectionId, dateKey, productGid: { in: page1.map((p) => p.id) } },
+    select: { productGid: true },
+  });
+  if (already.length > 0) {
+    await db.productPosition.deleteMany({
+      where: { shop, collectionId, dateKey, productGid: { in: already.map((r) => r.productGid) } },
+    });
+  }
+
   await db.productPosition.createMany({
     data: page1.map((p, idx) => ({
       shop,

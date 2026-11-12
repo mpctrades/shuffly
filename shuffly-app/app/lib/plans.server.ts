@@ -275,7 +275,7 @@ export async function pruneExpiredUndoSnapshots(
   const result = await db.shuffleRun.updateMany({
     where: {
       shop,
-      trigger: { in: ["SCHEDULED", "MANUAL"] },
+      trigger: { in: ["SCHEDULED", "MANUAL", "NEW_PRODUCTS"] },
       createdAt: { lt: undoRetentionCutoff(planId, now) },
       previousOrder: { not: null },
     },

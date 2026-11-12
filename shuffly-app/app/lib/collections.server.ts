@@ -5,6 +5,7 @@
 // collections whose sortOrder is MANUAL.
 
 import type { AdminApiContext } from "@shopify/shopify-app-react-router/server";
+import { deflateRawSync, inflateRawSync } from "node:zlib";
 
 import { adminGraphql } from "./admin-graphql.server";
 
@@ -715,6 +716,34 @@ export function unpackProductIds(packed: string | null): string[] {
   } catch {
     return [];
   }
+}
+
+/** Prefix of the compact undo format; anything else is legacy JSON. */
+const UNDO_FORMAT = "z1:";
+
+/**
+ * Pack a run's "order before" for Undo (Update 2). Hourly runs keep up to
+ * 24 snapshots a day per collection for 30 days on Pro, so the format
+ * matters: numeric ids (no gid prefix), deflated, base64. Measured in
+ * undo-storage.test.ts: ~9.7 KB for 1,000 products against ~37 KB for the
+ * old JSON of full GIDs. Only what's needed to restore — the ordered ids.
+ */
+export function packUndoOrder(gids: string[]): string {
+  return UNDO_FORMAT + deflateRawSync(Buffer.from(packProductIds(gids))).toString("base64");
+}
+
+/** Reads both the compact format and the JSON array older runs stored. */
+export function unpackUndoOrder(stored: string | null): string[] {
+  if (!stored) return [];
+  if (!stored.startsWith(UNDO_FORMAT)) {
+    try {
+      const v: unknown = JSON.parse(stored);
+      return Array.isArray(v) ? v.map(String) : [];
+    } catch {
+      return [];
+    }
+  }
+  return unpackProductIds(inflateRawSync(Buffer.from(stored.slice(UNDO_FORMAT.length), "base64")).toString());
 }
 
 /**

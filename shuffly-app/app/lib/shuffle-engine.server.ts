@@ -4,6 +4,8 @@ import db from "../db.server";
 import {
   diffToMoves,
   getCollectionProductsInOrder,
+  packUndoOrder,
+  unpackUndoOrder,
   reorderCollectionProducts,
   restoreCollectionSort,
   setCollectionManualSort,
@@ -415,7 +417,8 @@ async function shuffleCollection(
           : `Shuffled — ${moves.length} product${moves.length === 1 ? "" : "s"} moved`,
         messageCode: context.messageCode,
         messageParams: context.messageParams ? JSON.stringify(context.messageParams) : undefined,
-        previousOrder: JSON.stringify(fetchedOrder),
+        // Compact (numeric ids, deflated): what Undo needs and nothing else.
+        previousOrder: packUndoOrder(fetchedOrder),
       },
     }),
   ];
@@ -484,7 +487,7 @@ async function undoRunLocked(
     shop,
     collectionId: config.id,
     status: "OK",
-    trigger: { in: ["SCHEDULED", "MANUAL"] },
+    trigger: { in: ["SCHEDULED", "MANUAL", "NEW_PRODUCTS"] },
     createdAt: { gte: cutoff },
     previousOrder: { not: null },
   } satisfies Prisma.ShuffleRunWhereInput;
@@ -496,7 +499,7 @@ async function undoRunLocked(
       });
   if (!run?.previousOrder) return { ok: false, error: "Nothing to restore" };
 
-  const targetOrder: string[] = JSON.parse(run.previousOrder);
+  const targetOrder = unpackUndoOrder(run.previousOrder);
   const { products } = await getCollectionProductsInOrder(admin, config.collectionGid);
   const currentOrder = products.map((p) => p.id);
   // Only restore ids that still exist in the collection today.
