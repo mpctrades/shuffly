@@ -1,12 +1,14 @@
 import { useEffect } from "react";
 import type { HeadersFunction, LoaderFunctionArgs, ShouldRevalidateFunction } from "react-router";
-import { Outlet, useNavigate, useRouteError } from "react-router";
+import { Outlet, useLoaderData, useNavigate, useRouteError } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { AppProvider } from "@shopify/shopify-app-react-router/react";
 
 import { authenticate } from "../shopify.server";
 import { WEBSITE_URL } from "../lib/app-config";
 import { syncPlanIfStale } from "../lib/billing.server";
+import db from "../db.server";
+import { I18nProvider, makeT, normalizeLang, type Lang } from "../i18n";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { billing, session } = await authenticate.admin(request);
@@ -26,8 +28,29 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     console.error("[app] plan sync failed, using the cached plan:", err);
   }
 
-  return null;
+  return { lang: await resolveLang(request, session.shop) };
 };
+
+/**
+ * The language the app renders in (Update 2): the admin user's own Shopify
+ * locale, which App Bridge puts on the embedded URL as `locale`. Internal
+ * navigations don't always carry it, so the last one seen is remembered in
+ * ShopSettings.language (a column that existed but was never read) and used
+ * when the URL doesn't say. Never fatal: English is always a fine answer.
+ */
+async function resolveLang(request: Request, shop: string): Promise<Lang> {
+  try {
+    const fromUrl = normalizeLang(new URL(request.url).searchParams.get("locale"));
+    const stored = await db.shopSettings.findUnique({ where: { shop }, select: { language: true } });
+    if (fromUrl && stored && stored.language !== fromUrl) {
+      await db.shopSettings.update({ where: { shop }, data: { language: fromUrl } });
+    }
+    return fromUrl ?? normalizeLang(stored?.language) ?? "en";
+  } catch (err) {
+    console.error("[app] couldn't resolve the language, using English:", err);
+    return "en";
+  }
+}
 
 // This layout's loader only reconciles the plan (throttled), so a background
 // poll — a page calling revalidator.revalidate() on the same URL with no form
@@ -62,19 +85,24 @@ function EmbeddedAppProvider({ children }: { children: React.ReactNode }) {
 }
 
 export default function App() {
+  const data = useLoaderData<typeof loader>();
+  // This component renders the provider, so it can't read it via useT().
+  const t = makeT(data?.lang ?? "en");
   return (
+    <I18nProvider lang={data?.lang ?? "en"}>
     <EmbeddedAppProvider>
       <s-app-nav>
-        <s-link href="/app/collections">Collections</s-link>
-        <s-link href="/app/activity">Activity</s-link>
-        <s-link href="/app/insights">Insights</s-link>
-        <s-link href="/app/plan">Plan</s-link>
-        <s-link href="/app/settings">Settings</s-link>
-        <s-link href="/app/help">Help</s-link>
-        <s-link href={WEBSITE_URL} target="_blank">Website</s-link>
+        <s-link href="/app/collections">{t("nav.collections")}</s-link>
+        <s-link href="/app/activity">{t("nav.activity")}</s-link>
+        <s-link href="/app/insights">{t("nav.insights")}</s-link>
+        <s-link href="/app/plan">{t("nav.plan")}</s-link>
+        <s-link href="/app/settings">{t("nav.settings")}</s-link>
+        <s-link href="/app/help">{t("nav.help")}</s-link>
+        <s-link href={WEBSITE_URL} target="_blank">{t("nav.website")}</s-link>
       </s-app-nav>
       <Outlet />
     </EmbeddedAppProvider>
+    </I18nProvider>
   );
 }
 
