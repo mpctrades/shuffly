@@ -299,10 +299,21 @@ export async function getCollectionPreviewAndCount(
   };
 }
 
+/** Products per page when reading a whole collection — Shopify's maximum,
+ * so a 1,000-product collection is 4 reads, not 10. */
+const PRODUCTS_PAGE_SIZE = 250;
+
+/**
+ * Every product in the collection, in its current order. No upper limit:
+ * until Update 2 this stopped at 2,000, which meant products past position
+ * 2,000 in a large collection were never shuffled, never reached the top,
+ * and never counted for fair rotation. `limit` stays only for callers that
+ * genuinely want a prefix.
+ */
 export async function getCollectionProductsInOrder(
   admin: AdminApiContext,
   collectionGid: string,
-  limit = 2000,
+  limit = Infinity,
 ): Promise<{ sortOrder: string; products: ShopifyProductSummary[] }> {
   const products: ShopifyProductSummary[] = [];
   let after: string | null = null;
@@ -323,7 +334,7 @@ export async function getCollectionProductsInOrder(
           }
         }
       }`,
-      { variables: { id: collectionGid, first: 100, after } },
+      { variables: { id: collectionGid, first: PRODUCTS_PAGE_SIZE, after } },
     );
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- raw GraphQL JSON, no generated types for this ad-hoc query
     const json: any = await res.json();
@@ -436,25 +447,87 @@ export async function setCollectionManualSort(
   return { ok: true, previousSortOrder };
 }
 
+export type ReorderMove = { id: string; newPosition: string };
+
 /**
- * Diff `currentOrder` -> `targetOrder` into the minimal list of
- * { id, newPosition } moves that collectionReorderProducts expects,
- * simulating the exact "remove then reinsert, applied sequentially"
- * semantics Shopify documents for this mutation.
+ * Apply moves exactly as Shopify documents collectionReorderProducts
+ * (Admin API 2026-07): each move is applied in order; `newPosition` is a
+ * zero-based index into the collection *as it is at that moment* (after the
+ * product has been taken out and after every earlier move); a position at
+ * or past the end means "last". Used by the tests to prove that what we send
+ * produces the order we meant — and by nothing in production.
  */
-export function diffToMoves(
-  currentOrder: string[],
-  targetOrder: string[],
-): Array<{ id: string; newPosition: string }> {
-  const moves: Array<{ id: string; newPosition: string }> = [];
+export function applyMoves(order: string[], moves: ReorderMove[]): string[] {
+  const working = order.slice();
+  for (const move of moves) {
+    const from = working.indexOf(move.id);
+    if (from === -1) continue;
+    working.splice(from, 1);
+    const to = Math.min(Number(move.newPosition), working.length);
+    working.splice(to, 0, move.id);
+  }
+  return working;
+}
+
+/** Indexes (into `seq`) of one longest strictly increasing subsequence.
+ * Patience sorting, O(n log n). */
+function longestIncreasingSubsequence(seq: number[]): number[] {
+  const tailIdx: number[] = []; // tailIdx[k] = index of the smallest tail of an LIS of length k+1
+  const prev = new Array<number>(seq.length).fill(-1);
+  for (let i = 0; i < seq.length; i++) {
+    let lo = 0;
+    let hi = tailIdx.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (seq[tailIdx[mid]] < seq[i]) lo = mid + 1;
+      else hi = mid;
+    }
+    if (lo > 0) prev[i] = tailIdx[lo - 1];
+    tailIdx[lo] = i;
+  }
+  const out: number[] = [];
+  for (let i = tailIdx.length ? tailIdx[tailIdx.length - 1] : -1; i !== -1; i = prev[i]) out.push(i);
+  return out.reverse();
+}
+
+/**
+ * Diff `currentOrder` -> `targetOrder` into the FEWEST moves
+ * collectionReorderProducts needs (brief §8, "only move what changes").
+ *
+ * The products that can stay put are a longest increasing subsequence of
+ * their target positions, read in current order — every other product has
+ * to move, and moving exactly those is optimal (n − LIS moves). The previous
+ * greedy left-to-right diff moved whatever wasn't in place yet, so taking
+ * one product from the top to the bottom cost n−1 moves instead of 1.
+ *
+ * Movers are sent in target order, each placed directly after its target
+ * predecessor (which is either a product that stays or a mover already
+ * placed), with `newPosition` computed against the order as it stands after
+ * the earlier moves — Shopify's sequential semantics, see applyMoves.
+ *
+ * Ids only in `currentOrder` are left where they are; ids only in
+ * `targetOrder` are ignored (they aren't in the collection to move).
+ */
+export function diffToMoves(currentOrder: string[], targetOrder: string[]): ReorderMove[] {
+  const present = new Set(currentOrder);
+  const seen = new Set<string>();
+  const target = targetOrder.filter((id) => present.has(id) && !seen.has(id) && Boolean(seen.add(id)));
+  const targetIndex = new Map(target.map((id, i) => [id, i]));
+
+  const inTarget = currentOrder.filter((id) => targetIndex.has(id));
+  const stay = new Set(longestIncreasingSubsequence(inTarget.map((id) => targetIndex.get(id)!)).map((i) => inTarget[i]));
+  if (stay.size === target.length) return [];
+
   const working = currentOrder.slice();
-  for (let i = 0; i < targetOrder.length; i++) {
-    if (working[i] === targetOrder[i]) continue;
-    const j = working.indexOf(targetOrder[i], i);
-    if (j === -1) continue; // shouldn't happen if both arrays hold the same ids
-    const [item] = working.splice(j, 1);
-    working.splice(i, 0, item);
-    moves.push({ id: item, newPosition: String(i) });
+  const position = (id: string) => working.indexOf(id);
+  const moves: ReorderMove[] = [];
+  for (let t = 0; t < target.length; t++) {
+    const id = target[t];
+    if (stay.has(id)) continue;
+    working.splice(position(id), 1);
+    const newPosition = t === 0 ? 0 : position(target[t - 1]) + 1;
+    working.splice(newPosition, 0, id);
+    moves.push({ id, newPosition: String(newPosition) });
   }
   return moves;
 }
@@ -521,6 +594,12 @@ export async function reorderCollectionProducts(
     for (let offset = 0; offset < moves.length; offset += MAX_MOVES_PER_CALL) {
       const chunk = moves.slice(offset, offset + MAX_MOVES_PER_CALL);
       const isLastChunk = offset + MAX_MOVES_PER_CALL >= moves.length;
+      // Every chunk waits for its job, the last one included (Update 2).
+      // Middle chunks must — the next chunk's positions assume they've
+      // landed. The last one used to be fire-and-forget, which was fine at
+      // one run a day; with hourly runs and the new-products trigger the next
+      // run on this collection can start while it's still applying, and then
+      // reads a half-written order and trips TOO_MANY_ATTEMPTS.
       const result = await sendMovesWithRetry(admin, collectionGid, chunk, !isLastChunk);
       if (!result.ok) return result;
     }
@@ -539,6 +618,8 @@ async function sendMovesWithRetry(
     if (result.ok || result.code !== "TOO_MANY_ATTEMPTS_TO_REORDER_PRODUCTS") return result;
     const delay = REORDER_RETRY_DELAYS_MS[attempt];
     if (delay == null) return result;
+    // Routine, not an error: Shopify is still applying an earlier reorder.
+    console.info(`[reorder] ${collectionGid} busy at Shopify, retrying in ${delay}ms (attempt ${attempt + 2})`);
     await new Promise((resolve) => setTimeout(resolve, delay));
   }
 }
@@ -577,7 +658,12 @@ async function sendMoves(
     // chunk a timeout isn't one: the job is asynchronous by design and
     // Shopify finishes it on its own — which is exactly why the UI says
     // "changes can take a few minutes to appear on your store".
-    const done = await pollJob(admin, jobId, mustWaitForJob ? 60_000 : 15_000);
+    const done = await pollJob(admin, jobId, 60_000);
+    if (!done && !mustWaitForJob) {
+      // The final chunk: Shopify finishes it on its own, so a slow job is
+      // not a failed run. Logged as routine.
+      console.info(`[reorder] ${collectionGid} last job still running after 60s; Shopify will finish it`);
+    }
     if (!done && mustWaitForJob) {
       return {
         ok: false,
