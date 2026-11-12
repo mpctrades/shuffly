@@ -6,6 +6,7 @@
 import { isOverridden, overrideWriteFields, resolveSchedule, shopDefaultSchedule } from "../lib/schedule-resolve";
 import { parseScheduleForm, withIntervalAnchor } from "../lib/schedule-form.server";
 import { intervalLabel } from "../lib/schedule-cadences";
+import { rulesChanged } from "../lib/rules-form";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { data, useLoaderData, useNavigation, useFetcher, Form, redirect } from "react-router";
@@ -343,7 +344,23 @@ export default function Workspace() {
   const [pushSoldOutToEnd, setPushSoldOutToEnd] = useState(config.pushSoldOutToEnd);
   const [boostNewArrivals, setBoostNewArrivals] = useState(config.boostNewArrivals);
   const [giveEveryoneATurn, setGiveEveryoneATurn] = useState(config.giveEveryoneATurn);
-  const [rulesDirty, setRulesDirty] = useState(false);
+  // Unsaved = differs from what's saved, not "a control fired an event":
+  // the switches and number field can re-fire with unchanged values when the
+  // page reloads its data (e.g. right after Resume). See rules-form.ts.
+  const rulesDirty = rulesChanged(
+    {
+      pins: config.pins,
+      pushSoldOutToEnd: config.pushSoldOutToEnd,
+      boostNewArrivals: config.boostNewArrivals,
+      giveEveryoneATurn: config.giveEveryoneATurn,
+    },
+    { pins, pushSoldOutToEnd, boostNewArrivals, giveEveryoneATurn },
+  );
+  useEffect(() => {
+    if (rulesDirty) shopify.saveBar.show(RULES_SAVE_BAR_ID);
+    else shopify.saveBar.hide(RULES_SAVE_BAR_ID);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- show/hide follows dirtiness only
+  }, [rulesDirty]);
 
   // The schedule is no longer part of the rules form: it opens the same
   // modal the Collections table and the Settings page use, and saves through
@@ -365,13 +382,6 @@ export default function Workspace() {
     [config.scheduleType, config.scheduleTime, config.scheduleTime2, config.scheduleWeekday, config.intervalHours],
   );
 
-  function markRulesDirty() {
-    if (!rulesDirty) {
-      setRulesDirty(true);
-      shopify.saveBar.show(RULES_SAVE_BAR_ID);
-    }
-  }
-
   // Same reasoning as Settings' identical effect: leaving this page while
   // dirty must not leave Admin's save-bar state stuck on with no bar left to
   // resolve it.
@@ -387,8 +397,6 @@ export default function Workspace() {
     setPushSoldOutToEnd(config.pushSoldOutToEnd);
     setBoostNewArrivals(config.boostNewArrivals);
     setGiveEveryoneATurn(config.giveEveryoneATurn);
-    setRulesDirty(false);
-    shopify.saveBar.hide(RULES_SAVE_BAR_ID);
   }
 
   function openSwitchModal() {
@@ -486,8 +494,7 @@ export default function Workspace() {
   useEffect(() => {
     if (rulesFetcher.state !== "idle" || !rulesFetcher.data) return;
     if (rulesFetcher.data.ok) {
-      setRulesDirty(false);
-      shopify.saveBar.hide(RULES_SAVE_BAR_ID);
+      // The bar hides by itself once the reloaded data matches the form.
       shopify.toast.show("Rules saved");
     } else {
       // Leave the save bar up: the merchant's edit is still unsaved, so
@@ -567,7 +574,6 @@ export default function Workspace() {
               // eslint-disable-next-line @typescript-eslint/no-explicit-any -- currentTarget.value isn't in the typed event map
               onInput={(e: any) => {
                 setPins(Math.max(0, Math.min(20, Number(e.currentTarget?.value ?? 0))));
-                markRulesDirty();
               }}
             />
           ) : (
@@ -586,7 +592,6 @@ export default function Workspace() {
             // eslint-disable-next-line @typescript-eslint/no-explicit-any -- currentTarget.checked isn't in the typed event map
             onChange={(e: any) => {
               setPushSoldOutToEnd(Boolean(e.currentTarget?.checked));
-              markRulesDirty();
             }}
           />
           <s-switch
@@ -595,7 +600,6 @@ export default function Workspace() {
             // eslint-disable-next-line @typescript-eslint/no-explicit-any -- currentTarget.checked isn't in the typed event map
             onChange={(e: any) => {
               setBoostNewArrivals(Boolean(e.currentTarget?.checked));
-              markRulesDirty();
             }}
           />
           <s-switch
@@ -604,7 +608,6 @@ export default function Workspace() {
             // eslint-disable-next-line @typescript-eslint/no-explicit-any -- currentTarget.checked isn't in the typed event map
             onChange={(e: any) => {
               setGiveEveryoneATurn(Boolean(e.currentTarget?.checked));
-              markRulesDirty();
             }}
           />
           {/* The schedule, as a row that opens the shared modal — not as
