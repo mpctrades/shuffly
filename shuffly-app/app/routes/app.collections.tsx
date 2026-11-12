@@ -12,7 +12,13 @@ import {
   setCollectionManualSort,
   sortOrderLabel,
 } from "../lib/collections.server";
-import { restoreOnRemove, runShuffleForCollection } from "../lib/shuffle-engine.server";
+import { restoreOnRemove, runShuffleForCollection, undoRun } from "../lib/shuffle-engine.server";
+import {
+  applyCardEdits,
+  applyNewArrivalsPreset,
+  queueNewArrivalsPreset,
+  type CardEdit,
+} from "../lib/card-actions.server";
 import { previewShuffleAll } from "../lib/shuffle-preview.server";
 import {
   formatActivityTimestamp,
@@ -22,9 +28,23 @@ import {
   type ScheduleType,
   type SlotSchedule,
 } from "../lib/schedule.server";
-import { cadenceLabel, enforcePlanCollectionCap, isScheduleAllowed, isTopPlan, planOf, timeSlots } from "../lib/plans.server";
+import {
+  cadenceLabel,
+  canUseNewArrivals,
+  enforcePlanCollectionCap,
+  isScheduleAllowed,
+  isTopPlan,
+  planOf,
+  timeSlots,
+  undoRetentionCutoff,
+} from "../lib/plans.server";
 import { closeModal } from "../lib/polaris-modal";
-import { CollectionRow, type CollectionRowData } from "../components/CollectionRow";
+import { type CollectionRowData } from "../components/CollectionRow";
+import { CollectionCard, CollectionCardSkeleton, type CardDraft, type CollectionCardData } from "../components/CollectionCard";
+import { useT, type MessageKey } from "../i18n";
+import { PlanNoticeBanner } from "../components/PlanNoticeBanner";
+import { cadenceOf, looksLikeNewArrivals } from "../lib/card-model";
+import type { PlanNotice } from "../lib/plans.server";
 import {
   CollectionsFilterBar,
   type CollectionStatusFilter,
@@ -99,7 +119,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // tracked-collections workspace. The full catalogue scan and aggregate
   // count used by the optional "Not shuffled yet" card live in a resource
   // route and run only after the merchant asks to see that card.
-  const [hydratedTracked, latestRuns, recentRuns, lastScheduled, confirmedTimezone] = await Promise.all([
+  const RUN_KINDS = ["SCHEDULED", "MANUAL", "NEW_PRODUCTS", "SOLD_OUT_REACTION", "RESTOCK_REACTION"];
+  const [hydratedTracked, latestRuns, recentRuns, lastScheduled, confirmedTimezone, lastRealRuns, undoableRuns] = await Promise.all([
     // Every tracked collection's live sort order/product count/thumbnails,
     // fetched by exact id — bounded by how many collections are tracked,
     // never by how many exist in the store (unlike a full-catalogue scan).
@@ -114,6 +135,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           where: { shop, collectionId: { in: trackedIds } },
           orderBy: { createdAt: "desc" },
           distinct: ["collectionId"],
+          // Undo snapshots are up to ~10 KB a run; nothing here reads them.
+          omit: { previousOrder: true },
         })
       : Promise.resolve([]),
     // Over-fetch a generous recent window (not one query per collection)
@@ -124,6 +147,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           where: { shop, collectionId: { in: trackedIds } },
           orderBy: { createdAt: "desc" },
           take: Math.max(50, trackedIds.length * 20),
+          omit: { previousOrder: true },
         })
       : Promise.resolve([]),
     // The latest SCHEDULED run, then every run sharing its batchId — chained
@@ -149,7 +173,36 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     // Riding in this Promise.all costs no extra wall-clock: it resolves
     // alongside the collection hydration, which is the slow call here.
     confirmShopTimezone(admin, shop, settings.timezone, { maxAgeMs: TIMEZONE_CONFIRM_MAX_AGE_MS }),
+    // The card's "Last run": the latest actual run, not a schedule change or
+    // pause row.
+    trackedIds.length
+      ? db.shuffleRun.findMany({
+          where: { shop, collectionId: { in: trackedIds }, trigger: { in: RUN_KINDS } },
+          orderBy: { createdAt: "desc" },
+          distinct: ["collectionId"],
+          select: { collectionId: true, createdAt: true, status: true, movedCount: true },
+        })
+      : Promise.resolve([]),
+    // Whether the card can offer Undo: a restorable snapshot inside this
+    // plan's retention window. Existence only — the snapshot isn't loaded.
+    trackedIds.length
+      ? db.shuffleRun.findMany({
+          where: {
+            shop,
+            collectionId: { in: trackedIds },
+            status: "OK",
+            trigger: { in: ["SCHEDULED", "MANUAL", "NEW_PRODUCTS"] },
+            previousOrder: { not: null },
+            createdAt: { gte: undoRetentionCutoff(settings.plan) },
+          },
+          orderBy: { createdAt: "desc" },
+          distinct: ["collectionId"],
+          select: { collectionId: true },
+        })
+      : Promise.resolve([]),
   ]);
+  const lastRealRunById = new Map(lastRealRuns.map((r) => [r.collectionId, r]));
+  const undoableIds = new Set(undoableRuns.map((r) => r.collectionId));
 
   // Every time this loader formats or computes below is a wall clock in the
   // shop's timezone, so they all read the confirmed value rather than the
@@ -268,7 +321,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const pinsVaries = tracked.length > 0 && !uniform((c) => c.pins);
   const giveEveryoneATurnVaries = tracked.length > 0 && !uniform((c) => c.giveEveryoneATurn);
 
-  const rows: CollectionRowData[] = fullRows.map((r) => {
+  const rows: CollectionCardData[] = fullRows.map((r) => {
     const c = r.config;
     const live = r.live;
     const liveCount = live?.productsCount ?? c.productCount;
@@ -341,6 +394,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         scheduleTime: effective.scheduleTime,
         scheduleTime2: effective.scheduleTime2 ?? null,
         scheduleWeekday: effective.scheduleWeekday ?? null,
+        intervalHours: effective.intervalHours ?? null,
       },
       lastRun,
       sparkline,
@@ -349,8 +403,33 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       // silently restoring sorts.
       restorableSort: c.previousSortOrder ? sortOrderLabel(c.previousSortOrder) : null,
       hasOrderSnapshot: Boolean(c.originalOrder) && !c.previousSortOrder,
+      // ---- Update 2: the collection card ----
+      cadence: cadenceOf(effective),
+      reshuffleOnNew: c.reshuffleOnNew,
+      keepNewOnTop: c.keepNewOnTop,
+      newOnTopHours: c.newOnTopHours,
+      pins: c.pins,
+      excludedCount: c.lastExcludedCount,
+      sortPaused: r.needsAttention,
+      lastRealRun: (() => {
+        const run = lastRealRunById.get(c.id);
+        return run ? { at: run.createdAt, failed: run.status === "FAILED", moved: run.movedCount } : null;
+      })(),
+      canUndo: undoableIds.has(c.id),
+      suggestPreset: looksLikeNewArrivals(live?.title ?? c.title),
+      presetPending: c.pendingPresetAt != null,
     };
   });
+
+  // The plan-change notice (Update 2), until the merchant dismisses it.
+  let planNotice: PlanNotice | null = null;
+  if (settings.planNotice && !settings.planNoticeDismissedAt) {
+    try {
+      planNotice = JSON.parse(settings.planNotice);
+    } catch {
+      planNotice = null;
+    }
+  }
 
   const plan = planOf(settings.plan);
 
@@ -378,6 +457,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     // matrix is allowed to change without every caller having to.
     scheduleSlots: timeSlots(settings.plan),
     planName: plan.name,
+    planNotice,
     planLimit: plan.maxCollections === Infinity ? null : plan.maxCollections,
     // The plan card's data. ShopSettings.plan is already a local cache of
     // whatever billing.check() last reported (see billing.server.ts) and
@@ -467,6 +547,47 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   // every collection added afterwards would quietly carry a frozen snapshot
   // of it. Newly added collections start RUNNING, hence the default status.
   const defaultScheduleFields = () => inheritScheduleFields(new Date(), settings.timezone, settings);
+
+  // ---- Update 2: the collection card ------------------------------------
+  // Every card edit on the page is saved at once from the contextual save
+  // bar. All-or-nothing: if any edit is refused (a plan check, a bad value),
+  // nothing is written and the card says why.
+  if (actionType === "update-cards") {
+    let edits: CardEdit[];
+    try {
+      edits = JSON.parse(String(formData.get("edits") ?? "[]"));
+      if (!Array.isArray(edits)) throw new Error("not an array");
+    } catch {
+      return data({ ok: false, code: "generic" }, { status: 400 });
+    }
+    const result = await applyCardEdits(admin, shop, settings, edits.slice(0, 500));
+    return result.ok ? data(result) : data(result, { status: result.status });
+  }
+
+  if (actionType === "apply-preset") {
+    const id = String(formData.get("id") ?? "");
+    // Not on Pro: remember the click and send them to the plan page; it's
+    // applied by itself once they upgrade.
+    if (!canUseNewArrivals(settings.plan)) {
+      await queueNewArrivalsPreset(shop, id);
+      return data({ ok: false, queued: true, code: "PLAN_FEATURE" }, { status: 403 });
+    }
+    const result = await applyNewArrivalsPreset(admin, shop, settings, id);
+    return result.ok ? data(result) : data(result, { status: result.status });
+  }
+
+  if (actionType === "undo-last") {
+    const id = String(formData.get("id") ?? "");
+    const config = await db.collectionConfig.findFirst({ where: { id, shop } });
+    if (!config) return data({ ok: false, code: "generic" }, { status: 404 });
+    const result = await undoRun(admin, shop, config);
+    return data(result, { status: result.ok ? 200 : 409 });
+  }
+
+  if (actionType === "dismiss-plan-notice") {
+    await db.shopSettings.update({ where: { shop }, data: { planNoticeDismissedAt: new Date() } });
+    return data({ ok: true });
+  }
 
   if (actionType === "add-collections") {
     const plan = planOf(settings.plan);
@@ -1016,6 +1137,7 @@ function scheduleSummary(s: SlotSchedule): string {
 }
 
 const PAGE_SIZE = 25;
+const CARDS_SAVE_BAR_ID = "collection-cards-save-bar";
 
 export default function Collections() {
   const {
@@ -1038,11 +1160,70 @@ export default function Collections() {
     planSummary,
     canUpgrade,
     undoRetentionDays,
+    planNotice,
   } = useLoaderData<typeof loader>();
+  const t = useT();
+  const shopify = useAppBridge();
   const revalidator = useRevalidator();
+
+  // ---- Update 2: card edits, saved together from the contextual save bar.
+  const [drafts, setDrafts] = useState<Record<string, CardDraft>>({});
+  const [cardErrors, setCardErrors] = useState<Record<string, string>>({});
+  const cardsFetcher = useFetcher<{ ok?: boolean; changed?: number; code?: string; id?: string }>({ key: "update-cards" });
+  const dirtyIds = Object.keys(drafts);
+  useEffect(() => {
+    if (dirtyIds.length > 0) shopify.saveBar.show(CARDS_SAVE_BAR_ID);
+    else shopify.saveBar.hide(CARDS_SAVE_BAR_ID);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- show/hide on dirtiness only
+  }, [dirtyIds.length > 0]);
+  // Leaving the page must not leave Admin's save bar stuck on.
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- unmount only
+  useEffect(() => () => void shopify.saveBar.hide(CARDS_SAVE_BAR_ID), []);
+  function changeDraft(id: string, patch: CardDraft) {
+    setCardErrors((e) => (e[id] ? { ...e, [id]: "" } : e));
+    setDrafts((prev) => {
+      const merged: CardDraft = { ...prev[id], ...patch };
+      for (const k of Object.keys(merged) as Array<keyof CardDraft>) if (merged[k] === undefined) delete merged[k];
+      const next = { ...prev };
+      if (Object.keys(merged).length === 0) delete next[id];
+      else next[id] = merged;
+      return next;
+    });
+  }
+  function saveCards() {
+    cardsFetcher.submit(
+      formDataOf({ _action: "update-cards", edits: JSON.stringify(Object.entries(drafts).map(([id, d]) => ({ id, ...d }))) }),
+      { method: "post" },
+    );
+  }
+  function discardCards() {
+    setDrafts({});
+    setCardErrors({});
+  }
+  useEffect(() => {
+    if (cardsFetcher.state !== "idle" || !cardsFetcher.data) return;
+    if (cardsFetcher.data.ok) {
+      shopify.toast.show(t.plural("save.saved", dirtyIds.length));
+      setDrafts({});
+      setCardErrors({});
+    } else {
+      // The save bar stays up: the edits are still unsaved. The card that was
+      // refused says why, in place.
+      const code = cardsFetcher.data.code ?? "generic";
+      if (cardsFetcher.data.id) setCardErrors({ [cardsFetcher.data.id]: code });
+      shopify.toast.show(t(`error.${code}` as MessageKey), { isError: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- fires on settle
+  }, [cardsFetcher.state, cardsFetcher.data]);
+
+  // One clock for every card's "Next shuffle in …" (not a timer per card).
+  const [clock, setClock] = useState(() => Date.now());
+  useEffect(() => {
+    const id = window.setInterval(() => setClock(Date.now()), 30_000);
+    return () => window.clearInterval(id);
+  }, []);
   const navigation = useNavigation();
   const isLoading = navigation.state === "loading" && navigation.location?.pathname === "/app/collections";
-  const shopify = useAppBridge();
   const allFetchers = useFetchers();
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- showOverlay/hideOverlay aren't on the typed public props
@@ -1308,6 +1489,7 @@ export default function Collections() {
             scheduleTime: schedule.scheduleTime,
             scheduleTime2: schedule.scheduleTime2 ?? "",
             scheduleWeekday: schedule.scheduleWeekday == null ? "" : String(schedule.scheduleWeekday),
+            intervalHours: schedule.intervalHours == null ? "" : String(schedule.intervalHours),
           };
     if (scheduleTarget.mode === "shop-default") {
       scheduleFetcher.submit(formDataOf({ _action: "set-shop-default", ...fields }), { method: "post" });
@@ -1538,7 +1720,7 @@ export default function Collections() {
   }, [untrackedFetcher.state, untrackedFetcher.data]);
 
   return (
-    <s-page heading="Collections" {...noHydrationWarning}>
+    <s-page heading={t("page.title")} {...noHydrationWarning}>
       {/* The page header keeps the breadcrumb and title only. These three
           used to live in its primary-action/secondary-actions slots, which
           put them up in Shopify's own title bar, away from the table they
@@ -1549,6 +1731,15 @@ export default function Collections() {
       {/* Above the stat row, below the page header. Rendered whether or not
           anything is tracked yet — a merchant with no collections still needs
           to see which plan they're on. */}
+      <ui-save-bar id={CARDS_SAVE_BAR_ID}>
+        <button variant="primary" onClick={saveCards} disabled={cardsFetcher.state !== "idle" || undefined}>
+          {t("save.save")}
+        </button>
+        <button onClick={discardCards}>{t("save.discard")}</button>
+      </ui-save-bar>
+
+      {planNotice && <PlanNoticeBanner notice={planNotice} />}
+
       <PlanBar planId={planId} trackedCount={trackedTotal} loading={isLoading} />
 
       {hasAnythingTracked && !hydrationFailed && (
@@ -1570,15 +1761,14 @@ export default function Collections() {
       {hydrationFailed ? (
         <AttentionBanner
           tone="warning"
-          heading="Couldn't load live data from Shopify"
+          heading={t("page.liveDataTitle")}
           action={
             <s-button onClick={() => revalidator.revalidate()} {...(revalidator.state !== "idle" ? { loading: true } : {})}>
-              Retry
+              {t("page.retry")}
             </s-button>
           }
         >
-          Counts, thumbnails, and the &quot;needs attention&quot; check need a live connection — everything below
-          still reflects what Shuffly is tracking, just without that extra detail for now.
+          {t("page.liveDataBody")}
         </AttentionBanner>
       ) : (
         <AttentionStrip
@@ -1595,29 +1785,29 @@ export default function Collections() {
           collides with the Sort control at the card's top-right. Wraps
           instead of squashing on narrow widths. */}
       <div className="shuffly-collections-toolbar">
-        <s-button onClick={openAddModal} accessibilityLabel="Add a collection to Shuffly">
-          Add collection
+        <s-button onClick={openAddModal} accessibilityLabel={t("page.addCollectionA11y")}>
+          {t("page.addCollection")}
         </s-button>
         {hasAnythingTracked && (
           <s-button
             onClick={openPauseAllModal}
             accessibilityLabel={
               pauseAllIsResume
-                ? `Resume all ${trackedTotal} collections`
-                : `Pause all ${runningCount} collections`
+                ? t("page.resumeAllA11y", { count: trackedTotal })
+                : t("page.pauseAllA11y", { count: runningCount })
             }
             {...(pauseAllFetcher.state !== "idle" ? { loading: true } : {})}
           >
-            {pauseAllIsResume ? "Resume all" : "Pause all"}
+            {pauseAllIsResume ? t("page.resumeAll") : t("page.pauseAll")}
           </s-button>
         )}
         {hasAnythingTracked && (
           <s-button
             variant="primary"
             onClick={openShuffleAllModal}
-            accessibilityLabel="Shuffle every collection now"
+            accessibilityLabel={t("page.shuffleAllA11y")}
           >
-            Shuffle all now
+            {t("page.shuffleAll")}
           </s-button>
         )}
       </div>
@@ -1638,15 +1828,15 @@ export default function Collections() {
         {selected.size > 0 && (
           <div className="shuffly-bulk-bar">
             <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              <s-text type="strong">{selected.size} selected</s-text>
-              <button type="button" className="shuffly-bulk-clear" aria-label="Clear selection" onClick={() => setSelected(new Set())}>
+              <s-text type="strong">{t("page.selected", { count: selected.size })}</s-text>
+              <button type="button" className="shuffly-bulk-clear" aria-label={t("page.clearSelection")} onClick={() => setSelected(new Set())}>
                 <XGlyph />
               </button>
             </div>
 
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <s-button variant="primary" onClick={() => runBulk("bulk-shuffle")} {...(bulkBusy ? { loading: pendingBulkAction === "bulk-shuffle" || undefined, disabled: true } : {})}>
-                Shuffle now
+                {t("page.bulkShuffle")}
               </s-button>
 
               {/* Third entry point into the same modal. Bulk can set an
@@ -1662,67 +1852,71 @@ export default function Collections() {
                 }
                 {...(bulkBusy ? { disabled: true } : {})}
               >
-                Set schedule…
+                {t("page.bulkSchedule")}
               </s-button>
 
               {selectionHasRunning && (
                 <s-button onClick={() => runBulk("bulk-pause")} {...(bulkBusy ? { loading: pendingBulkAction === "bulk-pause" || undefined, disabled: true } : {})}>
-                  Pause
+                  {t("page.bulkPause")}
                 </s-button>
               )}
               {selectionHasPaused && (
                 <s-button onClick={() => runBulk("bulk-resume")} {...(bulkBusy ? { loading: pendingBulkAction === "bulk-resume" || undefined, disabled: true } : {})}>
-                  Resume
+                  {t("page.bulkResume")}
                 </s-button>
               )}
 
               <span className="shuffly-bulk-divider" aria-hidden="true" />
 
               <s-button tone="critical" onClick={() => bulkRemoveModalRef.current?.showOverlay()} {...(bulkBusy ? { loading: pendingBulkAction === "bulk-remove" || undefined, disabled: true } : {})}>
-                Remove from Shuffly
+                {t("page.bulkRemove")}
               </s-button>
             </div>
           </div>
         )}
 
         {isLoading ? (
-          <div className="shuffly-collections-grid-container">
-            <CollectionsHeaderRow />
-            <CollectionsSkeletonRows count={Math.min(PAGE_SIZE, Math.max(trackedTotal, 3))} />
+          <div className="shuffly-card-list">
+            {Array.from({ length: Math.min(PAGE_SIZE, Math.max(trackedTotal, 3)) }, (_, i) => (
+              <CollectionCardSkeleton key={i} />
+            ))}
           </div>
         ) : pageRows.length === 0 && trackedTotal === 0 ? (
           <EmptyCollectionsState onAdd={openAddModal} />
         ) : pageRows.length === 0 ? (
           <s-box padding="large-500">
             <s-stack direction="block" gap="small" alignItems="center">
-              <s-text color="subdued">No collections match this filter.</s-text>
+              <s-text color="subdued">{t("page.noMatch")}</s-text>
             </s-stack>
           </s-box>
         ) : (
           <>
-            <div className="shuffly-collections-grid-container">
-              <CollectionsHeaderRow />
-              {pageRows.map((r, i) => (
-                <div key={r.id}>
-                  <CollectionRow
-                    collection={r}
-                    shuffleRunId={pendingRowIds.has(r.id) ? shuffleRunId : null}
-                    onShuffleSettled={handleRowSettled}
-                    selected={selected.has(r.id)}
-                    onToggleSelect={toggleSelect}
-                    onEditSchedule={openScheduleForRow}
-                    onSwitchToManual={(c) =>
-                      openSwitchModal({
-                        mode: "tracked",
-                        id: c.id,
-                        gid: c.collectionGid,
-                        title: c.title,
-                        sortOrderLabel: c.wrongSortLabel ?? "another sort",
-                      })
-                    }
-                  />
-                  {i < pageRows.length - 1 && <s-divider />}
-                </div>
+            <div className="shuffly-card-list">
+              {pageRows.map((r) => (
+                <CollectionCard
+                  key={r.id}
+                  card={r}
+                  draft={drafts[r.id]}
+                  onDraftChange={changeDraft}
+                  planId={planId}
+                  timezone={timezone}
+                  now={clock}
+                  saveError={cardErrors[r.id] || null}
+                  shuffleRunId={pendingRowIds.has(r.id) ? shuffleRunId : null}
+                  onShuffleSettled={handleRowSettled}
+                  selected={selected.has(r.id)}
+                  onToggleSelect={toggleSelect}
+                  onEditSchedule={openScheduleForRow}
+                  onSwitchToManual={(c) =>
+                    openSwitchModal({
+                      mode: "tracked",
+                      id: c.id,
+                      gid: c.collectionGid,
+                      title: c.title,
+                      sortOrderLabel: c.wrongSortLabel ?? "another sort",
+                    })
+                  }
+                />
               ))}
             </div>
             <s-divider />
@@ -1730,24 +1924,23 @@ export default function Collections() {
               <s-stack direction="inline" justifyContent="space-between" alignItems="center">
                 <s-text color="subdued">
                   {totalStoreCollections == null
-                    ? `${trackedTotal} tracked collection${trackedTotal === 1 ? "" : "s"}`
-                    : `${trackedTotal} of ${totalStoreCollections} collections`}
-                  {" · "}{totalProductsInRotation} products in rotation
-                  {" · "}Bars show the last 7 runs
+                    ? t.plural("page.footerTracked", trackedTotal)
+                    : t("page.footerOf", { count: trackedTotal, total: totalStoreCollections })}
+                  {" · "}{t("page.footerProducts", { count: totalProductsInRotation })}
                 </s-text>
                 <s-stack direction="inline" gap="small-200" alignItems="center">
                   {totalPages > 1 && (
                     <>
                       <s-button variant="tertiary" disabled={clampedPage <= 1 || undefined} onClick={() => setPage((p) => Math.max(1, p - 1))}>
-                        Previous
+                        {t("page.previous")}
                       </s-button>
                       <s-button variant="tertiary" disabled={clampedPage >= totalPages || undefined} onClick={() => setPage((p) => Math.min(totalPages, p + 1))}>
-                        Next
+                        {t("page.next")}
                       </s-button>
                     </>
                   )}
                   <s-button variant="tertiary" onClick={openAddModal}>
-                    Add more
+                    {t("page.addMore")}
                   </s-button>
                 </s-stack>
               </s-stack>
@@ -1899,6 +2092,92 @@ export default function Collections() {
       />
 
       <style>{`
+        /* ---- Update 2: collection cards (brief §7) ---- */
+        .shuffly-card-list {
+          container-type: inline-size;
+          container-name: shuffly-cards;
+          display: flex;
+          flex-direction: column;
+          gap: 12px;
+          padding: 12px;
+        }
+        .shuffly-card {
+          border: 1px solid var(--p-color-border, #e3e3e3);
+          border-radius: 12px;
+          background: var(--p-color-bg-surface, #fff);
+          padding: 14px 16px;
+          display: flex;
+          flex-direction: column;
+          gap: 12px;
+          min-width: 0;
+        }
+        .shuffly-card--selected { border-color: var(--p-color-border-emphasis, #616161); }
+        .shuffly-card--warning { border-color: var(--p-color-border-critical, #e51c00); }
+        .shuffly-card-header { display: flex; align-items: center; gap: 8px; min-width: 0; }
+        .shuffly-card-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .shuffly-card-title-link { color: inherit; text-decoration: none; }
+        .shuffly-card-title-link:hover { text-decoration: underline; }
+        .shuffly-card-header-end { display: flex; align-items: center; gap: 4px; flex: none; }
+        .shuffly-card-grid {
+          display: grid;
+          grid-template-columns: 140px minmax(0, 1fr);
+          column-gap: 16px;
+          row-gap: 12px;
+          align-items: start;
+        }
+        .shuffly-card-label { color: var(--p-color-text-secondary, #616161); padding-top: 6px; }
+        .shuffly-card-value { min-width: 0; padding-top: 6px; }
+        .shuffly-card-frequency { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; padding-top: 0; }
+        .shuffly-card-frequency s-select { width: 220px; max-width: 100%; }
+        .shuffly-card-stack { display: flex; flex-direction: column; gap: 6px; padding-top: 0; }
+        .shuffly-card-inline { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+        .shuffly-card-window { width: 110px; }
+        .shuffly-card-subtle { color: var(--p-color-text-secondary, #616161); font-size: 13px; }
+        .shuffly-card-next { white-space: nowrap; }
+        .shuffly-card-unlock { font-size: 13px; }
+        .shuffly-card-footer {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 12px;
+          border-top: 1px solid var(--p-color-border-secondary, #ebebeb);
+          padding-top: 12px;
+        }
+        .shuffly-card-linkbutton {
+          border: 0;
+          background: none;
+          padding: 0;
+          font: inherit;
+          color: var(--p-color-text-link, #005bd3);
+          text-decoration: underline;
+          cursor: pointer;
+        }
+        .shuffly-card-linkbutton:disabled { opacity: 0.5; cursor: default; }
+        .shuffly-card-alert { border-radius: 8px; padding: 8px 12px; font-size: 13px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+        .shuffly-card-alert--critical { background: var(--p-color-bg-surface-critical, #fee9e8); color: var(--p-color-text-critical, #8e0b21); }
+        .shuffly-card-alert--caution { background: var(--p-color-bg-surface-caution, #fff8db); color: var(--p-color-text-caution, #4f4700); }
+        .shuffly-card-preset {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 12px;
+          border: 1px solid var(--p-color-border, #e3e3e3);
+          border-radius: 10px;
+          padding: 10px 12px;
+          background: var(--p-color-bg-surface-secondary, #f7f7f7);
+        }
+        .shuffly-card-preset-actions { display: flex; gap: 8px; flex: none; }
+        .shuffly-card--skeleton { min-height: 236px; }
+        .shuffly-card-skel { height: 14px; border-radius: 6px; background: var(--p-color-bg-fill-secondary, #f1f1f1); }
+        .shuffly-card-skel--title { width: 40%; height: 18px; }
+        .shuffly-card-skel--short { width: 60%; }
+        @container shuffly-cards (max-width: 560px) {
+          .shuffly-card-grid { grid-template-columns: minmax(0, 1fr); row-gap: 4px; }
+          .shuffly-card-label { padding-top: 8px; }
+          .shuffly-card-footer, .shuffly-card-preset { flex-direction: column; align-items: stretch; }
+          .shuffly-card-frequency s-select { width: 100%; }
+        }
+
         .shuffly-status-row {
           display: grid;
           grid-template-columns: repeat(4, 1fr);
@@ -1981,12 +2260,6 @@ export default function Collections() {
         }
         .shuffly-attention-action:disabled { opacity: 0.6; cursor: default; }
         .shuffly-attention-more { padding: 8px 16px; font-size: 12px; color: var(--p-color-text-secondary, #6b6b6b); }
-        /* The one grid template — shared verbatim by the header and every
-           data row via the same .shuffly-row class, so there is exactly
-           one definition, not two that could drift apart. All 6 cells
-           (checkbox, collection, preview, schedule, last run, actions) are
-           DIRECT children of this grid — no wrapper div in between, which
-           is what was collapsing every cell into column 1 last time. */
         /* Sits above the table card as its toolbar. The bottom margin is a
            full spacing step so it reads as attached to the card rather than
            floating between sections, and wrap keeps the three buttons intact
@@ -1998,158 +2271,6 @@ export default function Collections() {
           align-items: center;
           gap: var(--p-space-200, 8px);
           margin: var(--p-space-500, 20px) 0 var(--p-space-400, 16px);
-        }
-        .shuffly-collections-grid-container {
-          container-type: inline-size;
-          container-name: shuffly-collections;
-        }
-        .shuffly-row {
-          box-sizing: border-box;
-          width: 100%;
-          display: grid;
-          /* Last column is just the "···" trigger now that the duplicate
-             inline buttons are gone — the 170px it used to reserve went
-             back to Collection (via the 1fr), Schedule and Last run. */
-          grid-template-columns: 36px minmax(250px, 1fr) 110px 150px 175px 48px;
-          align-items: center;
-          column-gap: 16px;
-          padding: 12px 16px;
-          position: relative;
-          min-height: 64px;
-          background: var(--p-color-bg-surface, #ffffff);
-        }
-        .shuffly-row:hover { background: var(--p-color-bg-surface-secondary, #f6f6f7); }
-        .shuffly-row--header {
-          min-height: 0;
-          padding-top: 10px;
-          padding-bottom: 10px;
-          background: var(--p-color-bg-surface, #ffffff);
-          border-bottom: 1px solid var(--p-color-border, #e3e3e3);
-        }
-        .shuffly-row--header:hover { background: var(--p-color-bg-surface, #ffffff); }
-        .shuffly-row--header > * {
-          font-size: 12px;
-          font-weight: 700;
-          letter-spacing: 0.06em;
-          text-transform: uppercase;
-          color: var(--p-color-text-secondary, #6b6b6b);
-        }
-        /* The stretched link that makes the whole row open the collection
-           — see CollectionRow.tsx for why this replaced s-clickable. Sits
-           at the base stacking level (z-index 0); the checkbox and actions
-           are lifted above it (z-index 1) so they keep receiving their own
-           clicks, and everywhere else a click falls through to this link
-           since nothing else there handles clicks. */
-        .shuffly-row-link-overlay {
-          position: absolute;
-          inset: 0;
-          z-index: 0;
-        }
-        .shuffly-row-select, .shuffly-row-actions, .shuffly-row-schedule { position: relative; z-index: 1; }
-        .shuffly-row:has(> .shuffly-row-link-overlay:focus-visible),
-        .shuffly-row:has(> .shuffly-row-actions :focus-visible) {
-          outline: 2px solid var(--p-color-border-focus, #005bd3);
-          outline-offset: -2px;
-        }
-        /* Amber, not brand orange — same "attention, not the brand" reasoning
-           as the strip above. */
-        .shuffly-row--sold-out {
-          box-shadow: inset 3px 0 0 0 var(--p-color-border-caution, #946200);
-        }
-        /* Critical, not caution — a wrong sort means shuffles silently do
-           nothing at all, which is a harder failure than "ran, nothing to
-           move". Same 3px bar so the two read as one family. */
-        .shuffly-row--wrong-sort {
-          box-shadow: inset 3px 0 0 0 var(--p-color-border-critical, #8e0b21);
-        }
-        /* The selected-row accent bar is one of the four sanctioned uses of
-           brand orange — background tint stays the neutral info-blue
-           Polaris already uses for "selected", only the bar itself is
-           brand orange. */
-        .shuffly-row--selected,
-        .shuffly-row--selected:hover {
-          background: var(--p-color-bg-fill-info-secondary, #EAF2FF);
-          box-shadow: inset 3px 0 0 0 var(--p-color-bg-fill-warning, #FF4B1F);
-        }
-        .shuffly-row-select { display: flex; align-items: center; justify-content: center; }
-        .shuffly-row-select s-checkbox { transform: scale(0.65); }
-        .shuffly-row-text, .shuffly-thumbs, .shuffly-row-schedule, .shuffly-row-lastrun {
-          min-width: 0;
-        }
-        .shuffly-row-title, .shuffly-row-meta { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        /* Badges get their own line under the name rather than competing with
-           it for width — see CollectionRow.tsx for why. Wrapping, so a row
-           with several never pushes the column wider. */
-        .shuffly-row-badges {
-          display: flex;
-          flex-wrap: wrap;
-          align-items: center;
-          gap: 4px;
-          margin-top: 4px;
-        }
-        /* The Schedule cell's text IS the button. No chrome — it should read
-           as the schedule, and only reveal itself as clickable on hover or
-           focus, so the table doesn't turn into a wall of buttons. */
-        /* Fills the cell rather than hugging the text. A target the width of
-           the words leaves dead strips either side of it, and a click that
-           lands in one of them appears to do nothing — which is how a
-           merchant concludes the app is broken. */
-        .shuffly-schedule-button {
-          display: block;
-          width: 100%;
-          padding: 0;
-          margin: 0;
-          border: none;
-          background: none;
-          font: inherit;
-          text-align: left;
-          color: inherit;
-          cursor: pointer;
-          border-radius: 4px;
-        }
-        .shuffly-schedule-button:hover { text-decoration: underline; }
-        .shuffly-schedule-button:focus-visible {
-          outline: 2px solid var(--p-color-border-focus, #005bd3);
-          outline-offset: 2px;
-        }
-        .shuffly-schedule-custom { margin-left: 6px; font-size: 12px; }
-        .shuffly-thumbs { display: flex; align-items: center; gap: 4px; }
-        .shuffly-row-schedule, .shuffly-row-lastrun { text-align: left; }
-        .shuffly-row-mobile-label { display: none; }
-        .shuffly-sparkline { display: flex; align-items: flex-end; gap: 2px; height: 16px; margin-top: 4px; }
-        .shuffly-sparkline-bar { width: 4px; border-radius: 1px; background: var(--p-color-bg-fill-warning, #FF4B1F); }
-        .shuffly-sparkline-bar--empty { background: var(--p-color-bg-surface-tertiary, #e3e3e3); min-height: 3px; }
-        .shuffly-row-actions {
-          display: flex;
-          align-items: center;
-          justify-content: flex-end;
-          padding-right: 8px;
-        }
-        @container shuffly-collections (max-width: 820px) {
-          .shuffly-row--header { display: none; }
-          .shuffly-row:not(.shuffly-row--header) {
-            grid-template-columns: 28px 1fr 1fr auto;
-            grid-template-areas:
-              "checkbox name     name    actions"
-              "checkbox schedule lastrun actions";
-            row-gap: 4px;
-            min-height: 0;
-          }
-          .shuffly-row-select { grid-area: checkbox; align-self: start; }
-          .shuffly-row-text { grid-area: name; }
-          .shuffly-thumbs { display: none; }
-          .shuffly-row-schedule { grid-area: schedule; text-align: left; }
-          .shuffly-row-lastrun { grid-area: lastrun; text-align: left; }
-          .shuffly-row-actions { grid-area: actions; align-self: start; }
-          .shuffly-row-mobile-label {
-            display: block;
-            font-size: 10px;
-            font-weight: 700;
-            letter-spacing: 0.04em;
-            text-transform: uppercase;
-            color: var(--p-color-text-secondary, #6b6b6b);
-            margin-bottom: 2px;
-          }
         }
         .shuffly-bulk-bar {
           position: sticky;
@@ -2669,51 +2790,7 @@ function AttentionBanner({
   );
 }
 
-/** Column headings above the row list — same column classes/widths as a
- * data row, so it lines up by construction rather than by guessing pixel
- * values twice. The checkbox and actions columns get no text label, just
- * their reserved width. */
-function CollectionsHeaderRow() {
-  return (
-    <div className="shuffly-row shuffly-row--header">
-      <div className="shuffly-row-select" />
-      <div className="shuffly-row-text">Collection</div>
-      <div className="shuffly-thumbs">Preview</div>
-      <div className="shuffly-row-schedule">Schedule</div>
-      <div className="shuffly-row-lastrun">Last run</div>
-      <div className="shuffly-row-actions" />
-    </div>
-  );
-}
 
-// Reuses the real row's own grid class/columns (see .shuffly-row) instead of
-// guessing pixel dimensions, so the skeleton can't drift out of sync with
-// the row it's standing in for — the exact CLS risk this is meant to avoid.
-function CollectionsSkeletonRows({ count }: { count: number }) {
-  const bar = (width: number | string, height = 12) => (
-    <div style={{ width, height, borderRadius: 4, background: "var(--p-color-bg-surface-tertiary, #e3e3e3)" }} />
-  );
-  return (
-    <>
-      {Array.from({ length: count }, (_, i) => (
-        <div key={i}>
-          <div className="shuffly-row" aria-hidden="true">
-            <div className="shuffly-row-select">{bar(18, 18)}</div>
-            <div className="shuffly-row-text" style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              {bar("60%", 14)}
-              {bar("35%", 11)}
-            </div>
-            <div className="shuffly-thumbs">{bar(96, 32)}</div>
-            <div className="shuffly-row-schedule">{bar(80)}</div>
-            <div className="shuffly-row-lastrun">{bar(70)}</div>
-            <div className="shuffly-row-actions">{bar(24, 24)}</div>
-          </div>
-          {i < count - 1 && <s-divider />}
-        </div>
-      ))}
-    </>
-  );
-}
 
 function EmptyCollectionsState({ onAdd }: { onAdd: () => void }) {
   return (

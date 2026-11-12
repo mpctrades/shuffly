@@ -28,6 +28,15 @@ export interface CadenceOption {
 
 export const CADENCES: CadenceOption[] = [
   {
+    // Update 2 (Pro): the hours are picked under the grid, 1 to 12.
+    type: "INTERVAL",
+    title: "Every few hours",
+    subtitle: "As often as every hour",
+    summary: "Several runs a day",
+  },
+  {
+    // Legacy since Update 2: the grid shows it only while it's the
+    // collection's current schedule (see FrequencyGrid).
     type: "TWICE_DAILY",
     title: "Twice a day",
     subtitle: "Morning + evening",
@@ -55,7 +64,7 @@ export const CADENCES: CadenceOption[] = [
 ];
 
 export function cadenceOption(type: ScheduleType): CadenceOption {
-  return CADENCES.find((c) => c.type === type) ?? CADENCES[1];
+  return CADENCES.find((c) => c.type === type) ?? CADENCES.find((c) => c.type === "DAILY")!;
 }
 
 /** The summary shown beside "Next runs". */

@@ -5,6 +5,7 @@
 // `from "../lib/plans.server"` imports (loaders/actions) keep working.
 import type { Prisma } from "@prisma/client";
 import db from "../db.server";
+import { applyQueuedPresets } from "./card-actions.server";
 import { defaultScheduleForPlan, isScheduleAllowed, planOf, undoRetentionCutoff, type PlanId } from "./plans";
 import { localHhMm, nextRunFor, type SlotSchedule } from "./schedule.server";
 import {
@@ -149,6 +150,10 @@ export async function enforcePlanEntitlements(shop: string, planId: PlanId, prev
     if (settings?.planNotice) {
       await db.shopSettings.update({ where: { shop }, data: { planNotice: null, planNoticeDismissedAt: null } });
     }
+    // A "New arrivals" preset clicked before upgrading is applied now
+    // (brief §7: "Atlas Records should be able to install, click once, and
+    // be done" — the click shouldn't have to be repeated after paying).
+    if (plan.newArrivalsFeatures) await applyQueuedPresets(shop);
     return null;
   }
 

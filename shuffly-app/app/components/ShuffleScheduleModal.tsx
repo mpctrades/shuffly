@@ -83,6 +83,8 @@ export const ShuffleScheduleModal = forwardRef<any, ShuffleScheduleModalProps>(
     const [time, setTime] = useState("06:00");
     const [time2, setTime2] = useState("18:00");
     const [weekday, setWeekday] = useState(1);
+    // INTERVAL (Pro, Update 2): every N hours. No time of day.
+    const [intervalHours, setIntervalHours] = useState(2);
 
     // What the modal opened on. Save stays disabled until the form differs
     // from this — "Save schedule" on an untouched form writes a row, stamps
@@ -93,6 +95,7 @@ export const ShuffleScheduleModal = forwardRef<any, ShuffleScheduleModalProps>(
       time: string;
       time2: string;
       weekday: number;
+      intervalHours: number;
     } | null>(null);
 
     // Re-seed every time a different target is opened, so the modal never
@@ -104,6 +107,7 @@ export const ShuffleScheduleModal = forwardRef<any, ShuffleScheduleModalProps>(
       const seedTime = normalizeHhMm(s.scheduleTime);
       const seedTime2 = normalizeHhMm(s.scheduleTime2 ?? defaultSecondSlot(s.scheduleTime));
       const seedWeekday = s.scheduleWeekday ?? 1;
+      const seedInterval = s.intervalHours ?? 2;
       // A collection already following the default opens on "Use shop
       // default"; bulk always opens on an explicit set, since resetting is
       // the deliberate secondary choice there.
@@ -112,6 +116,7 @@ export const ShuffleScheduleModal = forwardRef<any, ShuffleScheduleModalProps>(
       setTime(seedTime);
       setTime2(seedTime2);
       setWeekday(seedWeekday);
+      setIntervalHours(seedInterval);
       setUseDefault(seedUseDefault);
       initial.current = {
         useDefault: seedUseDefault,
@@ -119,6 +124,7 @@ export const ShuffleScheduleModal = forwardRef<any, ShuffleScheduleModalProps>(
         time: seedTime,
         time2: seedTime2,
         weekday: seedWeekday,
+        intervalHours: seedInterval,
       };
     }, [target]);
 
@@ -128,8 +134,9 @@ export const ShuffleScheduleModal = forwardRef<any, ShuffleScheduleModalProps>(
         scheduleTime: time,
         scheduleTime2: cadence === "TWICE_DAILY" ? time2 : null,
         scheduleWeekday: cadence === "WEEKLY" ? weekday : null,
+        intervalHours: cadence === "INTERVAL" ? intervalHours : null,
       }),
-      [cadence, time, time2, weekday],
+      [cadence, time, time2, weekday, intervalHours],
     );
 
     // The schedule everything below describes: whatever is about to be saved.
@@ -155,6 +162,7 @@ export const ShuffleScheduleModal = forwardRef<any, ShuffleScheduleModalProps>(
       setTime(normalizeHhMm(shopDefault.scheduleTime));
       setTime2(normalizeHhMm(shopDefault.scheduleTime2 ?? defaultSecondSlot(shopDefault.scheduleTime)));
       setWeekday(shopDefault.scheduleWeekday ?? 1);
+      setIntervalHours(shopDefault.intervalHours ?? 2);
       setUseDefault(false);
     }
 
@@ -172,6 +180,7 @@ export const ShuffleScheduleModal = forwardRef<any, ShuffleScheduleModalProps>(
           : cadence !== seed.cadence ||
             time !== seed.time ||
             (cadence === "WEEKLY" && weekday !== seed.weekday) ||
+            (cadence === "INTERVAL" && intervalHours !== seed.intervalHours) ||
             (cadence === "TWICE_DAILY" && time2 !== seed.time2);
 
     // Recomputed in the browser from the controlled state, using the very
@@ -246,7 +255,31 @@ export const ShuffleScheduleModal = forwardRef<any, ShuffleScheduleModalProps>(
             readOnly={readOnly}
             onChange={setCadence}
             onUpgrade={upgrade}
+            showLegacyTwiceDaily={seed?.cadence === "TWICE_DAILY" || (useDefault && shopDefault.scheduleType === "TWICE_DAILY")}
           />
+
+          {effective.scheduleType === "INTERVAL" && (
+            <div className={`shuffly-sched-times${readOnly ? " shuffly-sched-readonly" : ""}`}>
+              <div className="shuffly-sched-timerow">
+                <s-select
+                  label="Every"
+                  value={String(readOnly ? (shopDefault.intervalHours ?? 2) : intervalHours)}
+                  disabled={readOnly || undefined}
+                  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- currentTarget.value isn't in the typed event map
+                  onChange={(e: any) => setIntervalHours(Number(e.currentTarget?.value) || 1)}
+                >
+                  {[1, 2, 3, 4, 6, 12].map((h) => (
+                    <s-option key={h} value={String(h)}>
+                      {h === 1 ? "Every hour" : `Every ${h} hours`}
+                    </s-option>
+                  ))}
+                </s-select>
+              </div>
+              <div className="shuffly-sched-tz">
+                <s-text color="subdued">Counted from when you save — 1 hour is the shortest interval.</s-text>
+              </div>
+            </div>
+          )}
 
           {/* Weekly is the only cadence with a day to pick, so the picker is
               absent rather than disabled for every other one — a permanently
@@ -261,7 +294,7 @@ export const ShuffleScheduleModal = forwardRef<any, ShuffleScheduleModalProps>(
             </div>
           )}
 
-          {effective.scheduleType !== "MANUAL" && (
+          {effective.scheduleType !== "MANUAL" && effective.scheduleType !== "INTERVAL" && (
             <div className={`shuffly-sched-times${readOnly ? " shuffly-sched-readonly" : ""}`}>
               <div className="shuffly-sched-timerow">
                 <s-text>{wantsSecondSlot ? "Morning" : "At"}</s-text>
@@ -352,6 +385,7 @@ function FrequencyGrid({
   readOnly,
   onChange,
   onUpgrade,
+  showLegacyTwiceDaily = false,
 }: {
   id: string;
   value: ScheduleType;
@@ -359,17 +393,22 @@ function FrequencyGrid({
   readOnly: boolean;
   onChange: (next: ScheduleType) => void;
   onUpgrade: () => void;
+  /** Twice daily is legacy since Update 2: offered only while it's what the
+   * collection already runs on, then gone once something else is saved. */
+  showLegacyTwiceDaily?: boolean;
 }) {
   const gridRef = useRef<HTMLDivElement>(null);
 
   const cards = useMemo(
     () =>
-      CADENCES.map((c) => ({
+      CADENCES.filter((c) => c.type !== "TWICE_DAILY" || showLegacyTwiceDaily).map((c) => ({
         ...c,
-        locked: !isScheduleAllowed(planId, c.type),
+        // An interval is only allowed with a valid number of hours; any one
+        // will do to ask "does this plan have intervals at all".
+        locked: !isScheduleAllowed(planId, c.type, c.type === "INTERVAL" ? 1 : undefined),
         unlockedBy: cheapestPlanWith(c.type),
       })),
-    [planId],
+    [planId, showLegacyTwiceDaily],
   );
 
   const selectable = cards.filter((c) => !c.locked);

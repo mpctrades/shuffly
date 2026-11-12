@@ -124,6 +124,9 @@ model CollectionConfig {
   // When ProductSeen tracking started for this collection: the moment B or C
   // was first turned on. Everything present then is a "baseline" product.
   newTrackingSince DateTime?
+  // The "New arrivals" preset was clicked on a plan without it: applied
+  // automatically once the shop is on Pro (if within 14 days), then cleared.
+  pendingPresetAt  DateTime?
   // Feature B polling state.
   newCheckLastAt   DateTime? // last poll
   newCheckCount    Int?      // productsCount at the last poll — the cheap pre-check

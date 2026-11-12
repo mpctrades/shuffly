@@ -3,6 +3,7 @@ import { IconChip } from "../components/IconChip";
 import { ShuffleScheduleModal, type ScheduleTarget } from "../components/ShuffleScheduleModal";
 import { shopDefaultSchedule, shopDefaultWriteFields } from "../lib/schedule-resolve";
 import { parseScheduleForm, withIntervalAnchor } from "../lib/schedule-form.server";
+import { intervalLabel } from "../lib/schedule-cadences";
 import { repairInheritingCountdowns } from "../lib/schedule-writes.server";
 import { nextRunFor, slotsFarEnoughApart, type ScheduleType, type SlotSchedule } from "../lib/schedule.server";
 import { isScheduleAllowed, planOf, timeSlots } from "../lib/plans.server";
@@ -153,6 +154,7 @@ export default function Settings() {
   // as the sub-line, rather than one long sentence.
   const shopDefaultValue = useMemo(() => {
     const day = shopDefault.scheduleWeekday != null ? WEEKDAY_NAMES[shopDefault.scheduleWeekday] : null;
+    if (shopDefault.scheduleType === "INTERVAL") return intervalLabel(shopDefault.intervalHours);
     if (shopDefault.scheduleType === "WEEKLY" && day) return `${day} ${shopDefault.scheduleTime}`;
     if (shopDefault.scheduleType === "TWICE_DAILY")
       return `${shopDefault.scheduleTime} and ${shopDefault.scheduleTime2 ?? "—"}`;
@@ -160,6 +162,7 @@ export default function Settings() {
     return "Manual only";
   }, [shopDefault]);
   const shopDefaultCadence = useMemo(() => {
+    if (shopDefault.scheduleType === "INTERVAL") return "every few hours";
     if (shopDefault.scheduleType === "WEEKLY") return "weekly";
     if (shopDefault.scheduleType === "TWICE_DAILY") return "twice daily";
     if (shopDefault.scheduleType === "DAILY") return "daily";
@@ -562,6 +565,7 @@ export default function Settings() {
               scheduleTime: schedule.scheduleTime,
               scheduleTime2: schedule.scheduleTime2 ?? "",
               scheduleWeekday: schedule.scheduleWeekday == null ? "" : String(schedule.scheduleWeekday),
+            intervalHours: schedule.intervalHours == null ? "" : String(schedule.intervalHours),
             },
             { method: "post" },
           );

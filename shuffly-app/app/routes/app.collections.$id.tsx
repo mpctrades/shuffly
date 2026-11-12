@@ -359,13 +359,10 @@ export default function Workspace() {
   // describe one schedule differently.
   const scheduleLine = useMemo(
     () =>
-      scheduleSummary(
-        config.scheduleType,
-        config.scheduleTime,
-        config.scheduleTime2,
-        config.scheduleWeekday,
-      ),
-    [config.scheduleType, config.scheduleTime, config.scheduleTime2, config.scheduleWeekday],
+      config.scheduleType === "INTERVAL"
+        ? intervalLabel(config.intervalHours).toLowerCase()
+        : scheduleSummary(config.scheduleType, config.scheduleTime, config.scheduleTime2, config.scheduleWeekday),
+    [config.scheduleType, config.scheduleTime, config.scheduleTime2, config.scheduleWeekday, config.intervalHours],
   );
 
   function markRulesDirty() {
@@ -437,6 +434,7 @@ export default function Workspace() {
         scheduleTime: config.scheduleTime,
         scheduleTime2: config.scheduleTime2,
         scheduleWeekday: config.scheduleWeekday,
+        intervalHours: config.intervalHours,
       },
       isCustom: config.scheduleIsOverridden,
     });
@@ -456,6 +454,7 @@ export default function Workspace() {
             scheduleTime: schedule.scheduleTime,
             scheduleTime2: schedule.scheduleTime2 ?? "",
             scheduleWeekday: schedule.scheduleWeekday == null ? "" : String(schedule.scheduleWeekday),
+            intervalHours: schedule.intervalHours == null ? "" : String(schedule.intervalHours),
           },
       { method: "post" },
     );
