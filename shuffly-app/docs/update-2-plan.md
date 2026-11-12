@@ -146,7 +146,7 @@ Why `INTERVAL + intervalHours` and not six new enum strings: one cadence branch 
 - Housekeeping (undo prune, `ProductSeen` cleanup, `ProductPosition` retention) moves to its own job **every 15 minutes** instead of every sweep.
 
 ### Task 3 — Diff-only reorder, 250 per call
-- **Bug found:** `diffToMoves` is greedy left-to-right. Moving **one** product from the front to the back produces **n−1 moves**, for example a sold-out reaction on a 1,000-product collection sending 999 moves in 4 jobs. I'll replace it with a **longest-increasing-subsequence diff**: products on the LIS stay where they are, and only the others move (minimal = n − LIS). Each move's `newPosition` is still computed against the working array as it is after the earlier moves, so the "applied in sequence" semantics stay as they are.
+- **Bug found:** `diffToMoves` is greedy left-to-right. Moving **one** product from the front to the back produces **n−1 moves**, which affects full runs, Undo and remove-restore. *(Correction made during implementation: the sold-out reaction doesn't go through `diffToMoves`. It sends one `newPosition: 999999` move, so it was never affected.)* I'll replace it with a **longest-increasing-subsequence diff**: products on the LIS stay where they are, and only the others move (minimal = n − LIS). Each move's `newPosition` is still computed against the working array as it is after the earlier moves, so the "applied in sequence" semantics stay as they are.
 - Chunks of ≤250, and **every chunk now waits for its job**, including the last one, because the next hourly run and Feature B depend on it. The wait time for the last chunk is raised to 60 s. A timeout is logged as routine, not as a failure.
 - Tests: a property test applies the moves exactly as Shopify documents them (remove, then insert at `newPosition`, one after another, across chunk boundaries) and checks the result equals the target. There are also cases where the minimal count matters (one to the end, one to the front, swap, reverse), plus a 1,000-product random case. I'll confirm the exact `newPosition` semantics against the current Admin API docs with the Shopify AI Toolkit before writing the code.
 - `TOO_MANY_ATTEMPTS_TO_REORDER_PRODUCTS` / THROTTLED: the backoff is already in place. The change is that retries are logged as `console.info` (routine), and only a final failure writes a FAILED run.
@@ -259,7 +259,7 @@ For 1,000 products × 24 runs/day × 30 days = **720 snapshots per collection**:
 5. **Free undo is 1 day in code, but "—" in the brief.** I'm leaving it as is (Free unchanged). Listing copy should say "1 day" or keep "—". Arthur's call.
 6. **`MANUAL` ("Only when I press Shuffle") exists and isn't in the brief's dropdown.** Removing it would start automatic shuffles for merchants who opted out. I'll keep it as the last option. → Q3.
 7. **2,000-product fetch cap.** Larger collections (Atlas's "very large" one?) only ever shuffle their first 2,000. I'll remove the cap. Reading costs are about 1 page per 100 products today, so I'll raise the page size to 250.
-8. **Greedy diff → n−1 moves for a single move to the end** (Task 3). This affects today's sold-out reactions too.
+8. **Greedy diff → n−1 moves for a single move to the end** (Task 3). *(Corrected: the sold-out reaction sends a single move and isn't affected. Full runs, Undo and remove-restore are.)*
 9. **Plan freshness:** no `app_subscriptions/update` webhook, and the cron never re-checks. A shop that downgrades in Shopify admin and doesn't open the app keeps its Pro cadence indefinitely. Adding the webhook is a new **subscription**, not a new scope. → Q2.
 10. **The brief says "Downgrade → Daily". The prompt says Starter → Daily, Free → Weekly.** I'm following the prompt. The existing `defaultScheduleForPlan` already does exactly this.
 11. **"Pause on sort change":** today a non-Manual sort only fails the run and stamps `sortOrderIssueAt`. It doesn't pause. Each hourly run would add another FAILED row. I'll add `pausedReason=SORT_CHANGED`: runs and Feature B stop, the card shows a warning with the existing one-click "Switch to Manual", and that switch clears the pause.
@@ -304,3 +304,12 @@ Approved with the recommended option on every question:
 - **Q9** No recommendation was given. Default: I run everything that can be automated and write exact manual steps for the dev-store items.
 - **Q10** `ProductPosition`: at most one snapshot per local hour, 90-day retention.
 - **Q11** A preset clicked on Free/Starter is stored and applied automatically once the shop is on Pro.
+
+## 7. Changes made during implementation
+
+- **Sort pause uses the existing `sortOrderIssueAt` column, not a new `pausedReason`.** That column is already set when a run finds the sort isn't Manual and already cleared by "Switch to Manual". Using it as the pause marker (the sweep and the new-products poll skip collections where it's set) keeps one source of truth. A 15-minute maintenance task also resumes collections whose sort was set back to Manual in Shopify admin.
+- **Feature B debounce is ~10 minutes, not 10–25.** The 15-minute poll and the debounce are separate: the scheduler asks the DB every minute for batches whose 10 minutes are up and decides from the DB alone (no Shopify call). This is closer to the brief at no extra API cost, so I didn't ask again about Q6.
+- **Every reorder chunk now waits for its job, the last one included,** so the next hourly run can't read a half-applied order.
+- **`getCollectionProductsInOrder` reads 250 per page** (was 100). The 2,000 cap is removed.
+- **A bare `WEEKLY` post with no weekday now defaults to Monday.** The scheduler treats a null weekday as "every day", so a Free shop could previously get daily runs by posting WEEKLY without a weekday. Found while centralising the schedule parser.
+- **Data model:** all Update 2 columns ship in one data-model commit with five additive migrations (`ADD COLUMN` / `CREATE TABLE` only, nothing dropped or rewritten). They are written by hand: `prisma migrate dev` hangs on this machine because of slow Desktop/iCloud file reads.
