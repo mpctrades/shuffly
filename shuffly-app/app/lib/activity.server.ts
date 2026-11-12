@@ -11,6 +11,9 @@
 // additionally collapsed into one muted line per day, for the same reason.
 import { noMoveReasonLabel } from "./run-reason";
 import db from "../db.server";
+import { makeT, type Lang, type T } from "../i18n";
+import { describeNoticeSchedule, type NoticeScheduleLike } from "./card-model";
+import { planOf } from "./plans";
 import { activityDayAndTime, getLocalHour, startOfLocalDay } from "./schedule.server";
 
 export const ACTIVITY_PAGE_SIZE = 30;
@@ -134,13 +137,14 @@ export async function loadActivityPage(
   timezone: string,
   cursorIso: string | null,
   query: ActivityQuery,
+  lang: Lang = "en",
 ): Promise<ActivityPage> {
   const cursor = cursorIso ? new Date(cursorIso) : null;
   const rows = await fetchRows(shop, query, cursor, ACTIVITY_PAGE_SIZE);
   const now = new Date();
   const last = rows[rows.length - 1];
   return {
-    items: collapseSettingsPerDay(groupRows(rows, timezone, now)),
+    items: collapseSettingsPerDay(groupRows(rows, timezone, now, makeT(lang))),
     nextCursor: last ? last.createdAt.toISOString() : null,
     hasMore: rows.length === ACTIVITY_PAGE_SIZE,
   };
@@ -151,7 +155,7 @@ export async function loadActivityPage(
  * pause/resume, and not the dead-code RETRIED). */
 export async function loadActivitySummary(shop: string, timezone: string, now: Date): Promise<ActivitySummary> {
   const since = startOfLocalDay(now, timezone);
-  const RUN_KINDS = ["SCHEDULED", "MANUAL", "SOLD_OUT_REACTION", "RESTOCK_REACTION"];
+  const RUN_KINDS = ["SCHEDULED", "MANUAL", "NEW_PRODUCTS", "SOLD_OUT_REACTION", "RESTOCK_REACTION"];
   const [runsToday, moved, lastRun] = await Promise.all([
     db.shuffleRun.count({ where: { shop, createdAt: { gte: since }, trigger: { in: RUN_KINDS } } }),
     db.shuffleRun.aggregate({ where: { shop, createdAt: { gte: since }, status: "OK" }, _sum: { movedCount: true } }),
@@ -174,7 +178,7 @@ export async function loadActivityStatRow(shop: string, now: Date): Promise<Acti
   const [running, last7] = await Promise.all([
     db.collectionConfig.findMany({ where: { shop, status: "RUNNING" }, select: { nextRunAt: true } }),
     db.shuffleRun.findMany({
-      where: { shop, createdAt: { gte: sevenDaysAgo }, trigger: { in: ["SCHEDULED", "MANUAL", "SOLD_OUT_REACTION", "RESTOCK_REACTION"] } },
+      where: { shop, createdAt: { gte: sevenDaysAgo }, trigger: { in: ["SCHEDULED", "MANUAL", "NEW_PRODUCTS", "SOLD_OUT_REACTION", "RESTOCK_REACTION"] } },
       select: { status: true, movedCount: true },
     }),
   ]);
@@ -217,7 +221,7 @@ function timeOfDayLabel(hour: number): string {
 
 /** Walk the page of rows (already newest-first) and fold adjacent rows that
  * belong to the same real-world event into one entry. */
-function groupRows(rows: RunRow[], timezone: string, now: Date): ActivityItem[] {
+export function groupRows(rows: RunRow[], timezone: string, now: Date, t: T = makeT("en")): ActivityItem[] {
   const items: ActivityItem[] = [];
   let i = 0;
   while (i < rows.length) {
@@ -227,8 +231,19 @@ function groupRows(rows: RunRow[], timezone: string, now: Date): ActivityItem[] 
       const batchId = row.batchId;
       let j = i + 1;
       while (j < rows.length && rows[j].batchId === batchId) j++;
-      items.push(formatBatch(rows.slice(i, j), timezone, now));
+      // A skipped slot or a sort pause inside a sweep is its own line, not
+      // a "0 moved" member of the batch summary.
+      const slice = rows.slice(i, j);
+      const runs = slice.filter((r) => !isCoded(r));
+      if (runs.length > 0) items.push(formatBatch(runs, timezone, now));
+      for (const r of slice.filter(isCoded)) items.push(formatCoded(r, timezone, now, t));
       i = j;
+      continue;
+    }
+
+    if (isCoded(row)) {
+      items.push(formatCoded(row, timezone, now, t));
+      i += 1;
       continue;
     }
 
@@ -419,6 +434,104 @@ function formatReactionCluster(rows: RunRow[], trigger: string, timezone: string
     diff: null,
     children: null,
   };
+}
+
+// ---- Update 2: rows that carry a messageCode, rendered in the merchant's
+// language from the code and its params rather than the stored English.
+const CODED = new Set(["NEW_PRODUCTS", "SKIPPED_IN_PROGRESS", "PAUSED_SORT", "RESUMED_SORT", "PLAN_DOWNGRADE"]);
+
+function isCoded(row: RunRow): boolean {
+  return row.messageCode != null && CODED.has(row.messageCode);
+}
+
+function params(row: RunRow): Record<string, unknown> {
+  try {
+    return row.messageParams ? JSON.parse(row.messageParams) : {};
+  } catch {
+    return {};
+  }
+}
+
+function formatCoded(row: RunRow, timezone: string, now: Date, t: T): ActivityItem {
+  const collectionTitle = titleOf(row);
+  const { dayKey, dayLabel, time } = activityDayAndTime(row.createdAt, timezone, now);
+  const base = {
+    id: row.id,
+    time,
+    dayKey,
+    dayLabel,
+    createdAt: row.createdAt.toISOString(),
+    diff: null as null,
+    children: null as null,
+  };
+  const p = params(row);
+  switch (row.messageCode) {
+    case "NEW_PRODUCTS": {
+      const added = Number(p.added ?? 0);
+      const ok = row.status === "OK";
+      return {
+        ...base,
+        kind: ok ? "automatic" : "failure",
+        iconType: ok ? "bolt-filled" : "alert-circle",
+        iconTone: ok ? "info" : "critical",
+        title: `${collectionTitle} — ${t.plural("activity.newProducts", added)}`,
+        meta: ok ? `${pluralize(row.movedCount, "product")} moved · ${formatSeconds(row.durationMs)}` : (row.message ?? ""),
+        movedCount: ok && row.movedCount > 0 ? row.movedCount : null,
+        restore: ok && row.previousOrder && row.movedCount > 0 ? { kind: "single", runId: row.id, collectionTitle } : null,
+      };
+    }
+    case "SKIPPED_IN_PROGRESS":
+      return {
+        ...base,
+        kind: "automatic",
+        iconType: "alert-triangle",
+        iconTone: "warning",
+        title: `${collectionTitle} — ${t("activity.skipped")}`,
+        meta: "",
+        movedCount: null,
+        restore: null,
+      };
+    case "PAUSED_SORT":
+      return {
+        ...base,
+        kind: "failure",
+        iconType: "alert-circle",
+        iconTone: "critical",
+        title: `${collectionTitle} — ${t("activity.pausedSort")}`,
+        meta: "",
+        movedCount: null,
+        restore: null,
+      };
+    case "RESUMED_SORT":
+      return {
+        ...base,
+        kind: "setting",
+        iconType: "check-circle-filled",
+        iconTone: "success",
+        title: `${collectionTitle} — ${t("activity.resumedSort")}`,
+        meta: "",
+        movedCount: null,
+        restore: null,
+      };
+    default: {
+      // PLAN_DOWNGRADE
+      const from = p.from as NoticeScheduleLike | undefined;
+      const to = p.to as NoticeScheduleLike | undefined;
+      const parts: string[] = [];
+      if (from && to) parts.push(`${describeNoticeSchedule(from, t)} → ${describeNoticeSchedule(to, t)}`);
+      if (p.reshuffleOnNewOff || p.keepNewOnTopOff) parts.push(t("notice.newArrivalsOff", { title: "" }).replace(/^\s*:\s*/, ""));
+      return {
+        ...base,
+        kind: "setting",
+        iconType: "bolt-filled",
+        iconTone: "info",
+        title: `${collectionTitle} — ${t("activity.planDowngrade", { plan: planOf(String(p.plan ?? "")).name })}`,
+        meta: parts.join(" · "),
+        movedCount: null,
+        restore: null,
+      };
+    }
+  }
 }
 
 /** A single unrelated row — or, when `batchSiblings` is given, a "batch" of

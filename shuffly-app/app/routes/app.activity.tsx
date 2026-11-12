@@ -16,6 +16,7 @@ import {
   type ActivityPage,
   type ActivityQuery,
 } from "../lib/activity.server";
+import { normalizeLang } from "../i18n";
 import { closeModal } from "../lib/polaris-modal";
 import { ActivityRow, ActivityDayHeading } from "../components/ActivityRow";
 import { RestoreActivityModal } from "../components/RestoreActivityModal";
@@ -58,7 +59,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   try {
     const [page, summary, statRow, collectionOptions] = await Promise.all([
-      loadActivityPage(shop, settings.timezone, cursor, query),
+      loadActivityPage(shop, settings.timezone, cursor, query, normalizeLang(settings.language) ?? "en"),
       loadActivitySummary(shop, settings.timezone, now),
       loadActivityStatRow(shop, now),
       loadActivityCollectionOptions(shop),
