@@ -328,7 +328,11 @@ export function CollectionCard({
               </s-option>
             ))}
           </s-select>
-          <span className="shuffly-card-subtle shuffly-card-next">{nextLine}</span>
+          {/* Time-relative text: the server and the browser render it a few
+              seconds apart, so a one-minute difference is expected. */}
+          <span className="shuffly-card-subtle shuffly-card-next" suppressHydrationWarning>
+            {nextLine}
+          </span>
           {anyLocked && (
             <Link to="/app/plan" className="shuffly-card-unlock">
               {t("card.unlockPro")}
@@ -408,7 +412,7 @@ export function CollectionCard({
 
       {/* Footer */}
       <div className="shuffly-card-footer">
-        <div className="shuffly-card-subtle">
+        <div className="shuffly-card-subtle" suppressHydrationWarning>
           {lastRun ? t("card.lastRun", { when: formatWhen(new Date(lastRun.at), new Date(now), timezone, t) }) : t("card.notShuffledYet")}
           {" · "}
           {t.plural("card.products", card.productCount)}
