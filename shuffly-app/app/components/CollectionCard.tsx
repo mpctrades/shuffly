@@ -308,6 +308,9 @@ export function CollectionCard({
       <div className="shuffly-card-grid">
         <div className="shuffly-card-label">{t("card.frequency")}</div>
         <div className="shuffly-card-value shuffly-card-frequency">
+          {/* s-select fills its container; the box is what sizes it (a CSS
+              width on the custom element itself had no effect). */}
+          <s-box inlineSize="240px" maxInlineSize="100%">
           <s-select
             label={t("card.frequency")}
             labelAccessibilityVisibility="exclusive"
@@ -328,6 +331,7 @@ export function CollectionCard({
               </s-option>
             ))}
           </s-select>
+          </s-box>
           {/* Time-relative text: the server and the browser render it a few
               seconds apart, so a one-minute difference is expected. */}
           <span className="shuffly-card-subtle shuffly-card-next" suppressHydrationWarning>
