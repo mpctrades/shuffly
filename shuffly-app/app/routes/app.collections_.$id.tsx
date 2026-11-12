@@ -510,13 +510,25 @@ export default function Workspace() {
         Remove
       </s-button>
 
-      <s-link href="/app/collections">← Collections</s-link>
-      <s-paragraph>
-        <s-badge tone={config.status === "RUNNING" ? "success" : "neutral"}>
-          {config.status === "RUNNING" ? "Running" : "Paused"}
-        </s-badge>{" "}
-        {productCount} products · next run {config.status === "RUNNING" ? nextRunLabel : "paused"}
-      </s-paragraph>
+      {/* Shopify's own breadcrumb in the page header ("Collections > Home
+          page"), instead of a "← Collections" text link in the body. */}
+      <s-link slot="breadcrumb-actions" href="/app/collections">
+        Collections
+      </s-link>
+
+      {/* One summary row with real spacing, rather than a badge glued to a
+          sentence under a stray link. */}
+      <s-box paddingBlockEnd="base">
+        <s-stack direction="inline" gap="small-200" alignItems="center">
+          <s-badge tone={config.status === "RUNNING" ? "success" : "neutral"}>
+            {config.status === "RUNNING" ? "Running" : "Paused"}
+          </s-badge>
+          <s-text color="subdued">
+            {productCount} product{productCount === 1 ? "" : "s"} · next run{" "}
+            {config.status === "RUNNING" ? nextRunLabel : "paused"}
+          </s-text>
+        </s-stack>
+      </s-box>
 
       {sortOrder !== "MANUAL" && (
         <s-banner tone="warning" heading={`This collection is sorted by ${currentSortLabel}`}>
@@ -559,9 +571,14 @@ export default function Workspace() {
               }}
             />
           ) : (
-            <s-paragraph>
-              Pinning is available on Starter and Pro. <s-link href="/app/plan">See plans</s-link>
-            </s-paragraph>
+            <s-stack direction="block" gap="small-200">
+              <s-text color="subdued">Pinning is available on Starter and Pro.</s-text>
+              <div>
+                <s-button variant="secondary" icon="lock" href="/app/plan">
+                  See plans
+                </s-button>
+              </div>
+            </s-stack>
           )}
           <s-switch
             label="Sold-out to the end"
@@ -610,6 +627,8 @@ export default function Workspace() {
               </s-text>
             </div>
             <s-button
+              variant="secondary"
+              icon="edit"
               onClick={openScheduleModal}
               {...(scheduleFetcher.state !== "idle" ? { loading: true } : {})}
             >
@@ -642,9 +661,10 @@ export default function Workspace() {
       </s-section>
 
       <s-section heading="Order">
-        <s-paragraph>
-          Showing the first {preview.length} of {productCount} products
-        </s-paragraph>
+        <s-stack direction="block" gap="base">
+        <s-text color="subdued">
+          Showing the first {preview.length} of {productCount} product{productCount === 1 ? "" : "s"}
+        </s-text>
         <s-grid gridTemplateColumns="repeat(4, 1fr)" gap="base">
           {isLoading
             ? // Same s-box/s-stack shape as the real tiles below (three lines:
@@ -672,39 +692,41 @@ export default function Workspace() {
               ))}
         </s-grid>
 
-        <s-stack direction="inline" gap="base" alignItems="center">
-          <Form method="post">
-            <input type="hidden" name="_action" value="shuffle-now" />
-            <s-button
-              type="submit"
-              variant="primary"
-              {...(busy ? { loading: true } : {})}
-              disabled={sortOrder !== "MANUAL" || undefined}
-            >
-              Shuffle now
-            </s-button>
-          </Form>
-          {lastOkRun && (
+        <s-box paddingBlockStart="small-200">
+          <s-stack direction="inline" gap="small-200" alignItems="center">
             <Form method="post">
-              <input type="hidden" name="_action" value="undo" />
-              <s-button type="submit" variant="secondary">
-                Undo last shuffle
+              <input type="hidden" name="_action" value="shuffle-now" />
+              <s-button
+                type="submit"
+                variant="primary"
+                icon="refresh"
+                {...(busy ? { loading: true } : {})}
+                disabled={sortOrder !== "MANUAL" || undefined}
+              >
+                Shuffle now
               </s-button>
             </Form>
-          )}
-        </s-stack>
+            {lastOkRun && (
+              <Form method="post">
+                <input type="hidden" name="_action" value="undo" />
+                <s-button type="submit" variant="secondary" icon="undo">
+                  Undo last shuffle
+                </s-button>
+              </Form>
+            )}
+          </s-stack>
+        </s-box>
 
-        <s-stack direction="block" gap="small-200">
-          <s-paragraph>
-            This is exactly what happens on schedule, on all {productCount} products — you don&apos;t need to open
-            the app.
-          </s-paragraph>
-          <s-paragraph>
-            {/* collectionReorderProducts is asynchronous and the storefront
-                is cached, so the new order is instant in admin and lags on
-                the live store. */}
-            <ReorderDelayNote />
-          </s-paragraph>
+        <s-stack direction="block" gap="small-300">
+          <s-text color="subdued">
+            This is exactly what happens on schedule, on all {productCount} product{productCount === 1 ? "" : "s"} —
+            you don&apos;t need to open the app.
+          </s-text>
+          {/* collectionReorderProducts is asynchronous and the storefront
+              is cached, so the new order is instant in admin and lags on
+              the live store. */}
+          <ReorderDelayNote />
+        </s-stack>
         </s-stack>
       </s-section>
 
@@ -731,10 +753,12 @@ export default function Workspace() {
             </s-table-body>
           </s-table>
         )}
-        <s-paragraph>
-          Activity remains logged. Order snapshots can be restored for {undoRetentionDays} day
-          {undoRetentionDays === 1 ? "" : "s"} on your plan.
-        </s-paragraph>
+        <s-box paddingBlockStart="base">
+          <s-text color="subdued">
+            Activity remains logged. Order snapshots can be restored for {undoRetentionDays} day
+            {undoRetentionDays === 1 ? "" : "s"} on your plan.
+          </s-text>
+        </s-box>
       </s-section>
 
       <ShuffleScheduleModal
