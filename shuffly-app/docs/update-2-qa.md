@@ -9,7 +9,7 @@ Branch `update-2-unlimited-pro`, 12 Nov 2026.
 | Unit/integration tests (`npm test`) | ✅ **407 passed**, 33 files (baseline before this update: 274 passed, 20 files) |
 | Typecheck (`tsc --noEmit`) | ✅ 0 errors |
 | Production build (`npm run build`) | ✅ client + server bundles build |
-| Lint (`eslint` on changed files) | ⏳ still running when this was written (see "Tooling on this machine") |
+| Lint (`eslint` on every file changed on the branch) | ✅ clean (13 unused-import errors from the schedule-parser refactor fixed) |
 | §10 dev-store checklist | ⚠️ **Not run on a dev store.** Every item is covered by automated tests (below); the dev-store steps are written out for Arthur. |
 
 **I did not run anything against a Shopify store.** You approved writing manual steps for the dev-store items (Q9), and I had no dev-store session in this environment. So each §10 item below says what the automated tests prove, what they **can't** prove, and the exact steps to confirm it on the dev store. "Pass" means the automated tests pass. It does not mean "verified on a store".

@@ -13,10 +13,9 @@ import {
 } from "./collections.server";
 import { bumpTurnCounts, computeShuffledOrder, serializeTurnCounts } from "./shuffle-algorithm.server";
 import { buildShuffleInputs } from "./shuffle-inputs.server";
-import { canUseNewArrivals } from "./plans";
 import { nextRunFor } from "./schedule.server";
 import { recordProductPositions, recordKnownProducts, invalidateInsightsCache } from "./insights.server";
-import { undoRetentionCutoff } from "./plans";
+import { canUseNewArrivals, undoRetentionCutoff } from "./plans";
 import { isRateLimitError } from "./admin-graphql.server";
 import { isNotManualSortError, resolveNoMoveReason } from "./run-reason";
 import { resolveSchedule } from "./schedule-resolve";

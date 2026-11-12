@@ -23,16 +23,12 @@ import { previewShuffleAll } from "../lib/shuffle-preview.server";
 import {
   formatActivityTimestamp,
   nextRunFor,
-  normalizeHhMm,
-  slotsFarEnoughApart,
-  type ScheduleType,
   type SlotSchedule,
 } from "../lib/schedule.server";
 import {
   cadenceLabel,
   canUseNewArrivals,
   enforcePlanCollectionCap,
-  isScheduleAllowed,
   isTopPlan,
   planOf,
   timeSlots,

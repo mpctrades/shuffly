@@ -9,8 +9,7 @@
 // `scheduleType=INTERVAL&intervalHours=1` gets the same 403 whichever URL it
 // hits.
 
-import { planOf } from "./plans";
-import { isScheduleAllowed, timeSlots } from "./plans";
+import { isScheduleAllowed, planOf, timeSlots } from "./plans";
 import {
   isIntervalHours,
   normalizeHhMm,

@@ -15,7 +15,6 @@ import {
   formatNextRun,
   nextRunFor,
   normalizeHhMm,
-  slotsFarEnoughApart,
   type ScheduleType,
   type SlotSchedule,
 } from "../lib/schedule-core";
@@ -24,15 +23,11 @@ import { SwitchToManualModal, type SwitchToManualTarget } from "../components/Sw
 import { ReorderDelayNote } from "../components/ManualSortWarning";
 import { RemoveCollectionModal } from "../components/RemoveCollectionModal";
 import { closeModal, useModalDismissWorkaround } from "../lib/polaris-modal";
-import { isScheduleAllowed, planOf, timeSlots } from "../lib/plans.server";
+import { planOf, timeSlots } from "../lib/plans.server";
 
 const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 const RULES_SAVE_BAR_ID = "collection-rules-save-bar";
 
-/** The second slot is a top-tier entitlement. Gate on the entitlement, not
- * on a plan id, so a re-tiering can't quietly lock the feature for the plan
- * that pays for it. */
-const SECOND_SLOT_SCHEDULE: ScheduleType = "TWICE_DAILY";
 
 export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   const { admin, session } = await authenticate.admin(request);

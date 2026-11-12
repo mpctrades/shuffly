@@ -5,8 +5,8 @@ import { shopDefaultSchedule, shopDefaultWriteFields } from "../lib/schedule-res
 import { parseScheduleForm, withIntervalAnchor } from "../lib/schedule-form.server";
 import { intervalLabel } from "../lib/schedule-cadences";
 import { repairInheritingCountdowns } from "../lib/schedule-writes.server";
-import { nextRunFor, slotsFarEnoughApart, type ScheduleType, type SlotSchedule } from "../lib/schedule.server";
-import { isScheduleAllowed, planOf, timeSlots } from "../lib/plans.server";
+import { type SlotSchedule } from "../lib/schedule.server";
+import { timeSlots } from "../lib/plans.server";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { data, useLoaderData, useNavigation, useFetcher } from "react-router";
@@ -15,8 +15,6 @@ import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { confirmShopTimezone, getOrCreateShopSettings } from "../lib/shop-context.server";
 import { timezoneOffsetLabel } from "../lib/schedule.server";
-// Client-safe (see time-slots.ts) — the component below renders these.
-import { normalizeHhMm } from "../lib/time-slots";
 import { SUPPORT_EMAIL, SUPPORT_MAILTO, WEBSITE_URL } from "../lib/app-config";
 // The save path lives in a lib so it can be tested without a browser — see
 // settings-form.ts for why.
