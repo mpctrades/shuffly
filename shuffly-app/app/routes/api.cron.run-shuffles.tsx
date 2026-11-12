@@ -1,6 +1,8 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { data } from "react-router";
 import { runDueShuffles } from "../lib/cron.server";
+import { runMaintenance } from "../lib/maintenance.server";
+import { runNewProductsChecks } from "../lib/new-products.server";
 
 // Point an external scheduler (platform cron, GitHub Actions on a schedule,
 // cron-job.org, ...) at this endpoint every few minutes if you're not
@@ -28,12 +30,20 @@ function authorized(request: Request): boolean {
 export const action = async ({ request }: ActionFunctionArgs) => {
   if (!authorized(request)) return data({ error: "Unauthorized" }, { status: 401 });
   const result = await runDueShuffles();
-  return data(result);
+  // An external cron replaces the in-process timers entirely, so it drives
+  // housekeeping too. Cheap enough to run on every call.
+  const newProducts = await runNewProductsChecks();
+  await runMaintenance();
+  return data({ ...result, newProductsPolled: newProducts.length });
 };
 
 // Some cron providers only support GET.
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   if (!authorized(request)) return data({ error: "Unauthorized" }, { status: 401 });
   const result = await runDueShuffles();
-  return data(result);
+  // An external cron replaces the in-process timers entirely, so it drives
+  // housekeeping too. Cheap enough to run on every call.
+  const newProducts = await runNewProductsChecks();
+  await runMaintenance();
+  return data({ ...result, newProductsPolled: newProducts.length });
 };

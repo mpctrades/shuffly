@@ -9,16 +9,22 @@ import {
   setCollectionManualSort,
   unpackProductIds,
 } from "./collections.server";
-import { bumpTurnCounts, computeShuffledOrder, type ShuffleProductInput } from "./shuffle-algorithm.server";
+import { bumpTurnCounts, computeShuffledOrder, serializeTurnCounts } from "./shuffle-algorithm.server";
+import { buildShuffleInputs } from "./shuffle-inputs.server";
+import { canUseNewArrivals } from "./plans";
 import { nextRunFor } from "./schedule.server";
 import { recordProductPositions, recordKnownProducts, invalidateInsightsCache } from "./insights.server";
 import { undoRetentionCutoff } from "./plans";
 import { isRateLimitError } from "./admin-graphql.server";
 import { isNotManualSortError, resolveNoMoveReason } from "./run-reason";
 import { resolveSchedule } from "./schedule-resolve";
+import { withRunLock } from "./run-lock.server";
+import { startTracking, syncSeenProducts } from "./product-seen.server";
 
 export interface ShuffleRunSummary {
   ok: boolean;
+  /** Not run at all: another run held this collection's lock. */
+  skipped?: boolean;
   error?: string;
   movedCount: number;
   pinnedCount: number;
@@ -81,10 +87,74 @@ export async function runShuffleForCollection(
   trigger: ShuffleTrigger,
   batchId?: string,
   pageSize = 24,
+  context: RunContext = {},
 ): Promise<ShuffleRunSummary> {
   const started = Date.now();
+  // One run at a time per collection. Taken before anything is read, so a
+  // run can never compute its moves from an order another run is halfway
+  // through rewriting.
+  const lock = await withRunLock(config.id, () =>
+    runLocked(admin, shop, config, timezone, neverMoveTagsCsv, trigger, batchId, pageSize, started, context),
+  );
+  if (lock.locked) return lock.value;
+  return recordBusy(shop, config, trigger, batchId);
+}
+
+/** Why this run happened, for its Activity row — e.g. the new-products
+ * trigger's "Triggered by new products (12 added)". */
+export interface RunContext {
+  messageCode?: string;
+  messageParams?: Record<string, unknown>;
+  /** English fallback; replaces the default "Shuffled — N moved" lead-in. */
+  message?: string;
+}
+
+export const SKIPPED_IN_PROGRESS_MESSAGE = "Skipped — previous run still in progress";
+
+/** The collection was locked by another run. An automatic run (a scheduled
+ * slot, the new-products trigger) skips that slot and says so in Activity;
+ * a merchant pressing Shuffle now is told straight away instead, with no
+ * Activity row for something that never started. */
+async function recordBusy(
+  shop: string,
+  config: CollectionConfig,
+  trigger: ShuffleTrigger,
+  batchId: string | undefined,
+): Promise<ShuffleRunSummary> {
+  const automatic = trigger === "SCHEDULED" || trigger === "NEW_PRODUCTS";
+  const message = automatic
+    ? SKIPPED_IN_PROGRESS_MESSAGE
+    : "A shuffle is already running on this collection. Try again in a minute.";
+  if (automatic) {
+    await db.shuffleRun.create({
+      data: {
+        shop,
+        collectionId: config.id,
+        trigger,
+        batchId,
+        status: "SKIPPED",
+        messageCode: "SKIPPED_IN_PROGRESS",
+        message,
+      },
+    });
+  }
+  return { ok: false, skipped: true, error: "IN_PROGRESS", movedCount: 0, pinnedCount: 0, soldOutCount: 0, durationMs: 0, message };
+}
+
+async function runLocked(
+  admin: AdminApiContext,
+  shop: string,
+  config: CollectionConfig,
+  timezone: string,
+  neverMoveTagsCsv: string,
+  trigger: ShuffleTrigger,
+  batchId: string | undefined,
+  pageSize: number,
+  started: number,
+  context: RunContext,
+): Promise<ShuffleRunSummary> {
   try {
-    return await shuffleCollection(admin, shop, config, timezone, neverMoveTagsCsv, trigger, batchId, pageSize, started);
+    return await shuffleCollection(admin, shop, config, timezone, neverMoveTagsCsv, trigger, batchId, pageSize, started, context);
   } catch (err) {
     // Anything that throws — Shopify still throttling after our retries, a
     // network failure, a bad response — used to escape with no Activity row
@@ -120,7 +190,7 @@ export async function runShuffleForCollection(
   }
 }
 
-type ShuffleTrigger = "SCHEDULED" | "MANUAL" | "SOLD_OUT_REACTION" | "RESTOCK_REACTION";
+export type ShuffleTrigger = "SCHEDULED" | "MANUAL" | "NEW_PRODUCTS" | "SOLD_OUT_REACTION" | "RESTOCK_REACTION";
 
 async function shuffleCollection(
   admin: AdminApiContext,
@@ -132,8 +202,20 @@ async function shuffleCollection(
   batchId: string | undefined,
   pageSize: number,
   started: number,
+  context: RunContext,
 ): Promise<ShuffleRunSummary> {
   const { sortOrder, products } = await getCollectionProductsInOrder(admin, config.collectionGid);
+  const runAt = new Date();
+
+  // First-seen tracking for Features B and C: every normal run records the
+  // products it hasn't seen in this collection before (brief: "every normal
+  // run updates first_seen_at"). Started as a baseline the first time, so
+  // products already there when the feature was turned on aren't "new".
+  if (config.reshuffleOnNew || config.keepNewOnTop || config.newTrackingSince) {
+    const seenInput = products.map((p) => ({ id: p.id, createdAt: p.createdAt }));
+    if (!config.newTrackingSince) await startTracking(config.id, seenInput, runAt);
+    else await syncSeenProducts(config.id, seenInput, runAt);
+  }
 
   // Record what customers actually saw today, in this exact order — real
   // observed history for Insights, independent of whether we're able to
@@ -154,7 +236,11 @@ async function shuffleCollection(
     // after Shuffly switched it. The Collections list and the collection's
     // own page both offer a one-click switch, so point there rather than
     // sending them to Shopify admin.
-    const message = `"${config.title}" is no longer on Manual sort, so Shuffly can't set its positions. Open it in Shuffly to switch it back.`;
+    // Brief §8: re-checked before every run; when the merchant has changed
+    // it back, the collection is PAUSED (the sweep and the new-products poll
+    // skip it while sortOrderIssueAt is set) instead of failing again every
+    // hour, and the card shows a warning with the one-click switch.
+    const message = "Paused — sort order changed";
     // This used to return without writing anything, which is why a
     // sort-order failure left no trace at all — no Activity entry, no last
     // run, nothing on the row until the next hydration happened to notice.
@@ -177,6 +263,8 @@ async function shuffleCollection(
           soldOutCount: 0,
           durationMs: Date.now() - started,
           noMoveReason: "NOT_MANUAL",
+          messageCode: "PAUSED_SORT",
+          messageParams: JSON.stringify({ sortOrder }),
           message,
         },
       }),
@@ -197,31 +285,21 @@ async function shuffleCollection(
   const { order: currentOrder, externalChangeCount, diff: externalReorderDiff } = reconcileExternalReorder(fetchedOrder, lastKnownOrder, config.pins);
 
   const neverMoveTags = parseNeverMoveTags(neverMoveTagsCsv);
-  const now = Date.now();
-  const newArrivalMs = config.newArrivalDays * 86_400_000;
-
-  const productsById = new Map<string, ShuffleProductInput>(
-    products.map((p) => [
-      p.id,
-      {
-        id: p.id,
-        isSoldOut: p.tracksInventory && p.totalInventory <= 0,
-        isNew: now - new Date(p.createdAt).getTime() <= newArrivalMs,
-        neverMove: p.tags.some((t) => neverMoveTags.has(t.toLowerCase())),
-      },
-    ]),
-  );
-
-  const turnCounts: Record<string, number> = JSON.parse(config.turnCounts || "{}");
-  const priorityIds = new Set<string>(JSON.parse(config.priorityBoostIds || "[]"));
-
-  const result = computeShuffledOrder(currentOrder, productsById, turnCounts, {
-    pins: config.pins,
-    pushSoldOutToEnd: config.pushSoldOutToEnd,
-    boostNewArrivals: config.boostNewArrivals,
-    giveEveryoneATurn: config.giveEveryoneATurn,
-    priorityIds,
+  const shopPlan = (await db.shopSettings.findUnique({ where: { shop }, select: { plan: true } }))?.plan;
+  const seen = config.keepNewOnTop ? await db.productSeen.findMany({ where: { collectionId: config.id } }) : [];
+  // Same builder as the "Shuffle all" preview. Feature C applies only while
+  // the shop is on Pro — checked here on the run, not trusted from the flag.
+  const { productsById, turnCounts, options, excludedCount } = buildShuffleInputs({
+    config,
+    products,
+    currentOrder,
+    neverMoveTags,
+    now: runAt.getTime(),
+    seen,
+    newArrivalsAllowed: canUseNewArrivals(shopPlan),
   });
+
+  const result = computeShuffledOrder(currentOrder, productsById, turnCounts, options);
 
   const moves = diffToMoves(fetchedOrder, result.order);
   const reorderResult = await reorderCollectionProducts(admin, config.collectionGid, moves);
@@ -265,7 +343,8 @@ async function shuffleCollection(
     };
   }
 
-  const nextTurnCounts = bumpTurnCounts(turnCounts, result.order, result.pinnedCount);
+  // New arrivals on top this run are not taking a rotation turn.
+  const nextTurnCounts = bumpTurnCounts(turnCounts, result.order, result.pinnedCount, 4, new Set(result.newArrivalIds));
   // Advisory only — the cron sweep re-derives what's due from the stored
   // schedule (see cron.server.ts). This keeps the countdown honest and the
   // sweep's candidate query index-backed.
@@ -301,7 +380,8 @@ async function shuffleCollection(
     db.collectionConfig.update({
       where: { id: config.id },
       data: {
-        turnCounts: JSON.stringify(nextTurnCounts),
+        turnCounts: serializeTurnCounts(nextTurnCounts),
+        lastExcludedCount: excludedCount,
         lastRunAt: new Date(),
         lastSoldOutCount: result.soldOutCount,
         lastKnownOrder: JSON.stringify(result.order),
@@ -312,6 +392,10 @@ async function shuffleCollection(
         sortOrderIssueAt: null,
         // One-time boost, consumed — it only ever leads a single run.
         priorityBoostIds: "[]",
+        // Any new products waiting on the new-products trigger are in this
+        // order now, so that batch is handled.
+        newPendingSince: null,
+        newPendingCount: 0,
       },
     }),
     db.shuffleRun.create({
@@ -326,7 +410,11 @@ async function shuffleCollection(
         soldOutCount: result.soldOutCount,
         durationMs,
         noMoveReason,
-        message: `Shuffled — ${moves.length} product${moves.length === 1 ? "" : "s"} moved`,
+        message: context.message
+          ? `${context.message} · ${moves.length} product${moves.length === 1 ? "" : "s"} moved`
+          : `Shuffled — ${moves.length} product${moves.length === 1 ? "" : "s"} moved`,
+        messageCode: context.messageCode,
+        messageParams: context.messageParams ? JSON.stringify(context.messageParams) : undefined,
         previousOrder: JSON.stringify(fetchedOrder),
       },
     }),
@@ -377,6 +465,18 @@ export async function undoRun(
   config: CollectionConfig,
   runId?: string,
   pauseAfter = true,
+): Promise<{ ok: boolean; error?: string }> {
+  const lock = await withRunLock(config.id, () => undoRunLocked(admin, shop, config, runId, pauseAfter));
+  if (lock.locked) return lock.value;
+  return { ok: false, error: "A shuffle is running on this collection right now. Try Undo again in a minute." };
+}
+
+async function undoRunLocked(
+  admin: AdminApiContext,
+  shop: string,
+  config: CollectionConfig,
+  runId: string | undefined,
+  pauseAfter: boolean,
 ): Promise<{ ok: boolean; error?: string }> {
   const settings = await db.shopSettings.findUnique({ where: { shop } });
   const cutoff = undoRetentionCutoff(settings?.plan);

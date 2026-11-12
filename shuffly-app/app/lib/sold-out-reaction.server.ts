@@ -1,6 +1,8 @@
 import type { AdminApiContext } from "@shopify/shopify-app-react-router/server";
 
+import type { CollectionConfig } from "@prisma/client";
 import db from "../db.server";
+import { withRunLockWaiting } from "./run-lock.server";
 import {
   getCollectionGidsContainingProduct,
   reorderCollectionProducts,
@@ -39,6 +41,27 @@ export async function reactToSoldOutProduct(
   const candidates = opted.filter((config) => memberGids.has(config.collectionGid));
 
   for (const config of candidates) {
+    // Waits for (rather than skips) a run in progress: the product sold out
+    // and should still go to the end, just after that run has written its
+    // order — not interleaved with it. Re-read inside the lock, since the run
+    // we waited for has just replaced lastKnownOrder.
+    const outcome = await withRunLockWaiting(config.id, async () => {
+      const fresh = await db.collectionConfig.findUnique({ where: { id: config.id } });
+      if (fresh) await moveSoldOutToEnd(admin, shop, fresh, productGid);
+    });
+    if (!outcome.locked) {
+      console.info(`[sold-out] ${shop} ${config.collectionGid}: still busy after waiting, leaving it to the next run`);
+    }
+  }
+}
+
+async function moveSoldOutToEnd(
+  admin: AdminApiContext,
+  shop: string,
+  config: CollectionConfig,
+  productGid: string,
+): Promise<void> {
+  {
     let lastKnownOrder: string[] | null = null;
     try {
       lastKnownOrder = config.lastKnownOrder ? JSON.parse(config.lastKnownOrder) : null;
@@ -55,7 +78,7 @@ export async function reactToSoldOutProduct(
     // between two truly concurrent calls (there's no claim/lock), just the
     // sequential-arrival case the two webhooks actually produce.
     if (lastKnownOrder && lastKnownOrder.length > 0 && lastKnownOrder[lastKnownOrder.length - 1] === productGid) {
-      continue;
+      return;
     }
 
     const started = Date.now();

@@ -38,15 +38,18 @@ import db from "../db.server";
 import { unauthenticated } from "../shopify.server";
 import { runShuffleForCollection } from "./shuffle-engine.server";
 import { dueSlots, nextRunFor, type MissedSlot } from "./schedule.server";
-import { pruneExpiredUndoSnapshotsForAllShops } from "./plans.server";
-import { pruneProcessedWebhooks } from "./webhook-dedupe.server";
+import type { CollectionConfig } from "@prisma/client";
+import { mapWithLimit } from "./collections.server";
+import { syncPlanFromAdmin } from "./billing.server";
+import { enforcePlanEntitlements, isScheduleAllowed, planOf } from "./plans.server";
 
 export interface CronSweepResult {
   checked: number;
   ran: number;
   failed: number;
-  /** Slots that were due but already claimed by another sweep — the
-   * idempotency guard doing its job, not an error. */
+  /** Slots that were due but already claimed by another sweep, or whose
+   * collection was still busy with a previous run (logged as "Skipped —
+   * previous run still in progress"). Routine, not an error. */
   skipped: number;
   /** Slots whose time passed by more than the grace window. Logged and
    * skipped, never run as backlog. */
@@ -88,27 +91,29 @@ async function pruneOldSlotClaims(now: Date): Promise<void> {
   });
 }
 
-export async function runDueShuffles(now: Date = new Date()): Promise<CronSweepResult> {
-  // Housekeeping first, before the early return for a quiet minute. Undo
-  // retention used to be enforced only by page loaders, so a shop nobody
-  // opened kept expired snapshots indefinitely.
-  try {
-    await pruneExpiredUndoSnapshotsForAllShops(now);
-  } catch (err) {
-    console.error("[cron] undo snapshot prune failed:", err);
-  }
-  try {
-    await pruneProcessedWebhooks(now);
-  } catch (err) {
-    console.error("[cron] processed-webhook prune failed:", err);
-  }
+/** Shops a sweep is still working through. A tick that finds a shop here
+ * leaves it alone rather than running it twice in parallel against the same
+ * rate-limit bucket. This replaced a single "is any sweep running?" flag,
+ * which let one slow 2,000-product shop hold up every other shop's hourly
+ * run. Per-process, like the in-process scheduler itself; the run lock and
+ * slot claims are what make a second process safe. */
+const shopsInFlight = new Set<string>();
 
+/** How many shops one sweep works on at once. Collections inside one shop
+ * stay sequential: they share that shop's Admin API bucket. */
+export const SHOP_CONCURRENCY = 4;
+
+export async function runDueShuffles(now: Date = new Date()): Promise<CronSweepResult> {
   // Advisory prefilter — see the note at the top of this file. `nextRunAt:
   // null` is included because a row that has never been scheduled (or was
   // written by a path that didn't set it) must still be evaluated.
   const candidates = await db.collectionConfig.findMany({
     where: {
       status: "RUNNING",
+      // Paused because its sort was changed away from Manual (brief §8): no
+      // run could write anything until it's switched back. Resumed by the
+      // Switch-to-Manual action or by maintenance noticing it's Manual again.
+      sortOrderIssueAt: null,
       OR: [{ nextRunAt: null }, { nextRunAt: { lte: now } }],
     },
   });
@@ -121,7 +126,32 @@ export async function runDueShuffles(now: Date = new Date()): Promise<CronSweepR
     byShop.set(config.shop, [...(byShop.get(config.shop) ?? []), config]);
   }
 
-  for (const [shop, configs] of byShop) {
+  const shops = [...byShop].filter(([shop]) => !shopsInFlight.has(shop));
+  await mapWithLimit(shops, SHOP_CONCURRENCY, async ([shop, configs]) => {
+    shopsInFlight.add(shop);
+    try {
+      await sweepShop(shop, configs, now, result);
+    } catch (err) {
+      // One shop's failure (a DB hiccup, an expired session) must not stop
+      // the other shops in this sweep.
+      console.error(`[cron] sweep of ${shop} failed:`, err);
+      result.failed += configs.length;
+    } finally {
+      shopsInFlight.delete(shop);
+    }
+  });
+
+  await pruneOldSlotClaims(now);
+  return result;
+}
+
+async function sweepShop(
+  shop: string,
+  configs: CollectionConfig[],
+  now: Date,
+  result: CronSweepResult,
+): Promise<void> {
+  {
     let settings = await db.shopSettings.findUnique({ where: { shop } });
     if (!settings) {
       settings = await db.shopSettings.create({ data: { shop } });
@@ -188,7 +218,7 @@ export async function runDueShuffles(now: Date = new Date()): Promise<CronSweepR
     }
 
     const withWork = work.filter((item) => item.due.length > 0);
-    if (withWork.length === 0) continue;
+    if (withWork.length === 0) return;
 
     let admin;
     try {
@@ -203,7 +233,43 @@ export async function runDueShuffles(now: Date = new Date()): Promise<CronSweepR
           message: `Could not get an admin session (app may be uninstalled): ${String(err)}`,
         });
       }
-      continue;
+      return;
+    }
+
+    // Plan check on the run path, not only on settings writes (Update 2).
+    // The cached plan is re-read from Shopify when it is more than an hour
+    // old — the app_subscriptions/update webhook normally gets there first,
+    // this is the backstop for a missed delivery. If the plan just changed,
+    // the clamps have rewritten this shop's schedules: stop here and let the
+    // next tick evaluate the new ones rather than run on the old.
+    try {
+      const synced = await syncPlanFromAdmin(shop, admin, { now });
+      if (synced?.changed) {
+        for (const { config } of withWork) {
+          result.skipped++;
+          result.details.push({ shop, collection: config.title, ok: true, message: `Plan changed to ${synced.planId}; re-evaluating` });
+        }
+        return;
+      }
+    } catch (err) {
+      // Shopify unreachable: fall back to the stored plan, which the gate
+      // below still enforces.
+      console.error(`[cron] plan re-check for ${shop} failed:`, err);
+    }
+    const planId = planOf((await db.shopSettings.findUnique({ where: { shop }, select: { plan: true } }))?.plan).id;
+
+    // Whatever the stored schedule says, a cadence the plan doesn't include
+    // never runs. Reaching this means a row escaped the downgrade clamps
+    // (written before Update 2, or by a path that skipped validation), so
+    // clamp now and skip the run.
+    const permitted = withWork.filter(({ config }) => {
+      const sch = resolveSchedule(config, settings);
+      return isScheduleAllowed(planId, sch.scheduleType, sch.intervalHours);
+    });
+    if (permitted.length < withWork.length) {
+      console.warn(`[cron] ${shop}: ${withWork.length - permitted.length} schedule(s) outside the ${planId} plan; clamping`);
+      await enforcePlanEntitlements(shop, planId);
+      result.skipped += withWork.length - permitted.length;
     }
 
     // One id shared by every collection in this shop's sweep, so the
@@ -211,7 +277,7 @@ export async function runDueShuffles(now: Date = new Date()): Promise<CronSweepR
     // moved" as a single entry instead of N separate lines.
     const batchId = randomUUID();
 
-    for (const { config, due } of withWork) {
+    for (const { config, due } of permitted) {
       // Claim every due slot but shuffle only once. If a sweep comes back
       // from an outage with both of today's slots overdue, running the same
       // collection twice inside a second would move products twice for no
@@ -237,6 +303,7 @@ export async function runDueShuffles(now: Date = new Date()): Promise<CronSweepR
           settings.pageSize,
         );
         if (summary.ok) result.ran++;
+        else if (summary.skipped) result.skipped++;
         else result.failed++;
         if (summary.ok && ranLate) {
           // The shuffle happened, just not on the minute — worth saying in
@@ -253,9 +320,6 @@ export async function runDueShuffles(now: Date = new Date()): Promise<CronSweepR
       }
     }
   }
-
-  await pruneOldSlotClaims(now);
-  return result;
 }
 
 /** "06:00" / "06:00 and 18:00", in the shop's own timezone — for a missed-run

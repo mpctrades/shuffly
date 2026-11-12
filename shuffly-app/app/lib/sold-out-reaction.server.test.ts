@@ -17,10 +17,24 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("../db.server", () => ({
   default: {
-    collectionConfig: { findMany: mocks.findMany, count: mocks.count, update: mocks.update },
+    collectionConfig: {
+      findMany: mocks.findMany,
+      count: mocks.count,
+      update: mocks.update,
+      // The reaction re-reads the row inside the run lock; hand back the same
+      // row findMany produced.
+      findUnique: async ({ where }: { where: { id: string } }) => {
+        const rows = (await mocks.findMany.mock.results.at(-1)?.value) as Array<{ id: string }> | undefined;
+        return rows?.find((r) => r.id === where.id) ?? null;
+      },
+    },
     shuffleRun: { create: mocks.runCreate },
     $transaction: mocks.transaction,
   },
+}));
+
+vi.mock("./run-lock.server", () => ({
+  withRunLockWaiting: async (_id: string, work: () => Promise<unknown>) => ({ locked: true, value: await work() }),
 }));
 
 vi.mock("./collections.server", () => ({

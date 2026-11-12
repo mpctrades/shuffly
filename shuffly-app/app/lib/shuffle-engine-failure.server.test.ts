@@ -20,6 +20,10 @@ vi.mock("./collections.server", () => ({
   unpackProductIds: vi.fn(),
 }));
 
+vi.mock("./run-lock.server", () => ({
+  withRunLock: async (_id: string, work: () => Promise<unknown>) => ({ locked: true, value: await work() }),
+}));
+
 vi.mock("./insights.server", () => ({
   recordProductPositions: vi.fn(),
   recordKnownProducts: vi.fn(),
