@@ -17,6 +17,7 @@ import {
   type ActivityQuery,
 } from "../lib/activity.server";
 import { normalizeLang } from "../i18n";
+import { dayRelativeClockLabel } from "../lib/clock-labels";
 import { closeModal } from "../lib/polaris-modal";
 import { ActivityRow, ActivityDayHeading } from "../components/ActivityRow";
 import { RestoreActivityModal } from "../components/RestoreActivityModal";
@@ -64,14 +65,19 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       loadActivityStatRow(shop, now),
       loadActivityCollectionOptions(shop),
     ]);
-    return { ...page, summary, statRow, collectionOptions, error: null as string | null };
+    // The "Next run" detail line, formatted on the server in the SHOP's
+    // timezone (it used to be formatted in the browser with none, so it
+    // showed the viewer's clock — 18:00 for a 06:00 New York run seen from
+    // UTC+7 — and always said "today").
+    const nextRunLabel = statRow.nextRunAtMs ? dayRelativeClockLabel(new Date(statRow.nextRunAtMs), settings.timezone, now) : null;
+    return { ...page, summary, statRow: { ...statRow, nextRunLabel }, collectionOptions, error: null as string | null };
   } catch {
     return {
       items: [],
       nextCursor: null,
       hasMore: false,
       summary: { runsToday: 0, productsMovedToday: 0, lastRunAtToday: null },
-      statRow: { nextRunAtMs: null, runningCount: 0, last7DaysMoved: 0, last7DaysRuns: 0, last7DaysAnyFailed: false },
+      statRow: { nextRunAtMs: null, nextRunLabel: null, runningCount: 0, last7DaysMoved: 0, last7DaysRuns: 0, last7DaysAnyFailed: false },
       collectionOptions: [],
       error: "Couldn't load activity just now. Try refreshing.",
     };
@@ -601,7 +607,14 @@ function StatRow({
   statRow,
 }: {
   summary: { runsToday: number; productsMovedToday: number; lastRunAtToday: string | null };
-  statRow: { nextRunAtMs: number | null; runningCount: number; last7DaysMoved: number; last7DaysRuns: number; last7DaysAnyFailed: boolean };
+  statRow: {
+    nextRunAtMs: number | null;
+    nextRunLabel: string | null;
+    runningCount: number;
+    last7DaysMoved: number;
+    last7DaysRuns: number;
+    last7DaysAnyFailed: boolean;
+  };
 }) {
   const [nowMs, setNowMs] = useState(() => Date.now());
   useEffect(() => {
@@ -626,7 +639,7 @@ function StatRow({
           <div className="shuffly-activity-stat-label">Next run</div>
           <div className="shuffly-activity-stat-value shuffly-activity-stat-value--orange">{countdown}</div>
           <div className="shuffly-activity-stat-detail">
-            {statRow.nextRunAtMs ? formatClock(new Date(statRow.nextRunAtMs)) : "—"} · {statRow.runningCount} collection
+            {statRow.nextRunLabel ?? "—"} · {statRow.runningCount} collection
             {statRow.runningCount === 1 ? "" : "s"}
           </div>
         </div>
@@ -722,9 +735,6 @@ function formatCountdown(ms: number): string {
   return `in ${minutes}m`;
 }
 
-function formatClock(d: Date): string {
-  return `today at ${new Intl.DateTimeFormat("en-US", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(d)}`;
-}
 
 // Every value here is a Polaris token — the hex after each is a same-hue
 // fallback only, never the source of truth.

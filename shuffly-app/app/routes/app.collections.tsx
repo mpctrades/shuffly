@@ -62,6 +62,7 @@ import {
 import { bulkStaggerMs, parseScheduleForm, withIntervalAnchor } from "../lib/schedule-form.server";
 import { repairInheritingCountdowns } from "../lib/schedule-writes.server";
 import { intervalLabel } from "../lib/schedule-cadences";
+import { clockTime, dayRelativeClockLabel } from "../lib/clock-labels";
 import { BulkRemoveConfirmModal } from "../components/BulkRemoveConfirmModal";
 import { PlanBar } from "../components/PlanBar";
 import { AddAllUntrackedModal } from "../components/AddAllUntrackedModal";
@@ -227,6 +228,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     anyFailed: boolean;
     failedTitles: string[];
     at: Date;
+    atLabel: string;
   } | null = null;
   const { run: lastScheduledRun, batchRuns } = lastScheduled;
   if (lastScheduledRun?.batchId) {
@@ -239,6 +241,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       // back to the generic label.
       failedTitles: batchRuns.filter((r) => r.status === "FAILED").map((r) => titleById.get(r.collectionId ?? "") ?? "A collection"),
       at: lastScheduledRun.createdAt,
+      // Formatted here, in the shop's timezone. It used to be formatted in
+      // the component with no timezone, i.e. in the viewer's own.
+      atLabel: clockTime(lastScheduledRun.createdAt, timezone),
     };
   }
 
@@ -488,36 +493,6 @@ function scheduleLabel(
   }
 }
 
-/** "today at 06:00" / "tomorrow at 06:00" / "26/08 at 06:00" — same
- * day-diff-via-UTC-midnight technique as schedule.server.ts's
- * activityDayAndTime, just for a FUTURE instant instead of a past one, so
- * it stays local to this route rather than growing that module's surface
- * for a single caller. */
-function dayRelativeClockLabel(target: Date, timezone: string, now: Date): string {
-  const dtf = new Intl.DateTimeFormat("en-US", {
-    timeZone: timezone,
-    hourCycle: "h23",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-  const partsOf = (d: Date) =>
-    dtf.formatToParts(d).reduce<Record<string, string>>((acc, p) => {
-      acc[p.type] = p.value;
-      return acc;
-    }, {});
-  const t = partsOf(target);
-  const n = partsOf(now);
-  const time = `${t.hour}:${t.minute}`;
-  const dayDiff = Math.round(
-    (Date.UTC(Number(t.year), Number(t.month) - 1, Number(t.day)) - Date.UTC(Number(n.year), Number(n.month) - 1, Number(n.day))) /
-      86_400_000,
-  );
-  const dayLabel = dayDiff === 0 ? "today" : dayDiff === 1 ? "tomorrow" : `${t.month}/${t.day}`;
-  return `${dayLabel} at ${time}`;
-}
 
 /** formatActivityTimestamp's "Today 06:01" / "Yesterday 14:22", lower-cased
  * to match this row's own copy style ("today 06:01"). */
@@ -2124,7 +2099,6 @@ export default function Collections() {
         .shuffly-card-label { color: var(--p-color-text-secondary, #616161); padding-top: 6px; }
         .shuffly-card-value { min-width: 0; padding-top: 6px; }
         .shuffly-card-frequency { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; padding-top: 0; }
-        .shuffly-card-frequency s-select { width: 220px; max-width: 100%; }
         .shuffly-card-stack { display: flex; flex-direction: column; gap: 6px; padding-top: 0; }
         .shuffly-card-inline { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
         .shuffly-card-window { width: 110px; }
@@ -2171,7 +2145,6 @@ export default function Collections() {
           .shuffly-card-grid { grid-template-columns: minmax(0, 1fr); row-gap: 4px; }
           .shuffly-card-label { padding-top: 8px; }
           .shuffly-card-footer, .shuffly-card-preset { flex-direction: column; align-items: stretch; }
-          .shuffly-card-frequency s-select { width: 100%; }
         }
 
         .shuffly-status-row {
@@ -2547,7 +2520,7 @@ function StatusRow({
   runningCount: number;
   nextRunLabel: string | null;
   nextRunAtMs: number | null;
-  lastBatch: { totalMoved: number; anyFailed: boolean; failedTitles: string[]; at: Date } | null;
+  lastBatch: { totalMoved: number; anyFailed: boolean; failedTitles: string[]; at: Date; atLabel: string } | null;
   totalProductsInRotation: number;
   productsActuallyMoving: number;
   trackedTotal: number;
@@ -2574,7 +2547,7 @@ function StatusRow({
   const lastNightDetail = lastBatch
     ? lastNightCritical
       ? `Failed: ${lastBatch.failedTitles.slice(0, 2).join(", ")}${lastBatch.failedTitles.length > 2 ? "…" : ""}`
-      : `${formatClock(lastBatch.at)} · nothing failed`
+      : `${lastBatch.atLabel} · nothing failed`
     : "The first scheduled run will show up here";
 
   const rotationTone = TONE_TOKENS.info;
@@ -2668,9 +2641,6 @@ function formatCountdown(ms: number): string {
   return `in ${minutes}m`;
 }
 
-function formatClock(d: Date): string {
-  return new Intl.DateTimeFormat("en-US", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(d);
-}
 
 // ---- inline attention strip ----
 
