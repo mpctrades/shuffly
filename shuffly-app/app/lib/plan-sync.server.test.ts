@@ -21,7 +21,7 @@ vi.mock("./plans.server", () => ({
   enforcePlanEntitlements: mocks.enforceEntitlements,
 }));
 
-import { syncPlanIfStale } from "./billing.server";
+import { syncPlanFromAdmin, syncPlanIfStale } from "./billing.server";
 
 const SHOP = "shuffly-test.myshopify.com";
 const NOW = new Date("2026-09-09T12:00:00Z");
@@ -85,7 +85,7 @@ describe("syncPlanIfStale", () => {
     // The clamps are the whole point: 80 collections on Free must not keep
     // shuffling, and a Free shop must not keep pins or a daily cadence.
     expect(mocks.enforceCap).toHaveBeenCalledWith(SHOP, "FREE");
-    expect(mocks.enforceEntitlements).toHaveBeenCalledWith(SHOP, "FREE");
+    expect(mocks.enforceEntitlements).toHaveBeenCalledWith(SHOP, "FREE", expect.any(String));
   });
 
   it("reconciles a downgrade between paid tiers too", async () => {
@@ -94,7 +94,8 @@ describe("syncPlanIfStale", () => {
 
     const result = await syncPlanIfStale(SHOP, billing, { now: NOW });
     expect(result).toEqual({ planId: "STARTER", changed: true });
-    expect(mocks.enforceEntitlements).toHaveBeenCalledWith(SHOP, "STARTER");
+    // The previous plan is passed so the downgrade notice can say "Pro → Starter".
+    expect(mocks.enforceEntitlements).toHaveBeenCalledWith(SHOP, "STARTER", "PRO");
   });
 
   it("does not pause or rewrite anything when the plan has not moved", async () => {
@@ -127,5 +128,39 @@ describe("syncPlanIfStale", () => {
     mocks.findUnique.mockResolvedValue(null);
     expect(await syncPlanIfStale(SHOP, billing, { now: NOW })).toBeNull();
     expect(mocks.check).not.toHaveBeenCalled();
+  });
+});
+
+describe("syncPlanFromAdmin (webhook + sweep path)", () => {
+  type AdminArg = Parameters<typeof syncPlanFromAdmin>[1];
+  const adminWith = (subs: Array<{ id: string; name: string; status?: string }>) =>
+    ({
+      graphql: vi.fn(async () => ({ json: async () => ({ data: { currentAppInstallation: { activeSubscriptions: subs } } }) })),
+    }) as unknown as AdminArg & { graphql: ReturnType<typeof vi.fn> };
+
+  it("skips Shopify while the cached plan is younger than an hour", async () => {
+    mocks.findUnique.mockResolvedValue({ plan: "PRO", planUpdatedAt: FRESH });
+    const admin = adminWith([]);
+    expect(await syncPlanFromAdmin(SHOP, admin, { now: NOW })).toBeNull();
+    expect(admin.graphql).not.toHaveBeenCalled();
+  });
+
+  it("applies a downgrade it finds, with the previous plan", async () => {
+    mocks.findUnique.mockResolvedValue({ plan: "PRO", planUpdatedAt: new Date(NOW.getTime() - 2 * 3_600_000) });
+    const result = await syncPlanFromAdmin(SHOP, adminWith([{ id: "gid://shopify/AppSubscription/2", name: "Starter", status: "ACTIVE" }]), { now: NOW });
+    expect(result).toEqual({ planId: "STARTER", changed: true });
+    expect(mocks.enforceEntitlements).toHaveBeenCalledWith(SHOP, "STARTER", "PRO");
+  });
+
+  it("the webhook forces a re-check even when the cache is fresh", async () => {
+    mocks.findUnique.mockResolvedValue({ plan: "PRO", planUpdatedAt: FRESH });
+    const result = await syncPlanFromAdmin(SHOP, adminWith([]), { now: NOW, force: true });
+    expect(result).toEqual({ planId: "FREE", changed: true });
+  });
+
+  it("ignores a subscription that isn't active (cancelled/frozen)", async () => {
+    mocks.findUnique.mockResolvedValue({ plan: "PRO", planUpdatedAt: STALE });
+    const result = await syncPlanFromAdmin(SHOP, adminWith([{ id: "x", name: "Pro", status: "FROZEN" }]), { now: NOW, force: true });
+    expect(result?.planId).toBe("FREE");
   });
 });

@@ -157,6 +157,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     // Same helper the embedded layout uses, so the two can't reconcile
     // differently.
     const { appSubscriptions } = await billing.check({ isTest: true });
+    // Read before reconciling, so a downgrade notice can say what it was.
+    const previousPlan = planOf(
+      (await db.shopSettings.findUnique({ where: { shop }, select: { plan: true } }))?.plan,
+    ).id;
     const reconciled = await reconcilePlanFromSubscriptions(
       shop,
       appSubscriptions.map((s) => ({
@@ -174,7 +178,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     subscriptionId = reconciled.subscriptionId;
     billingSummary = reconciled.billing;
     await enforcePlanCollectionCap(shop, planId);
-    await enforcePlanEntitlements(shop, planId);
+    await enforcePlanEntitlements(shop, planId, previousPlan);
     await pruneExpiredUndoSnapshots(shop, planId);
   } catch (err) {
     // Fall back to whatever we last knew — better than a blank page.

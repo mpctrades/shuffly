@@ -36,6 +36,13 @@ api_version = "2026-07"
   uri = "https://shuffly-app.mpctrades.com/webhooks/shop/update"
   topics = [ "shop/update" ]
 
+  # Plan changes made in Shopify admin (upgrade, downgrade, cancel) are applied
+  # straight away instead of on the merchant's next visit, so a Pro schedule
+  # can't keep running hourly after a downgrade. No extra scope needed.
+  [[webhooks.subscriptions]]
+  uri = "https://shuffly-app.mpctrades.com/webhooks/app/subscriptions_update"
+  topics = [ "app_subscriptions/update" ]
+
   # Mandatory compliance webhooks — required even though Shuffly never
   # touches customer data, per https://shopify.dev/docs/apps/build/privacy-law-compliance
   # These three use `compliance_topics`, not `topics`, and share one URI.

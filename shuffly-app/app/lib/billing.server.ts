@@ -246,10 +246,65 @@ export async function syncPlanIfStale(
     })),
   );
 
-  const changed = reconciled.planId !== previous;
+  return applyPlanChange(shop, previous, reconciled.planId);
+}
+
+/** Run the clamps only when the plan actually moved: they pause collections
+ * and rewrite schedules, which is not something to do speculatively. */
+async function applyPlanChange(
+  shop: string,
+  previous: PlanId,
+  next: PlanId,
+): Promise<{ planId: PlanId; changed: boolean }> {
+  const changed = next !== previous;
   if (changed) {
-    await enforcePlanCollectionCap(shop, reconciled.planId);
-    await enforcePlanEntitlements(shop, reconciled.planId);
+    await enforcePlanCollectionCap(shop, next);
+    await enforcePlanEntitlements(shop, next, previous);
   }
-  return { planId: reconciled.planId, changed };
+  return { planId: next, changed };
+}
+
+const ACTIVE_SUBSCRIPTIONS_QUERY = `#graphql
+  query ShufflyActiveSubscriptions {
+    currentAppInstallation {
+      activeSubscriptions { id name status currentPeriodEnd }
+    }
+  }`;
+
+/** How stale a cached plan may be before a *scheduled run* re-checks it.
+ * The sweep is the path that keeps running for a merchant who downgraded in
+ * Shopify admin and never opened the app again, so it can't rely on page
+ * loads — but asking Shopify on every hourly run of every collection would
+ * be wasteful when the app_subscriptions/update webhook normally gets there
+ * first. */
+export const RUN_PLAN_MAX_AGE_MS = 60 * 60_000;
+
+/**
+ * Re-check the plan with Shopify from a context that has an admin client but
+ * no `billing` helper: the app_subscriptions/update webhook and the
+ * scheduler sweep. Same source of truth as billing.check() — the app
+ * installation's active subscriptions — and the same reconcile-then-clamp.
+ */
+export async function syncPlanFromAdmin(
+  shop: string,
+  admin: Pick<AdminApiContext, "graphql">,
+  { force = false, now = new Date(), maxAgeMs = RUN_PLAN_MAX_AGE_MS }: { force?: boolean; now?: Date; maxAgeMs?: number } = {},
+): Promise<{ planId: PlanId; changed: boolean } | null> {
+  const settings = await db.shopSettings.findUnique({
+    where: { shop },
+    select: { plan: true, planUpdatedAt: true },
+  });
+  if (!settings) return null;
+  const fresh = settings.planUpdatedAt != null && now.getTime() - settings.planUpdatedAt.getTime() < maxAgeMs;
+  if (!force && fresh) return null;
+
+  const res = await admin.graphql(ACTIVE_SUBSCRIPTIONS_QUERY);
+  const json = await res.json();
+  const subs: ActiveSubscriptionLike[] = json.data?.currentAppInstallation?.activeSubscriptions ?? [];
+  const previous = planOf(settings.plan).id;
+  const reconciled = await reconcilePlanFromSubscriptions(
+    shop,
+    subs.filter((sub: ActiveSubscriptionLike & { status?: string }) => !sub.status || sub.status === "ACTIVE"),
+  );
+  return applyPlanChange(shop, previous, reconciled.planId);
 }
