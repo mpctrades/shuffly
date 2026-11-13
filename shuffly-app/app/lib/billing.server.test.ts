@@ -16,13 +16,14 @@ describe("planIdFromSubscriptionName", () => {
   it("maps the legacy Billing API names to the same PlanIds", () => {
     expect(planIdFromSubscriptionName("STARTER")).toBe("STARTER");
     expect(planIdFromSubscriptionName("PRO")).toBe("PRO");
-    expect(planIdFromSubscriptionName("AGENCY")).toBe("AGENCY");
+    // AGENCY was retired; an unknown plan name must never grant paid access.
+    expect(planIdFromSubscriptionName("AGENCY")).toBe("FREE");
   });
 
   it("ignores a billing-cycle suffix, so annual is the same plan", () => {
     expect(planIdFromSubscriptionName("STARTER_ANNUAL")).toBe("STARTER");
     expect(planIdFromSubscriptionName("PRO_ANNUAL")).toBe("PRO");
-    expect(planIdFromSubscriptionName("AGENCY_ANNUAL")).toBe("AGENCY");
+    expect(planIdFromSubscriptionName("AGENCY_ANNUAL")).toBe("FREE");
     expect(planIdFromSubscriptionName("Starter (yearly)")).toBe("STARTER");
     expect(planIdFromSubscriptionName("Pro — Annual")).toBe("PRO");
     expect(planIdFromSubscriptionName("Starter monthly")).toBe("STARTER");

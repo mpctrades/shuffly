@@ -10,7 +10,20 @@ generator client {
 // See https://www.prisma.io/docs/orm/reference/prisma-schema-reference#string for more information
 datasource db {
   provider = "sqlite"
-  url      = "file:dev.sqlite"
+  // The database file lives in prisma/data/, NOT directly in prisma/.
+  //
+  // That one level of nesting is load-bearing in production: the container
+  // persists the database with a Docker named volume, and a volume mounted
+  // at /app/prisma would shadow this schema and the migrations/ directory
+  // shipped in the image — so a deploy carrying a new migration would leave
+  // the container still running the migrations the volume was first seeded
+  // with, silently, with `migrate deploy` reporting "no pending migrations".
+  // Mounting prisma/data instead persists only the data and leaves the
+  // schema and migrations to come from the image, where they belong.
+  //
+  // Still a relative path, so local development and the container resolve it
+  // the same way.
+  url      = "file:data/dev.sqlite"
 }
 
 model Session {
@@ -40,20 +53,43 @@ model ShopSettings {
   id                  String    @id @default(cuid())
   shop                String    @unique
   timezone            String    @default("UTC")
-  defaultRunTime      String    @default("06:00") // "HH:MM", local to `timezone`
+  // The shop-wide DEFAULT schedule. Every collection whose own scheduleType
+  // is null follows these values live — they are never copied onto the
+  // collection row, so changing them here moves every inheriting collection.
+  //
+  // This replaced a `defaultRunTime` column, which was the old copy-forward
+  // seed: a time stamped onto each collection as it was added. Nothing seeds
+  // a new collection any more (it starts with a null schedule and inherits),
+  // so that column had no reader left and was dropped.
+  defaultScheduleType    String  @default("WEEKLY") // DAILY | TWICE_DAILY | WEEKLY | MANUAL | INTERVAL
+  defaultScheduleTime    String  @default("06:00") // "HH:MM", local to `timezone`
+  defaultScheduleTime2   String? // second slot, only meaningful when the type is TWICE_DAILY
+  defaultScheduleWeekday Int?    @default(1) // 0=Sunday..6=Saturday, only for WEEKLY
+  defaultIntervalHours   Int?      // 1|2|3|4|6|12, only when defaultScheduleType is INTERVAL (Pro)
+  defaultIntervalAnchorAt DateTime? // when that interval default was saved; inheriting collections
+                                    // run at anchor + k·interval plus a stable per-collection offset
   language            String    @default("en") // "en" | "fr"
   neverMoveTags       String    @default("gift-card,preorder,bundle") // comma-separated
   emailOnFailure      Boolean   @default(true)
   emailMonthlySummary Boolean   @default(true)
   emailMorningRun     Boolean   @default(false)
+  autoSwitchToManual  Boolean   @default(false) // "Switch automatically from now on, don't ask again" —
+                                                 // set from the add-collections dialog. Revocable on the
+                                                 // Settings page: a consent the merchant can't withdraw
+                                                 // isn't consent.
   onboardedAt         DateTime?
   pageSize            Int       @default(24) // products per page in the merchant's theme — Shopify's Admin
                                               // API has no way to read this, so it's a manual setting with
                                               // 24 (Shopify's common default) as the fallback. Drives every
                                               // "page 1" Insights metric.
-  plan                String    @default("FREE") // FREE | STARTER | PRO | AGENCY
+  plan                String    @default("FREE") // FREE | STARTER | PRO
   planUpdatedAt       DateTime?
   activeSubscriptionId String? // gid://shopify/AppSubscription/... — set once billing.check() confirms it
+  // What a plan change just did to this shop's collections (Update 2): JSON
+  // { from, to, at, changes: [...] }, shown as a dismissible banner until
+  // the merchant closes it. Null when there is nothing to tell them.
+  planNotice          String?
+  planNoticeDismissedAt DateTime?
   createdAt           DateTime  @default(now())
   updatedAt           DateTime  @updatedAt
 }
@@ -67,16 +103,74 @@ model CollectionConfig {
   productCount   Int       @default(0)
   status         String    @default("RUNNING") // RUNNING | PAUSED
   previousSortOrder String? // what Collection.sortOrder was before we switched it to MANUAL, if we did
+  originalOrder  String?  // The product order this collection had the moment it was added to Shuffly,
+                          // as a JSON array of NUMERIC product ids (the "gid://shopify/Product/" prefix
+                          // is stripped — it's a quarter of the bytes on a 2000-product collection).
+                          // Deliberately NOT the same thing as ShuffleRun.previousOrder: that is a
+                          // per-run snapshot which pruneExpiredUndoSnapshots deletes after the plan's
+                          // retention window (1 day on Free), so it cannot back a "restore what it looked
+                          // like before Shuffly" promise. This column is never pruned.
+  originalOrderAt DateTime? // when originalOrder was captured; null means we have no snapshot, and the
+                            // remove dialog says so rather than promising a restore it can't do.
   pins           Int       @default(0) // "pin the first N" — these never move
   pushSoldOutToEnd Boolean @default(true)
   boostNewArrivals Boolean @default(true)
   giveEveryoneATurn Boolean @default(true) // fairness: least-recently-featured first
   newArrivalDays Int       @default(14) // a product counts as "new" if created within N days
-  scheduleType   String    @default("DAILY") // DAILY | TWICE_DAILY | WEEKLY | MANUAL
-  scheduleTime   String    @default("06:00") // "HH:MM" local time
+  // Update 2 (Pro only; cleared on downgrade):
+  reshuffleOnNew Boolean  @default(false) // Feature B: reshuffle when new products are added
+  keepNewOnTop   Boolean  @default(false) // Feature C: new arrivals lead the order for newOnTopHours
+  newOnTopHours  Int      @default(48)    // 24 | 48 | 72 | 168
+  // When ProductSeen tracking started for this collection: the moment B or C
+  // was first turned on. Everything present then is a "baseline" product.
+  newTrackingSince DateTime?
+  // The "New arrivals" preset was clicked on a plan without it: applied
+  // automatically once the shop is on Pro (if within 14 days), then cleared.
+  pendingPresetAt  DateTime?
+  // Feature B polling state.
+  newCheckLastAt   DateTime? // last poll
+  newCheckCount    Int?      // productsCount at the last poll — the cheap pre-check
+  newFullScanAt    DateTime? // last full product-id scan (at least hourly, for swaps)
+  newPendingSince  DateTime? // first detection of the batch being debounced (10-min wait)
+  newPendingCount  Int      @default(0) // products added in that batch, for "(N added)"
+  lastNewTriggerAt DateTime? // last run this trigger started — at most one an hour
+  // NULL scheduleType means "follow the shop default" — it is the single
+  // inheritance flag, and the reason the other three are read only when it is
+  // set. Null is unambiguous here in a way "all four null" would not be:
+  // scheduleWeekday and scheduleTime2 are legitimately null on a daily
+  // schedule that a merchant genuinely chose.
+  scheduleType   String?   // DAILY | TWICE_DAILY | WEEKLY | MANUAL | INTERVAL, or null to inherit
+  scheduleTime   String?   // "HH:MM" local time — the first (or only) time slot
+  scheduleTime2  String?   // "HH:MM" local time for the SECOND slot, used only when
+                           // scheduleType=TWICE_DAILY (a Pro entitlement). Before
+                           // merchants could pick it, the second slot was derived as
+                           // scheduleTime + 12h; existing rows were backfilled to that
+                           // same value so nobody's schedule moved.
   scheduleWeekday Int?     // 0=Sunday..6=Saturday, used when scheduleType=WEEKLY
+  // INTERVAL ("every N hours", Pro, Update 2). Runs fall on
+  // intervalAnchorAt + k·intervalHours in absolute time (DST-immune). The
+  // anchor is the moment the merchant saved this interval; re-saving the
+  // same interval keeps it, so editing an unrelated setting never shifts runs.
+  intervalHours   Int?
+  intervalAnchorAt DateTime?
+  scheduleUpdatedAt DateTime? // when the merchant last changed any schedule field. The sweep's
+                              // grace window is only honoured for slots due AFTER this instant,
+                              // which is what tells "the worker was down, run it late" apart
+                              // from "the merchant just moved this slot into the past, don't
+                              // back-fire". Without it those two are indistinguishable.
+  // Set the moment a run discovers this collection is no longer on Manual
+  // sort, cleared by a successful run or by switching it back. The live
+  // sortOrder from the Admin API is the primary signal; this is what keeps
+  // the row honest between page loads and when hydration fails.
+  sortOrderIssueAt DateTime?
+  // One run at a time per collection (Update 2, brief §8): a lease taken
+  // with a conditional update by every path that writes this collection's
+  // order. Expires on its own, so a crash can't wedge the collection.
+  runLockedUntil DateTime?
+  runLockToken   String?
   lastRunAt      DateTime?
   lastSoldOutCount Int?    // sold-out products pushed to the end on the most recent run — real, not estimated
+  lastExcludedCount Int?   // products carrying a shop "never move" tag on the most recent run (card: "2 excluded")
   lastKnownOrder String?  // JSON array of product GIDs — exactly what we last wrote to Shopify, so the next
                           // run can tell whether a merchant has since dragged things around by hand
   nextRunAt      DateTime?
@@ -90,10 +184,33 @@ model CollectionConfig {
   exposures ProductExposure[]
   snapshots PositionSnapshot[]
   positions ProductPosition[]
+  slotClaims ShuffleSlotClaim[]
+  seenProducts ProductSeen[]
 
   @@unique([shop, collectionGid])
   @@index([shop])
   @@index([status, nextRunAt])
+}
+
+// One row per (collection, shop-local day, time slot) that a scheduled run
+// has been claimed for. The unique constraint IS the idempotency guard: the
+// cron sweep inserts the claim *before* it runs the shuffle, so a slot fires
+// exactly once per local calendar day per collection even when two sweeps
+// overlap, a sweep is retried, or the shop's wall clock repeats an hour on a
+// DST fall-back day. Rows older than the retention window are pruned by the
+// sweep itself — see pruneOldSlotClaims in cron.server.ts.
+model ShuffleSlotClaim {
+  id           String   @id @default(cuid())
+  shop         String
+  collectionId String
+  collection   CollectionConfig @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+  dateKey      String   // "YYYY-MM-DD" in the shop's own timezone
+  slot         Int      // 0 = first time slot, 1 = second (twice-daily's later run)
+  scheduledFor DateTime // the UTC instant this slot resolved to — kept for diagnosing DST edges
+  claimedAt    DateTime @default(now())
+
+  @@unique([collectionId, dateKey, slot])
+  @@index([shop, claimedAt])
 }
 
 // A single shuffle/reorder event — powers the Workspace "History" tab, the
@@ -101,15 +218,33 @@ model CollectionConfig {
 model ShuffleRun {
   id            String    @id @default(cuid())
   shop          String
-  collectionId  String
-  collection    CollectionConfig @relation(fields: [collectionId], references: [id], onDelete: Cascade)
-  trigger       String // SCHEDULED | MANUAL | SOLD_OUT_REACTION | RESTOCK_REACTION | EXTERNAL_REORDER_DETECTED | PAUSED | RESUMED
-  status        String // OK | FAILED
+  // Nullable, and SetNull rather than Cascade, specifically so the row a
+  // removal writes to explain what happened ("sort put back to Best
+  // selling", etc.) survives its own CollectionConfig being deleted right
+  // after — a Cascade here was destroying that row before it could ever be
+  // read. `collectionTitle` is the fallback label for exactly that case;
+  // every other trigger still reads the live `collection.title` and never
+  // sets it.
+  collectionId  String?
+  collection    CollectionConfig? @relation(fields: [collectionId], references: [id], onDelete: SetNull)
+  collectionTitle String? // set only by remove/bulk-remove, for after `collection` goes null
+  trigger       String // SCHEDULED | MANUAL | NEW_PRODUCTS | SOLD_OUT_REACTION | RESTOCK_REACTION | EXTERNAL_REORDER_DETECTED | PAUSED | RESUMED | SCHEDULE_CHANGED | SORT_CHANGED | SORT_RESTORED
+  status        String // OK | FAILED | SKIPPED
   movedCount    Int       @default(0)
   pinnedCount   Int       @default(0)
   soldOutCount  Int       @default(0)
   durationMs    Int       @default(0)
   message       String? // human-readable summary line, or error detail
+  // Why a run ended with movedCount 0, as a stable code (see lib/run-reason.ts)
+  // — never English, so the merchant-facing copy can change without a
+  // migration. Null on older runs and on any run that actually moved
+  // something, which is what lets those keep rendering as they always did.
+  noMoveReason  String? // BALANCED | ALL_SOLD_OUT | NONE_ELIGIBLE | TOO_FEW | NOT_MANUAL | FAILED
+  // Structured copy (Update 2): a stable code + JSON params, rendered in the
+  // merchant's language by the Activity feed. `message` stays as the English
+  // fallback, and is all that older rows have.
+  messageCode   String? // NEW_PRODUCTS | SKIPPED_IN_PROGRESS | PAUSED_SORT | PLAN_DOWNGRADE | ...
+  messageParams String? // JSON, e.g. {"added":12}
   previousOrder String? // JSON array of product GIDs, in order, before this run — used to Undo
   batchId       String? // shared by every collection shuffled in the same sweep (a cron tick, or one "Shuffle all now"), so the Activity feed can show them as a single entry
   createdAt     DateTime  @default(now())
@@ -183,4 +318,38 @@ model ProductPosition {
   @@index([shop, collectionId, dateKey])
   @@index([shop, dateKey])
   @@index([shop, productGid, dateKey])
+}
+
+// One row per webhook delivery we've acted on, keyed by Shopify's
+// X-Shopify-Webhook-Id — which stays the same when Shopify retries a
+// delivery. A second arrival of the same id is acknowledged and skipped, so a
+// retried sold-out webhook can't reorder a collection or log an Activity row
+// twice. Pruned after 7 days by the scheduler sweep; Shopify stops retrying
+// long before that.
+model ProcessedWebhook {
+  id         String   @id // X-Shopify-Webhook-Id
+  shop       String
+  topic      String
+  receivedAt DateTime @default(now())
+
+  @@index([receivedAt])
+  @@index([shop])
+}
+
+// first_seen_at per (collection, product) — Update 2, Features B and C.
+// Shopify doesn't expose when a product was added to a collection, so we
+// record when Shuffly first saw it there: every normal run and every
+// new-products poll writes the ids it hasn't seen. Products present when
+// tracking started are `baseline`: for those, "new" falls back to the
+// product's own createdAt, since we never saw them arrive. A product that
+// leaves the collection loses its row, so coming back counts as arriving.
+model ProductSeen {
+  collectionId     String
+  collection       CollectionConfig @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+  productId        String   // numeric id, without the gid://shopify/Product/ prefix
+  firstSeenAt      DateTime
+  baseline         Boolean  @default(false)
+  productCreatedAt DateTime? // the product's createdAt, cached for the baseline fallback
+
+  @@id([collectionId, productId])
 }

@@ -18,9 +18,13 @@
 import type { AdminApiContext } from "@shopify/shopify-app-react-router/server";
 import db from "../db.server";
 import { planOf, type PlanId } from "./plans";
+import { enforcePlanCollectionCap, enforcePlanEntitlements } from "./plans.server";
 
 // Keyed by *normalized* plan name (see normalizeSubscriptionName) so the
-// exact spelling Shopify reports doesn't matter. Today it happens to match
+// exact spelling Shopify reports doesn't matter. Anything not listed here
+// falls through to FREE (see planIdFromSubscriptionName), so a plan name this
+// app doesn't know can never silently grant paid entitlements. Today it
+// happens to match
 // anyway — the Partner Dashboard's "Plan name for merchant invoices", which
 // is what `billing.check()` reports, is `STARTER`, `PRO` and `Free` (the
 // plans' *display* names on the pricing page are different fields: "Free",
@@ -32,7 +36,6 @@ const SUBSCRIPTION_NAME_TO_PLAN: Record<string, PlanId> = {
   FREE: "FREE",
   STARTER: "STARTER",
   PRO: "PRO",
-  AGENCY: "AGENCY",
 };
 
 /** Case, spacing, punctuation and a trailing billing-cycle word are all
@@ -180,4 +183,128 @@ export function managedPricingUrl(shop: string, appHandle: string | null): strin
   if (!appHandle) return null;
   const storeHandle = shop.replace(/\.myshopify\.com$/i, "");
   return `https://admin.shopify.com/store/${storeHandle}/charges/${appHandle}/pricing_plans`;
+}
+
+/** Shape of the `billing` helper authenticate.admin hands back — only the
+ * one method this needs, so callers don't have to satisfy the whole type. */
+interface BillingLike {
+  check: (opts: { isTest: boolean }) => Promise<{
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- shopify-api's AppPlan union is wider than we use
+    appSubscriptions: Array<any>;
+  }>;
+}
+
+/** How long a cached plan is trusted before the next app page load re-checks
+ * it with Shopify. Short enough that a downgrade or a lapsed trial is
+ * corrected within the same session; long enough that browsing the app
+ * doesn't call billing.check() on every navigation. */
+const PLAN_MAX_AGE_MS = 15 * 60_000;
+
+/**
+ * Re-check the plan with Shopify and reconcile, unless the cached value is
+ * still fresh.
+ *
+ * This exists because reconciliation used to happen in exactly one place —
+ * the Plan page's loader. A shop that downgraded, or whose trial lapsed,
+ * therefore kept its paid collection cap, pins and undo retention
+ * indefinitely, because nothing recomputed them until somebody happened to
+ * open that one page. Running it from the embedded layout means any page
+ * does it.
+ *
+ * The cap and entitlement clamps only run when the plan actually moved:
+ * they pause collections and rewrite schedules, which is not something to
+ * do speculatively on every page load.
+ */
+export async function syncPlanIfStale(
+  shop: string,
+  billing: BillingLike,
+  { force = false, now = new Date() }: { force?: boolean; now?: Date } = {},
+): Promise<{ planId: PlanId; changed: boolean } | null> {
+  const settings = await db.shopSettings.findUnique({
+    where: { shop },
+    select: { plan: true, planUpdatedAt: true },
+  });
+  if (!settings) return null;
+
+  const fresh =
+    settings.planUpdatedAt != null &&
+    now.getTime() - settings.planUpdatedAt.getTime() < PLAN_MAX_AGE_MS;
+  if (!force && fresh) return null;
+
+  const previous = planOf(settings.plan).id;
+  // `isTest: true` means "also count test charges", not "create one" — a dev
+  // store, and any shop inside managed pricing's trial, holds a test
+  // subscription, and isTest:false would filter out the very plan they are on.
+  const { appSubscriptions } = await billing.check({ isTest: true });
+  const reconciled = await reconcilePlanFromSubscriptions(
+    shop,
+    appSubscriptions.map((sub) => ({
+      id: sub.id,
+      name: sub.name,
+      currentPeriodEnd: sub.currentPeriodEnd,
+      lineItems: sub.lineItems,
+    })),
+  );
+
+  return applyPlanChange(shop, previous, reconciled.planId);
+}
+
+/** Run the clamps only when the plan actually moved: they pause collections
+ * and rewrite schedules, which is not something to do speculatively. */
+async function applyPlanChange(
+  shop: string,
+  previous: PlanId,
+  next: PlanId,
+): Promise<{ planId: PlanId; changed: boolean }> {
+  const changed = next !== previous;
+  if (changed) {
+    await enforcePlanCollectionCap(shop, next);
+    await enforcePlanEntitlements(shop, next, previous);
+  }
+  return { planId: next, changed };
+}
+
+const ACTIVE_SUBSCRIPTIONS_QUERY = `#graphql
+  query ShufflyActiveSubscriptions {
+    currentAppInstallation {
+      activeSubscriptions { id name status currentPeriodEnd }
+    }
+  }`;
+
+/** How stale a cached plan may be before a *scheduled run* re-checks it.
+ * The sweep is the path that keeps running for a merchant who downgraded in
+ * Shopify admin and never opened the app again, so it can't rely on page
+ * loads — but asking Shopify on every hourly run of every collection would
+ * be wasteful when the app_subscriptions/update webhook normally gets there
+ * first. */
+export const RUN_PLAN_MAX_AGE_MS = 60 * 60_000;
+
+/**
+ * Re-check the plan with Shopify from a context that has an admin client but
+ * no `billing` helper: the app_subscriptions/update webhook and the
+ * scheduler sweep. Same source of truth as billing.check() — the app
+ * installation's active subscriptions — and the same reconcile-then-clamp.
+ */
+export async function syncPlanFromAdmin(
+  shop: string,
+  admin: Pick<AdminApiContext, "graphql">,
+  { force = false, now = new Date(), maxAgeMs = RUN_PLAN_MAX_AGE_MS }: { force?: boolean; now?: Date; maxAgeMs?: number } = {},
+): Promise<{ planId: PlanId; changed: boolean } | null> {
+  const settings = await db.shopSettings.findUnique({
+    where: { shop },
+    select: { plan: true, planUpdatedAt: true },
+  });
+  if (!settings) return null;
+  const fresh = settings.planUpdatedAt != null && now.getTime() - settings.planUpdatedAt.getTime() < maxAgeMs;
+  if (!force && fresh) return null;
+
+  const res = await admin.graphql(ACTIVE_SUBSCRIPTIONS_QUERY);
+  const json = await res.json();
+  const subs: ActiveSubscriptionLike[] = json.data?.currentAppInstallation?.activeSubscriptions ?? [];
+  const previous = planOf(settings.plan).id;
+  const reconciled = await reconcilePlanFromSubscriptions(
+    shop,
+    subs.filter((sub: ActiveSubscriptionLike & { status?: string }) => !sub.status || sub.status === "ACTIVE"),
+  );
+  return applyPlanChange(shop, previous, reconciled.planId);
 }

@@ -1,0 +1,14 @@
+{
+  "shuffly.mpctrades.com": {
+    "brand": "Shuffly",
+    "site": "shuffly.mpctrades.com"
+  },
+  "stockping-web.mpctrades.com": {
+    "brand": "StockPing",
+    "site": "stockping-web.mpctrades.com"
+  },
+  "www.stockping.mpctrades.com": {
+    "brand": "StockPing",
+    "site": "stockping-web.mpctrades.com"
+  }
+}

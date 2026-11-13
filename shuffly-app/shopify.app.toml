@@ -13,32 +13,54 @@ scopes = "read_products,write_products,read_inventory"
 [webhooks]
 api_version = "2026-07"
 
+# Webhooks are delivered to shuffly-app.mpctrades.com (same server, same app)
+# instead of the relative application_url host: that one-level name sits behind
+# Cloudflare's proxy, so Shopify's ~1 s delivery deadline is met at a nearby
+# edge instead of racing a ~700 ms handshake to the origin in Kuala Lumpur.
+# dev.shuffly.mpctrades.com can't be proxied — free Universal SSL doesn't
+# cover two-level subdomains (caused the 2026-10-05 outage).
+
   [[webhooks.subscriptions]]
-  uri = "/webhooks/app/uninstalled"
+  uri = "https://shuffly-app.mpctrades.com/webhooks/app/uninstalled"
   topics = [ "app/uninstalled" ]
 
   [[webhooks.subscriptions]]
-  uri = "/webhooks/app/scopes_update"
+  uri = "https://shuffly-app.mpctrades.com/webhooks/app/scopes_update"
   topics = [ "app/scopes_update" ]
+
+  # Every Shuffly schedule is a local wall-clock time read in the shop's own
+  # timezone, so a merchant moving their store timezone has to move their
+  # schedules with it. Without this the value was only refreshed when someone
+  # opened the Settings page. No extra scope: shop/update needs none.
+  [[webhooks.subscriptions]]
+  uri = "https://shuffly-app.mpctrades.com/webhooks/shop/update"
+  topics = [ "shop/update" ]
+
+  # Plan changes made in Shopify admin (upgrade, downgrade, cancel) are applied
+  # straight away instead of on the merchant's next visit, so a Pro schedule
+  # can't keep running hourly after a downgrade. No extra scope needed.
+  [[webhooks.subscriptions]]
+  uri = "https://shuffly-app.mpctrades.com/webhooks/app/subscriptions_update"
+  topics = [ "app_subscriptions/update" ]
 
   # Mandatory compliance webhooks — required even though Shuffly never
   # touches customer data, per https://shopify.dev/docs/apps/build/privacy-law-compliance
   # These three use `compliance_topics`, not `topics`, and share one URI.
   [[webhooks.subscriptions]]
-  uri = "/webhooks/compliance"
+  uri = "https://shuffly-app.mpctrades.com/webhooks/compliance"
   compliance_topics = [ "customers/data_request", "customers/redact", "shop/redact" ]
 
   # Powers the automatic sold-out / restocked reactions on the
   # Workspace and Activity screens.
   [[webhooks.subscriptions]]
-  uri = "/webhooks/products/update"
+  uri = "https://shuffly-app.mpctrades.com/webhooks/products/update"
   topics = [ "products/update" ]
 
   # Inventory quantities live on InventoryLevel. This is the reliable trigger
   # for automatic sold-out handling; the server resolves the item
   # back to its product and confirms total inventory before reordering.
   [[webhooks.subscriptions]]
-  uri = "/webhooks/inventory-levels/update"
+  uri = "https://shuffly-app.mpctrades.com/webhooks/inventory-levels/update"
   topics = [ "inventory_levels/update" ]
 
 [auth]

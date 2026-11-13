@@ -12,3 +12,55 @@ export async function getOrCreateShopSettings(admin: AdminApiContext, shop: stri
   }
   return settings;
 }
+
+/** When each shop's timezone was last confirmed live, in this process. */
+const lastConfirmedAt = new Map<string, number>();
+
+/**
+ * Re-confirm the shop's timezone against Shopify, and self-heal our cache.
+ *
+ * The timezone is Shopify's setting, not ours. We cache it on ShopSettings
+ * because every schedule calculation needs it on every request, and the
+ * `shop/update` webhook keeps that cache fresh — but a webhook that was
+ * missed, deferred or delivered while the app was down leaves the cache
+ * stale with nothing to correct it. A stale timezone is not a cosmetic bug:
+ * every "next run" a merchant is shown, and every time they pick, is a wall
+ * clock in it.
+ *
+ * So the screens that show or set shuffle times confirm it live and repair
+ * the row when it has moved. Returns the value the caller should actually
+ * use — the live one when Shopify answered, the cached one when it didn't,
+ * never a guess — plus a message for callers that have somewhere to show it.
+ *
+ * Deliberately never throws: a page must still render on the last known
+ * timezone if the Admin API is briefly unreachable.
+ */
+export async function confirmShopTimezone(
+  admin: AdminApiContext,
+  shop: string,
+  cached: string,
+  { maxAgeMs = 0, now = Date.now() }: { maxAgeMs?: number; now?: number } = {},
+): Promise<{ timezone: string; error: string | null }> {
+  // A caller that tolerates a few minutes' staleness skips the Admin API when
+  // this process confirmed (and, if needed, repaired) the cache recently —
+  // the Collections page re-runs its loader every 5s while a run is pending.
+  const confirmedAt = lastConfirmedAt.get(shop);
+  if (maxAgeMs > 0 && confirmedAt != null && now - confirmedAt < maxAgeMs) {
+    return { timezone: cached, error: null };
+  }
+  try {
+    const live = await getShopTimezone(admin);
+    if (!live) return { timezone: cached, error: null };
+    lastConfirmedAt.set(shop, now);
+    if (live !== cached) {
+      await db.shopSettings.update({ where: { shop }, data: { timezone: live } });
+    }
+    return { timezone: live, error: null };
+  } catch {
+    return {
+      timezone: cached,
+      error:
+        "Couldn't confirm your shop's timezone from Shopify just now — showing the last known value.",
+    };
+  }
+}

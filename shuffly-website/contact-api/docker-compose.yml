@@ -1,0 +1,10 @@
+services:
+  contact:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    # Localhost only: the host nginx that serves shuffly.mpctrades.com
+    # reverse-proxies /api/contact here. 3000/3002/3004 are taken on this box
+    # by deliveryby and shuffly-app.
+    ports:
+      - "127.0.0.1:3007:3007"

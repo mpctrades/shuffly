@@ -1,6 +1,8 @@
 import type { ActionFunctionArgs } from "react-router";
 import { authenticate } from "../shopify.server";
+import { runInBackground } from "../lib/background.server";
 import { reactToSoldOutProduct } from "../lib/sold-out-reaction.server";
+import { isDuplicateDelivery } from "../lib/webhook-dedupe.server";
 
 interface ProductUpdateVariant {
   inventory_management: string | null;
@@ -12,7 +14,7 @@ interface ProductUpdateVariant {
 // as soon as Shopify tells us a tracked product just ran out, we push it to
 // the end of every running collection that has "sold-out to the end" on.
 export const action = async ({ request }: ActionFunctionArgs) => {
-  const { shop, admin, payload } = await authenticate.webhook(request);
+  const { shop, admin, payload, topic, webhookId } = await authenticate.webhook(request);
   if (!admin) return new Response();
 
   const productGid: string | undefined = payload?.admin_graphql_api_id;
@@ -30,12 +32,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return new Response();
   }
 
-  try {
-    await reactToSoldOutProduct(admin, shop, productGid);
-  } catch (err) {
-    console.error(`[webhook:products/update] failed for ${shop}, product ${productGid}:`, err);
-    return new Response(null, { status: 500 });
-  }
+  // Recorded only here, where there's work to do — most product updates
+  // return above and never cost a write.
+  if (await isDuplicateDelivery(webhookId, shop, topic)) return new Response();
+
+  // Answer inside Shopify's 5-second window; the reorder runs afterwards.
+  runInBackground(`products/update ${shop} product ${productGid}`, () =>
+    reactToSoldOutProduct(admin, shop, productGid),
+  );
 
   return new Response();
 };

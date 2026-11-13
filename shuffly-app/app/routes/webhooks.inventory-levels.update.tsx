@@ -1,6 +1,9 @@
 import type { ActionFunctionArgs } from "react-router";
+import type { AdminApiContext } from "@shopify/shopify-app-react-router/server";
 
-import { reactToSoldOutProduct } from "../lib/sold-out-reaction.server";
+import { runInBackground } from "../lib/background.server";
+import { reactToSoldOutProduct, shopHasSoldOutReaction } from "../lib/sold-out-reaction.server";
+import { isDuplicateDelivery } from "../lib/webhook-dedupe.server";
 import { authenticate } from "../shopify.server";
 
 interface InventoryLevelUpdatePayload {
@@ -28,19 +31,43 @@ interface InventoryItemProductResponse {
 // an inventory item, not its product; fetch the current product aggregate so
 // multi-location and multi-variant products only move after all stock is gone.
 export const action = async ({ request }: ActionFunctionArgs) => {
-  const { shop, admin, payload } = await authenticate.webhook(request);
+  const { shop, admin, payload, topic, webhookId } = await authenticate.webhook(request);
   if (!admin) return new Response();
 
   const inventoryItemId = (payload as InventoryLevelUpdatePayload)
     ?.inventory_item_id;
   if (!inventoryItemId) return new Response();
 
+  // A retried delivery we've already acted on is acknowledged and skipped.
+  if (await isDuplicateDelivery(webhookId, shop, topic)) return new Response();
+
+  // Shopify gives us 5 seconds to answer, and the lookups below are several
+  // round trips to the Admin API — from our host that can blow the budget.
+  // Acknowledge now (the HMAC is already verified) and react afterwards; a
+  // missed reaction is corrected by the next scheduled shuffle anyway.
+  runInBackground(`inventory_levels/update ${shop} item ${inventoryItemId}`, () =>
+    reactToInventoryItem(admin, shop, inventoryItemId),
+  );
+  return new Response();
+};
+
+async function reactToInventoryItem(
+  admin: AdminApiContext,
+  shop: string,
+  inventoryItemId: number,
+): Promise<void> {
+  // Nothing opted in means nothing this webhook could move — skip the
+  // Admin API lookup entirely.
+  if (!(await shopHasSoldOutReaction(shop))) return;
+
   try {
     const response = await admin.graphql(
       `#graphql
       query InventoryItemProduct($id: ID!) {
         inventoryItem(id: $id) {
-          variants(first: 250) {
+          # An inventory item belongs to one variant in practice; 10 keeps
+          # headroom without paying query cost for 250 that never exist.
+          variants(first: 10) {
             nodes {
               product {
                 id
@@ -81,8 +108,5 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       `[webhook:inventory_levels/update] failed for ${shop}, inventory item ${inventoryItemId}:`,
       err,
     );
-    return new Response(null, { status: 500 });
   }
-
-  return new Response();
-};
+}

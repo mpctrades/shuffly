@@ -41,6 +41,23 @@ export async function recordProductPositions(
   const page1 = productsInOrder.slice(0, pageSize);
   if (page1.length === 0) return;
 
+  // One row per (collection, product, local day) — Update 2. Every metric
+  // reads ProductPosition at day granularity (which products held page 1 on
+  // which days, plus each one's latest availability), so a second run on the
+  // same day only needs to add the products that are new to page 1 today and
+  // refresh the rest. Before hourly schedules a product rarely appeared twice
+  // a day; at 24 runs a day the old row-per-run table grew 24x faster for no
+  // metric's benefit. "Since install" history is untouched.
+  const already = await db.productPosition.findMany({
+    where: { shop, collectionId, dateKey, productGid: { in: page1.map((p) => p.id) } },
+    select: { productGid: true },
+  });
+  if (already.length > 0) {
+    await db.productPosition.deleteMany({
+      where: { shop, collectionId, dateKey, productGid: { in: already.map((r) => r.productGid) } },
+    });
+  }
+
   await db.productPosition.createMany({
     data: page1.map((p, idx) => ({
       shop,
@@ -258,20 +275,20 @@ function daysBetweenTurnsFor(rows: Array<{ productGid: string; dateKey: string }
   return { value: median(gaps), hasData: gaps.length > 0 };
 }
 
-/** Standard pairwise-mean-difference form of the Gini coefficient — 0 means
- * perfectly even (every product has the same number of turns), 1 means
- * maximally uneven (one product has every turn, the rest have none). O(n²)
- * is fine here: even a large tracked catalogue is a few hundred products,
- * not the kind of scale that needs a sorted-cumulative-sum shortcut. */
-function giniCoefficient(values: number[]): number {
+/** Gini coefficient — 0 means perfectly even (every product has the same
+ * number of turns), 1 means maximally uneven (one product has every turn, the
+ * rest have none). The sorted form, equal to the pairwise mean difference
+ * Σ|xᵢ−xⱼ| / (2n·Σx) but O(n log n): the values here are every
+ * product-collection pair in the shop, and a few 2,000-product collections
+ * made the pairwise loop hundreds of millions of steps on the event loop. */
+export function giniCoefficient(values: number[]): number {
   const n = values.length;
   const sum = values.reduce((a, b) => a + b, 0);
   if (n === 0 || sum === 0) return 0;
-  let sumAbsDiff = 0;
-  for (let i = 0; i < n; i++) {
-    for (let j = 0; j < n; j++) sumAbsDiff += Math.abs(values[i] - values[j]);
-  }
-  return sumAbsDiff / (2 * n * sum);
+  const sorted = [...values].sort((a, b) => a - b);
+  let weighted = 0;
+  for (let i = 0; i < n; i++) weighted += (2 * (i + 1) - n - 1) * sorted[i];
+  return weighted / (n * sum);
 }
 
 function fairnessLabelFor(score: number): string {
