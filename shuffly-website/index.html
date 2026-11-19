@@ -350,6 +350,29 @@
     .diff-grid { grid-template-columns: 1fr; }
   }
 
+  /* ---------- use cases ---------- */
+  .uc-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 18px; }
+  .uc-card {
+    background: #fff; border: 1px solid #e6e2df; border-radius: 16px; padding: 24px;
+    display: flex; flex-direction: column; position: relative;
+    transition: border-color 0.22s ease, transform 0.22s ease, box-shadow 0.22s ease;
+  }
+  .uc-card:hover { border-color: var(--orange); transform: translateY(-2px); box-shadow: 0 6px 20px rgba(19,17,16,0.07); }
+  .uc-tag {
+    align-self: flex-start; font-size: 11px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--orange-dark); background: rgba(255,75,31,0.10); padding: 5px 10px; border-radius: 999px;
+  }
+  .uc-card h3 { margin-top: 14px; font-size: 18px; letter-spacing: -0.01em; }
+  .uc-card > p { margin-top: 8px; font-size: 14px; line-height: 1.6; color: #5f5b58; }
+  .uc-setup { margin-top: 18px; background: var(--grey-50); border: 1px solid var(--grey-200); border-radius: 12px; padding: 14px 16px; flex: 1; }
+  .uc-setup-label { font-size: 10.5px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; color: var(--grey-600); margin-bottom: 8px; }
+  .uc-setup ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+  .uc-setup li { font-size: 13.5px; font-weight: 600; display: flex; gap: 8px; align-items: baseline; }
+  .uc-setup li::before { content: "✓"; color: var(--orange-dark); font-weight: 800; flex: none; }
+  .uc-setup li span { font-weight: 500; color: var(--grey-500); }
+  .uc-plan { margin-top: 14px; font-size: 12px; font-weight: 700; color: var(--grey-500); }
+  @media (max-width: 760px) { .uc-grid { grid-template-columns: 1fr; } }
+
   /* ---------- comparison table ---------- */
   .table-wrap { overflow-x: auto; border: 1px solid var(--grey-200); border-radius: var(--radius); }
   table.compare { width: 100%; border-collapse: collapse; min-width: 640px; }
@@ -432,6 +455,11 @@
   }
   .price-trust span { display: inline-flex; align-items: center; gap: 6px; }
   .price-trust span::before { content: "✓"; color: var(--orange-dark); font-weight: 800; }
+  .price-included {
+    margin-top: 22px; padding: 16px 18px; border-radius: 12px; background: var(--grey-50); border: 1px solid var(--grey-200);
+    font-size: 13.5px; line-height: 1.6; color: var(--grey-600); max-width: 820px;
+  }
+  .price-included strong { color: var(--ink); }
   .price-disclaimer { margin-top: 14px; font-size: 12.5px; line-height: 1.5; color: var(--grey-500); max-width: 640px; }
 
   /* ---------- faq ---------- */
@@ -585,6 +613,7 @@
       <nav class="nav-links">
         <a href="#how-it-works">How it works</a>
         <a href="#features">Features</a>
+        <a href="#use-cases">Use cases</a>
         <a href="#insights">Insights</a>
         <a href="#pricing">Pricing</a>
         <a href="#faq">FAQ</a>
@@ -603,7 +632,7 @@
     <div class="hero-glow" aria-hidden="true"></div>
     <div class="wrap">
       <h1>Your collections, <em>fresh every morning.</em></h1>
-      <p class="lede">Shuffly reorders the products inside your Shopify collections — daily, weekly, or on a custom schedule — while pinned products stay put and sold-out items drop to the bottom.</p>
+      <p class="lede">Shuffly reorders the products inside your Shopify collections — every few hours, daily or weekly — while pinned products stay put, new arrivals get their moment, and sold-out items drop to the bottom the moment they sell out.</p>
       <p class="hero-tag">No theme code, no scripts, no speed cost.</p>
       <div class="hero-ctas">
         <a class="btn btn-primary" href="#contact">Get early access</a>
@@ -612,6 +641,7 @@
       <div class="hero-strip">
         <span><i class="dot"></i>Works with every theme</span>
         <span><i class="dot"></i>Nothing added to your storefront</span>
+        <span><i class="dot"></i>Every run can be undone</span>
         <span><i class="dot"></i>Uninstall-safe</span>
       </div>
     </div>
@@ -698,27 +728,27 @@
           <button type="button" class="hiw-step on" data-step="0">
             <span class="hiw-chip">1</span>
             <h3>Pick your collections</h3>
-            <p>Turn Shuffly on for one collection or many at once. Bulk-enable makes large catalogues quick to configure.</p>
+            <p>Add one collection or many at once, then press Shuffle on a real preview before anything is saved. Any collection that isn't on Manual sort is flagged and can be switched in one click.</p>
             <div class="hiw-step-chips">
-              <span>Bulk-enable</span><span>Large catalogues</span><span>Quick setup</span>
+              <span>Bulk add</span><span>Real preview first</span><span>One-click Manual sort</span>
             </div>
           </button>
 
           <button type="button" class="hiw-step" data-step="1">
             <span class="hiw-chip">2</span>
             <h3>Set the rules</h3>
-            <p>Pin your first few products so hero items never move, exclude tags that should stay put (gift cards, preorders, and bundles by default), and decide whether sold-out products get pushed to the end.</p>
+            <p>Pin your first few products so hero items never move, keep anything tagged gift-card, preorder or bundle exactly where it is (or your own tags), push sold-out products to the end, and give every other product a fair turn near the front.</p>
             <div class="hiw-step-chips">
-              <span>Pinning</span><span>Tag exclusions</span><span>Sold-out demotion</span>
+              <span>Pinning</span><span>Never-move tags</span><span>Sold-out to the end</span><span>Fair rotation</span>
             </div>
           </button>
 
           <button type="button" class="hiw-step" data-step="2">
             <span class="hiw-chip">3</span>
             <h3>Choose a schedule</h3>
-            <p>From every hour to weekly, or manual-only — set per collection, in your store's own timezone.</p>
+            <p>Every few hours (as often as hourly on Pro), every day at a time you pick, once a week, or only when you press Shuffle — set per collection, in your store's own timezone.</p>
             <div class="hiw-step-chips">
-              <span>Every hour</span><span>Daily</span><span>Weekly</span><span>Manual-only</span>
+              <span>Every 1–12 hours</span><span>Every day</span><span>Once a week</span><span>Manual only</span>
             </div>
           </button>
 
@@ -734,7 +764,7 @@
           <button type="button" class="hiw-step" data-step="4">
             <span class="hiw-chip">5</span>
             <h3>Every run is logged</h3>
-            <p>Last run, next run, how many products moved — and if anything looks wrong, a full undo is one click away.</p>
+            <p>Last run, next run, how many products moved — and if anything looks wrong, one click undoes it and pauses that collection so it doesn't reshuffle straight away.</p>
             <div class="hiw-step-chips">
               <span>Full history</span><span>Undo any run</span><span>Last &amp; next run</span>
             </div>
@@ -771,15 +801,19 @@
             <div class="hiw-panel" data-panel="1" aria-hidden="true">
               <div class="hiw-panel-label">Rules</div>
               <div class="hiw-toggle-row">
-                <span class="hiw-toggle-label">Pin top products</span>
+                <span class="hiw-toggle-label">Pin the first 2 products</span>
                 <span class="hiw-toggle on"></span>
               </div>
               <div class="hiw-toggle-row">
-                <span class="hiw-toggle-label">Exclude tagged products</span>
+                <span class="hiw-toggle-label">Push sold-out products to the end</span>
                 <span class="hiw-toggle on"></span>
               </div>
               <div class="hiw-toggle-row">
-                <span class="hiw-toggle-label">Boost new arrivals</span>
+                <span class="hiw-toggle-label">Give everyone a turn</span>
+                <span class="hiw-toggle on"></span>
+              </div>
+              <div class="hiw-toggle-row">
+                <span class="hiw-toggle-label">Keep new products on top for 48 h</span>
                 <span class="hiw-toggle"></span>
               </div>
               <div class="hiw-tiles-mini">
@@ -799,10 +833,10 @@
                 <div class="hiw-time-sub">America/New_York</div>
               </div>
               <div class="hiw-pill-row">
-                <span class="hiw-sched-pill selected">Daily</span>
-                <span class="hiw-sched-pill">Twice daily</span>
-                <span class="hiw-sched-pill">Weekly</span>
-                <span class="hiw-sched-pill">Manual</span>
+                <span class="hiw-sched-pill">Every few hours</span>
+                <span class="hiw-sched-pill selected">Every day</span>
+                <span class="hiw-sched-pill">Once a week</span>
+                <span class="hiw-sched-pill">Only when I press Shuffle</span>
               </div>
               <div class="hiw-next-run">Next run: <strong>tomorrow at 6:00 AM</strong></div>
             </div>
@@ -845,10 +879,10 @@
               </div>
               <div class="hiw-log-row">
                 <span class="hiw-dot hot"></span>
-                <span class="hiw-log-text">Manual shuffle — Clearance</span>
+                <span class="hiw-log-text">Triggered by new products (3 added) — New Arrivals</span>
                 <span class="hiw-log-time">Yesterday</span>
               </div>
-              <button type="button" class="hiw-undo-btn" tabindex="-1">Undo any run for 30 days</button>
+              <button type="button" class="hiw-undo-btn" tabindex="-1">Undo any run — up to 30 days back</button>
             </div>
 
           </div>
@@ -856,7 +890,7 @@
           <div class="footnote-strip">
             <span class="footnote-chip">Zero lines of theme code</span>
             <span class="footnote-chip">0 KB added to your page weight</span>
-            <span class="footnote-chip">2 permissions requested: read products, write products</span>
+            <span class="footnote-chip">3 permissions: read &amp; write products, read inventory</span>
           </div>
         </div>
       </div>
@@ -898,7 +932,7 @@
             </svg>
           </div>
           <h3>Control</h3>
-          <p>Pin your first N products so hero items never move. Exclude anything tagged gift-card, preorder, or bundle — or your own custom tags.</p>
+          <p>Pin your first few products so hero items never move. Anything tagged gift-card, preorder or bundle — or your own tags — keeps its exact slot. Each collection card shows what's pinned and excluded at a glance.</p>
         </div>
         <div class="diff-card">
           <div class="diff-icon" aria-hidden="true">
@@ -907,7 +941,7 @@
             </svg>
           </div>
           <h3>Freshness</h3>
-          <p>Sold-out products get pushed to the end automatically. Products created in the last 14 days get boosted toward the top instead of starting buried on page twelve.</p>
+          <p>Sold-out products drop to the end as soon as Shopify reports the stock change — no waiting for the next run. Products added in the last 14 days get boosted instead of starting buried on page twelve.</p>
         </div>
         <div class="diff-card featured">
           <div class="diff-icon" aria-hidden="true">
@@ -915,9 +949,9 @@
               <path d="M12 3v18M5 21h14M8 7h8M3 13a3 3 0 0 0 6 0l-3-6-3 6zM15 13a3 3 0 0 0 6 0l-3-6-3 6z"/>
             </svg>
           </div>
-          <div class="diff-kicker">Why it's worth paying for</div>
+          <div class="diff-kicker">Included on every plan</div>
           <h3>Fairness, measured</h3>
-          <p>Insights shows exactly how evenly turns are shared across a collection — not just that it happened, but who's waited longest and how fast a sold-out item actually got demoted.</p>
+          <p>Insights shows how evenly turns are shared across a collection, who's waited longest, and how fast a sold-out item got demoted — then lets you put the longest-waiting products first on the next run.</p>
         </div>
         <div class="diff-card">
           <div class="diff-icon" aria-hidden="true">
@@ -927,17 +961,86 @@
             </svg>
           </div>
           <h3>Honesty</h3>
-          <p>Off by default on every collection you haven't explicitly turned on. Every run is logged, visible, and can be undone.</p>
+          <p>Off on every collection you haven't added. If someone changes a collection's sort in Shopify, Shuffly pauses it instead of fighting you. Every run is logged and can be undone.</p>
         </div>
       </div>
     </div>
   </section>
 
-  <!-- 04 COMPARISON -->
-  <section style="background:var(--grey-50);">
+  <!-- 04 USE CASES -->
+  <section id="use-cases" style="background:var(--grey-50);">
     <div class="wrap">
       <div class="section-head">
-        <div class="section-num">04 — Market comparison</div>
+        <div class="section-num">04 — Use cases</div>
+        <h2 style="margin-top:10px; max-width:640px;">One app, set up for every kind of collection</h2>
+        <p class="diff-subhead">Each collection gets its own schedule and rules, so your new-in page, your sale page and your full catalogue can each behave the way they should.</p>
+      </div>
+      <div class="uc-grid">
+        <article class="uc-card">
+          <div class="uc-tag">New arrivals</div>
+          <h3>Keep the newest products leading</h3>
+          <p>New stock goes straight to the top and stays there for as long as you choose, then joins the rotation. Adding products triggers a reshuffle on its own.</p>
+          <div class="uc-setup">
+            <div class="uc-setup-label">One-click &ldquo;New arrivals&rdquo; setup</div>
+            <ul>
+              <li>Every 2 hours</li>
+              <li>Reshuffle when products are added</li>
+              <li>New products on top for 48 h <span>(24 h – 7 days)</span></li>
+            </ul>
+          </div>
+          <div class="uc-plan">Pro</div>
+        </article>
+        <article class="uc-card">
+          <div class="uc-tag">Big catalogues</div>
+          <h3>Give every product a turn on page one</h3>
+          <p>Fair rotation favours products that haven't been near the front for a while, so the long tail actually gets seen. Insights shows who's still waiting.</p>
+          <div class="uc-setup">
+            <div class="uc-setup-label">Suggested setup</div>
+            <ul>
+              <li>Every day at 6:00 AM, store time</li>
+              <li>Give everyone a turn</li>
+              <li>&ldquo;Put these first&rdquo; for the longest-waiting</li>
+            </ul>
+          </div>
+          <div class="uc-plan">Starter &amp; Pro</div>
+        </article>
+        <article class="uc-card">
+          <div class="uc-tag">Sale &amp; clearance</div>
+          <h3>Never lead with something you can't sell</h3>
+          <p>When a product sells out, Shuffly moves it to the end right after Shopify reports the change — not at the next scheduled run. Collections where everything's gone are flagged.</p>
+          <div class="uc-setup">
+            <div class="uc-setup-label">Suggested setup</div>
+            <ul>
+              <li>Push sold-out products to the end</li>
+              <li>Once a week, or any schedule</li>
+              <li>&ldquo;All sold out&rdquo; status on the card</li>
+            </ul>
+          </div>
+          <div class="uc-plan">Every plan</div>
+        </article>
+        <article class="uc-card">
+          <div class="uc-tag">Campaigns &amp; launches</div>
+          <h3>Lock the hero, freeze it when it matters</h3>
+          <p>Pin the campaign products at the top while the rest keeps moving. Running a promotion that needs a fixed order? Pause one collection, or every collection at once, and resume afterwards.</p>
+          <div class="uc-setup">
+            <div class="uc-setup-label">Suggested setup</div>
+            <ul>
+              <li>Pin the first few products</li>
+              <li>Pause all / Resume all</li>
+              <li>Undo any run if something looks off</li>
+            </ul>
+          </div>
+          <div class="uc-plan">Starter &amp; Pro</div>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <!-- 05 COMPARISON -->
+  <section>
+    <div class="wrap">
+      <div class="section-head">
+        <div class="section-num">05 — Market comparison</div>
         <h2 style="margin-top:10px;">How the alternatives stack up</h2>
       </div>
       <div class="table-wrap">
@@ -1026,9 +1129,9 @@
     <div class="wrap">
       <div class="insights-layout">
         <div>
-          <div class="section-num">05 — Insights</div>
+          <div class="section-num">06 — Insights</div>
           <h2 style="margin-top:10px;">Know if it's actually working</h2>
-          <p class="lede" style="margin-top:14px;">Every collection Shuffly touches gets measured, not just moved. Insights turns each run into a real answer to "is this fair, and is it working" — no spreadsheet required.</p>
+          <p class="lede" style="margin-top:14px;">Every collection Shuffly touches gets measured, not just moved. Insights turns each run into a real answer to "is this fair, and is it working" — no spreadsheet required, and it's included on every plan, Free too.</p>
           <div class="insights-list">
             <div class="insights-item">
               <div class="ico"><span></span></div>
@@ -1041,14 +1144,14 @@
               <div class="ico"><span></span></div>
               <div>
                 <h3>Typical &amp; longest wait</h3>
-                <p>The median gap between a product's turns, and exactly which product has been waiting longest for its next one.</p>
+                <p>The median gap between a product's turns, and exactly which products have waited longest — with one click to put them first on the next run.</p>
               </div>
             </div>
             <div class="insights-item">
               <div class="ico"><span></span></div>
               <div>
                 <h3>Sold-out reaction time</h3>
-                <p>Sold-out products are handled automatically after Shopify reports an inventory change.</p>
+                <p>How many seconds it took, on average, to move a product to the end after Shopify reported it sold out.</p>
               </div>
             </div>
             <div class="insights-item">
@@ -1077,7 +1180,7 @@
               </div>
               <div class="mock-tile">
                 <div class="bar"></div>
-                <div class="lbl">Longest wait</div>
+                <div class="lbl">Longest wait (all-time)</div>
                 <div class="val">11<span style="font-size:12px;font-weight:600;"> days</span></div>
                 <div class="dsc">Utility Cord 4m</div>
               </div>
@@ -1115,7 +1218,7 @@
   <section id="pricing">
     <div class="wrap">
       <div class="section-head">
-        <div class="section-num">06 — Pricing</div>
+        <div class="section-num">07 — Pricing</div>
         <h2 style="margin-top:10px;">Plans that scale with your catalogue</h2>
       </div>
       <div class="toggle-row">
@@ -1186,6 +1289,7 @@
         <span>Change plan instantly</span>
         <span>Billed through Shopify</span>
       </div>
+      <p class="price-included"><strong>Every plan includes</strong> Insights, instant sold-out handling, never-move tags, a real preview before your first shuffle, run history with undo (1 day on Free, 7 on Starter, 30 on Pro), and the app in English or French. Downgrading never deletes anything — collections over the new limit are paused, and we tell you which first.</p>
       <p class="price-disclaimer">Every paid plan is billed exclusively through Shopify's own Billing API, approved on Shopify's native charge screen when you install the app — this site never collects payment details or arranges pricing directly.</p>
     </div>
   </section>
@@ -1194,7 +1298,7 @@
   <section id="faq" style="background:var(--grey-50);">
     <div class="wrap">
       <div class="section-head">
-        <div class="section-num">07 — FAQ</div>
+        <div class="section-num">08 — FAQ</div>
         <h2 style="margin-top:10px;">Questions merchants actually ask</h2>
       </div>
 
@@ -1257,7 +1361,7 @@
             <span>What data can Shuffly see?</span><span class="faq-toggle"></span>
           </button>
           <div class="faq-panel" id="faq-panel-6" role="region" aria-labelledby="faq-btn-6">
-            <p>Two permissions: read products and write products. No access to orders, customers, discounts, or any financial data.</p>
+            <p>Three permissions: read and write products (to see your collections and set their order) and read inventory (so a product that sells out can drop to the end straight away). No access to orders, customers, discounts, your theme, or any financial data.</p>
           </div>
         </div>
 
@@ -1275,7 +1379,34 @@
             <span>Can I undo a run?</span><span class="faq-toggle"></span>
           </button>
           <div class="faq-panel" id="faq-panel-8" role="region" aria-labelledby="faq-btn-8">
-            <p>Yes. Every run is logged and can be undone — 1 day of history on Free, 7 days on Starter, 30 days on Pro.</p>
+            <p>Yes. Every run is logged and can be undone — 1 day of history on Free, 7 days on Starter, 30 days on Pro. Undoing also pauses that collection, so it doesn't reshuffle straight away while you take a look.</p>
+          </div>
+        </div>
+
+        <div class="faq-item" data-topic="how-it-works">
+          <button class="faq-q" id="faq-btn-10" aria-expanded="false" aria-controls="faq-panel-10">
+            <span>What if I reorder products myself?</span><span class="faq-toggle"></span>
+          </button>
+          <div class="faq-panel" id="faq-panel-10" role="region" aria-labelledby="faq-btn-10">
+            <p>Your changes stand until the next scheduled run, and pins are re-applied then. If you switch a collection away from Manual sort in Shopify, Shuffly pauses it instead of fighting you, and picks up again once it's back on Manual.</p>
+          </div>
+        </div>
+
+        <div class="faq-item" data-topic="how-it-works">
+          <button class="faq-q" id="faq-btn-11" aria-expanded="false" aria-controls="faq-panel-11">
+            <span>Can I stop it during a campaign?</span><span class="faq-toggle"></span>
+          </button>
+          <div class="faq-panel" id="faq-panel-11" role="region" aria-labelledby="faq-btn-11">
+            <p>Yes. Pause a single collection, pause every collection at once with Pause all, or switch a collection to &ldquo;Only when I press Shuffle&rdquo;. Resume whenever you're ready.</p>
+          </div>
+        </div>
+
+        <div class="faq-item" data-topic="billing">
+          <button class="faq-q" id="faq-btn-12" aria-expanded="false" aria-controls="faq-panel-12">
+            <span>What happens if I downgrade?</span><span class="faq-toggle"></span>
+          </button>
+          <div class="faq-panel" id="faq-panel-12" role="region" aria-labelledby="faq-btn-12">
+            <p>Nothing is deleted. Collections over your new plan's limit are paused, schedules your plan doesn't include are adjusted, and the app shows you exactly what changed. Plan changes take effect immediately, from the Plan page inside the app.</p>
           </div>
         </div>
 
