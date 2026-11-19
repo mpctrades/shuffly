@@ -15,8 +15,7 @@ contact-relay/, contact-api/   the /api/contact form relay (deployed separately)
 
 ## Launch switch: early access → live on the App Store
 
-Every install call to action (the nav button, the hero button, and the three
-pricing buttons) is controlled by one config block at the top of `<head>` in
+Every install call to action (the hero button and the three pricing buttons) is controlled by one config block at the top of `<head>` in
 `index.html`:
 
 ```js
