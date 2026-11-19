@@ -1,3 +1,8 @@
 .cache
 build
 node_modules
+# The SQLite database. Never bake a local dev database into the image: in
+# production the data lives in the shuffly_data volume mounted over this
+# path, so a copy in the image is at best dead weight and at worst dev data
+# shipped to a server.
+prisma/data

@@ -4,8 +4,40 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Shuffly — Random &amp; rotating collections for Shopify</title>
-<meta name="description" content="Shuffly reorders the products inside your Shopify collections on a schedule, server-side through Shopify's own API. No theme code, no scripts, no speed cost.">
-<link rel="icon" type="image/png" href="data:image/png;base64,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">
+<meta name="description" content="Shuffly reorders the products inside your Shopify collections on a schedule, through Shopify's own API. No theme code, no scripts, no speed cost.">
+<link rel="canonical" href="https://shuffly.mpctrades.com/">
+<meta name="theme-color" content="#131110">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Shuffly">
+<meta property="og:url" content="https://shuffly.mpctrades.com/">
+<meta property="og:title" content="Shuffly — Random &amp; rotating collections for Shopify">
+<meta property="og:description" content="Shuffly reorders the products inside your Shopify collections on a schedule, through Shopify's own API. No theme code, no scripts, no speed cost.">
+<meta property="og:image" content="https://shuffly.mpctrades.com/assets/og-image.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Shuffly — Your collections, fresh every morning.">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Shuffly — Random &amp; rotating collections for Shopify">
+<meta name="twitter:description" content="Shuffly reorders the products inside your Shopify collections on a schedule, through Shopify's own API. No theme code, no scripts, no speed cost.">
+<meta name="twitter:image" content="https://shuffly.mpctrades.com/assets/og-image.png">
+<link rel="apple-touch-icon" href="/assets/favicon.png">
+<link rel="icon" type="image/png" sizes="128x128" href="/assets/favicon.png">
+<script>
+  /* ===== Launch switch =====================================================
+     "early-access": the site as it is today (CTAs go to the contact form).
+     "live": every CTA reads "Install on Shopify" and opens APP_STORE_URL, and
+     the "submitted for review" lines are hidden. "live" only takes effect
+     when APP_STORE_URL is a real https:// link. See README.md. */
+  window.SHUFFLY_SITE = {
+    LAUNCH_MODE: "early-access",   // "early-access" | "live"
+    APP_STORE_URL: ""              // e.g. "https://apps.shopify.com/shuffly"
+  };
+  (function (c) {
+    var live = c.LAUNCH_MODE === "live" && /^https:\/\/\S+$/.test(c.APP_STORE_URL || "");
+    if (c.LAUNCH_MODE === "live" && !live) console.warn("Shuffly: LAUNCH_MODE is live but APP_STORE_URL is empty; staying in early-access.");
+    document.documentElement.setAttribute("data-launch", live ? "live" : "early-access");
+  })(window.SHUFFLY_SITE);
+</script>
 <style>
   :root {
     --ink: #131110;
@@ -76,6 +108,35 @@
   .btn-dark { background: var(--ink); color: #fff; }
   .btn-dark:hover { background: #000; }
 
+  /* ---------- launch switch ---------- */
+  html[data-launch="live"] [data-early-only] { display: none !important; }
+
+  /* ---------- screenshot slots ----------
+     A [data-shot] host keeps showing its drawn mock-up until the real image
+     at /assets/screenshots/*.png loads with real dimensions (the shipped
+     placeholders are 1x1, so they never count). The frame stays rendered
+     but invisible meanwhile, so loading="lazy" still fires. */
+  [data-shot] { position: relative; }
+  .shot-frame {
+    position: absolute; inset: 0; opacity: 0; pointer-events: none; z-index: -1;
+    margin: 0; background: #fff; border: 1px solid var(--grey-200); border-radius: 14px; overflow: hidden;
+    box-shadow: 0 24px 48px -24px rgba(19,17,16,0.22); display: flex; flex-direction: column;
+  }
+  .shot-bar { display: flex; align-items: center; gap: 6px; padding: 10px 14px; background: var(--grey-50); border-bottom: 1px solid var(--grey-200); flex: none; }
+  .shot-bar i { width: 9px; height: 9px; border-radius: 50%; background: var(--grey-300); }
+  .shot-bar span { margin-left: 8px; font-size: 11.5px; font-weight: 700; color: var(--grey-600); }
+  .shot-img { display: block; width: 100%; height: auto; flex: 1; min-height: 0; object-fit: cover; object-position: top left; }
+  .shot-cap { font-size: 11px; color: var(--grey-500); text-align: center; padding: 8px; border-top: 1px solid var(--grey-100); }
+  [data-shot]:not(.has-shot) > .shot-frame { opacity: 0 !important; }
+  [data-shot].has-shot > :not(.shot-frame) { display: none !important; }
+  [data-shot].has-shot > .shot-frame { opacity: 1; pointer-events: auto; z-index: auto; position: relative; inset: auto; }
+  /* Inside a how-it-works panel the frame fills the fixed-height card. */
+  .hiw-panel[data-shot].has-shot { padding: 0; border: none; box-shadow: none; background: transparent; }
+  .hiw-panel[data-shot].has-shot > .shot-frame { position: absolute; inset: 0; transition: none; transform: none; }
+  @media (max-width: 940px) {
+    .hiw-panel[data-shot].has-shot.on > .shot-frame { position: relative; height: 360px; }
+  }
+
   /* ---------- nav ---------- */
   header.nav {
     position: sticky;
@@ -92,7 +153,7 @@
     height: 64px;
     background: var(--ink);
     border-radius: 999px;
-    padding: 8px 8px 8px 22px;
+    padding: 8px 22px;
     box-shadow: 0 12px 30px -8px rgba(19,17,16,0.35), 0 0 0 1px rgba(255,255,255,0.06) inset;
   }
   .brand { display: flex; align-items: center; gap: 10px; font-weight: 800; font-size: 16px; letter-spacing: 0.06em; text-transform: uppercase; text-decoration: none; color: #fff; }
@@ -101,8 +162,6 @@
   .nav-links { display: flex; align-items: center; gap: 28px; }
   .nav-links a { font-size: 14px; font-weight: 600; text-decoration: none; color: rgba(255,255,255,0.68); transition: color 120ms ease; }
   .nav-links a:hover { color: #fff; }
-  .nav-cta { display: flex; align-items: center; gap: 14px; }
-  .nav-cta .btn-primary { height: 48px; padding: 0 22px; }
   .nav-toggle { display: none; }
 
   /* ---------- hero ---------- */
@@ -350,6 +409,29 @@
     .diff-grid { grid-template-columns: 1fr; }
   }
 
+  /* ---------- use cases ---------- */
+  .uc-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 18px; }
+  .uc-card {
+    background: #fff; border: 1px solid #e6e2df; border-radius: 16px; padding: 24px;
+    display: flex; flex-direction: column; position: relative;
+    transition: border-color 0.22s ease, transform 0.22s ease, box-shadow 0.22s ease;
+  }
+  .uc-card:hover { border-color: var(--orange); transform: translateY(-2px); box-shadow: 0 6px 20px rgba(19,17,16,0.07); }
+  .uc-tag {
+    align-self: flex-start; font-size: 11px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--orange-dark); background: rgba(255,75,31,0.10); padding: 5px 10px; border-radius: 999px;
+  }
+  .uc-card h3 { margin-top: 14px; font-size: 18px; letter-spacing: -0.01em; }
+  .uc-card > p { margin-top: 8px; font-size: 14px; line-height: 1.6; color: #5f5b58; }
+  .uc-setup { margin-top: 18px; background: var(--grey-50); border: 1px solid var(--grey-200); border-radius: 12px; padding: 14px 16px; flex: 1; }
+  .uc-setup-label { font-size: 10.5px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; color: var(--grey-600); margin-bottom: 8px; }
+  .uc-setup ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+  .uc-setup li { font-size: 13.5px; font-weight: 600; display: flex; gap: 8px; align-items: baseline; }
+  .uc-setup li::before { content: "✓"; color: var(--orange-dark); font-weight: 800; flex: none; }
+  .uc-setup li span { font-weight: 500; color: var(--grey-500); }
+  .uc-plan { margin-top: 14px; font-size: 12px; font-weight: 700; color: var(--grey-500); }
+  @media (max-width: 760px) { .uc-grid { grid-template-columns: 1fr; } }
+
   /* ---------- comparison table ---------- */
   .table-wrap { overflow-x: auto; border: 1px solid var(--grey-200); border-radius: var(--radius); }
   table.compare { width: 100%; border-collapse: collapse; min-width: 640px; }
@@ -361,6 +443,7 @@
   .mark-yes { color: var(--orange-dark); font-weight: 800; }
   .mark-no { color: var(--grey-500); }
   .mark-mid { color: var(--grey-600); }
+  .mark-varies { color: var(--grey-500); font-size: 12.5px; font-weight: 600; }
 
   /* ---------- insights spotlight ---------- */
   .insights-section { background: var(--grey-50); }
@@ -432,6 +515,11 @@
   }
   .price-trust span { display: inline-flex; align-items: center; gap: 6px; }
   .price-trust span::before { content: "✓"; color: var(--orange-dark); font-weight: 800; }
+  .price-included {
+    margin-top: 22px; padding: 16px 18px; border-radius: 12px; background: var(--grey-50); border: 1px solid var(--grey-200);
+    font-size: 13.5px; line-height: 1.6; color: var(--grey-600); max-width: 820px;
+  }
+  .price-included strong { color: var(--ink); }
   .price-disclaimer { margin-top: 14px; font-size: 12.5px; line-height: 1.5; color: var(--grey-500); max-width: 640px; }
 
   /* ---------- faq ---------- */
@@ -528,7 +616,28 @@
     transition: background-color 150ms ease;
   }
   .contact-submit:hover { background: var(--orange-dark); }
+  .contact-submit[disabled] { opacity: 0.65; cursor: default; }
+  .contact-submit[disabled]:hover { background: var(--orange); }
   .contact-note { grid-column: 1 / -1; margin: 2px 0 0; font-size: 12.5px; color: rgba(255,255,255,0.45); }
+  .contact-note a { color: rgba(255,255,255,0.7); text-decoration: underline; text-underline-offset: 2px; }
+  .contact-note a:hover { color: var(--orange); }
+
+  /* Submission feedback — hidden until the form actually reports back. */
+  .contact-status {
+    grid-column: 1 / -1; margin: 0; display: none; gap: 10px; align-items: flex-start;
+    border-radius: 10px; padding: 13px 15px; font-size: 14px; line-height: 1.5;
+    border: 1px solid transparent;
+  }
+  .contact-status.show { display: flex; }
+  .contact-status > span { flex: 1; min-width: 0; }
+  .contact-status.ok { background: rgba(255,255,255,0.06); border-color: rgba(255,255,255,0.16); color: #fff; }
+  .contact-status.ok::before { content: "✓"; color: var(--orange); font-weight: 800; flex: none; }
+  .contact-status.bad { background: rgba(255,75,31,0.10); border-color: rgba(255,75,31,0.45); color: #fff; }
+  .contact-status.bad::before { content: "!"; color: var(--orange); font-weight: 800; flex: none; }
+  .contact-status a { color: #fff; text-decoration: underline; text-underline-offset: 2px; }
+  .contact-status a:hover { color: var(--orange); }
+  /* Anti-spam honeypot: real people never see it, bots fill it in. */
+  .contact-hp { position: absolute; left: -9999px; width: 1px; height: 1px; overflow: hidden; }
 
   @media (max-width: 640px) {
     .contact-form { grid-template-columns: 1fr; }
@@ -561,18 +670,16 @@
     <div class="nav-row">
       <a class="brand" href="#top">
         <img class="brand-mark" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAYAAADDPmHLAAAS90lEQVR42u2deZBddZXHP+f3u+91estOJBA6ogwIKBYM6ihONY5oAXEZrekZFZdyyoXEZYZAUYgOYRF0BhQUSBAVZBlcWrEMoUWDTBoFBAEVMDFJB5JOQhayp/u9fu/d+zvzx+++7kfMTr/ud1/fX9Wrrup0pW//zvd79nOuMAxH52FYgpFuwsHvvWd6E6bhDUTuTWD+HtwJwHRgMirNCJb0VFwiEaL9qGwF1mFYgeqfwD6BDDwnizbkBn+0nYAzcXIF7pX+Wnllz4zQgZFOIgB935RWaDkLx/uBt6McS2CM/2EFrfianr1LQ2ToK0DoHMILwO8QFiLjFsvC5bsBtANLJ05ewY0eNgC0Azso+PfOOA61nwI+QmCOASBScAqK81hBkMHfJ6m098UpQD1V4jszGAE7CIi1wD1I9D25b13PnrKoOgB0HqasevTcV8/EcjGqnyAwzUQKkUbx/yyASWU6LMfFoAArFisQun6EHxDJtdK1es2esqkKALSdQLoJFSyz2i7EmEuwMonQgWoIYlN2j4SW0AiRgMBApNtx7uvc3/sNgagso2EHwKDwZ814PWJvIWPOoJQKfvSBYAIyAiX3CBqdL/eve+5QQGAOxtHTDqwXftt5GPso1pxB0YVeLUmQCn+0XEYJUFWKLsSaMzD2UZ3Vdp50E2oHVg9CLuaAXv48RDqJdNbMKwjs3ai0UnIRkAq+dmKHgJKLUGklsHfrrJmXSycR85ADgUAOJsTTWW03k7VzKLgIMBXefHpqyygo4GgwlmI0X+7v/dyBQkU5oM0/t20BDcH5FKMSkElvORGnRNZmKIQLpKt3zv58ArNf4Z8z8yoabCr85J0MxahEg52t58y8SroJtZ3goDRAOamg57Z9lKy9i5ILY3ufnuSdkIwJKEYfk67eu/eWMJK9JXn07LaTCMyToFkUkzp7CfYKBAdSJHSnywO9S/dMFpmXOX1LEW0nwModWGmMfywVfpIjBAdYacTKHdpOwNKXRwZDPkC5qNPcdgFZczqhC9OKXV1AwBK6kKw5nea2C6STiI4huUvMfgMos2YcBXYZQjPqa1LpDdaNKVCUfqx7HQvXbojrjc7E7BcfJ5pLyZjWuIKXCr+e9IDiyJhWIvmygNLh5SuDjt+5r56J6DJgXFqyreNSMwygcqJ0rV6j8zCGJe2xPdA5ZEwjEKXCr9uUcUTGNCI6G4Al7cb7AO96VTOZcSuxMh2nLq3jU799BUYMkW7AFI+TRRtyXtDZxneSNdPjZo5U+PV7DJFGZM10tOGsijDQfWDQU0xP/buDoLHMEW2fOY5mlmLl2FT9jyEz4PR5+jjZ0BKdgjATp6TCHyNmwMv61bREpxjUvIXAGPTwukrTk9AZhMAY1LzFIJyW3siY9QdOMygnoJomfsacK6iAHG+AGYMjCOkZK+KPYwGdEQATE6UBRIY+I/LIGo+zxZ+60gBMChAaaz76FwPGgIugVISw5D8jIRARsAFksv5jLDgH6kh8ZUBoDOKhjhoNWOJmpIEcFPLQ0AhHHAVHtsH0mTBpKjS1egGpDo9C0FjoUQi5PtixBTasgY298NJ6GMhDwzgY1xRH1UkGgtja7O0X8cLv3+0v+LUnw9vOgTe9A449EZrHj/wz5XbDC3+FJ5fAo13Q86zXTE2tXhsk0zyI6KyZtfXk1kKx4Fn/xrfBB8+Ht77bq99BlurIXbqIF7RU8CQswRMPws++A0//1muEhkavNZKGgJoCgA1g9w6YOh0+eQmc/ZGhi4+iPRzAkbaZFY6grbCai38Ct33Nm4jxkxIHgtoBgLWwYyv8w7vhwuth2tFDTDc12JjsoiHNsG0zXH8hPHwfTJziwUpS8sK1JPwPfAq+/mMv/CiMfYEaHTw2dshZnDwNrroLPvQF/3cYmwLgkNT+jq3QMQf+87q4Uun895NwbOC1lHMw+yr46FzYuTUxz29G/fJ2boN3dcDnr/FqlTgCSJQhjU1BFMGnL4NZH/NmwdoUAPuN8fN9cNzJcOENnkWj5eANZ+gahV6TveUsyPXXPJhH7+l8MQLmXg+NzXEiJ+HtCGXTlW3w+YoorPkMezB6qn8rfPAzcNLp/qKSYvP3JXgRr/JfWArfvgSeeRRaxsdmLQXAy1VlWISJU+HDX/TMNwlmfhQN2fqfLoA7/senkJsn1LzwRwcAxvpkz/v/FY442l9SgsKmIRMWD09ZC2uWw81fhscfhJYJPlXtkpELCEZFXWay3vNPanm1kvU/uwXuuBb6d3qt5qLECH/kASAGinmYeQK87rTY67cJY32cuFrbAzd9CX6/2LO+ZUIiawEjCwAjUBiAk98MQeblTEoS639xG9x2jTdlZdYnKP07iiZAvNo//o17zCvWOOs1Zv2Lq+HmS+GRLmgaD63JZP3oAUBj+3/0sUMRQRJYL8D9d8H3v+obRCYkm/WjBwDnfN188rTankCvLPtuWgvzvwLdC6GpBVonDjvrI/XWUeobABJrgIwHQa3Kf5D1Ar/+Mdx6BWzdCBOmDDvry69PsIGUV+vXMQAE/0fawDuAtYaAcu+BtbBlAyz4L3joXt/7N35yVVhvDUggPLC5yBuaLUc3WtTpiN5KOgs42NwR9x48dC987t3+6/hJcbQSDivrIwWbEXZGygXLc5zzTB+P7YrA+H+r/1pArbHeWNi+GW6ZB7/+CYxrrCrrbSAs3lLiop48f81HBEZ4ui/kX8iOkWJQrbDeWJ+Ievg+WHAZbFjtBa+uKqwPAqEvVC5flWP++gJWYGpG2FJSlufc4Lq2FAAjxfqd2+DWy+GX9/gS7oQp1WG9QJARlmwtMbcnz5/7I6ZkvKUvOQgENpUcRIqRFAAjw/pHH/Dh3bpVMeu1aqzPh8qVK3PcuL4AwBEZIdQhJ8wg9EVQdJA15aGdFADVYf3uHfC9q2DRnd7BqwLrXRzXBxnhkW2e9U/2RUwJfLAf6l4GkRQilPLGxlQDVIP1Tzzoy7arl3vBV5H1hUi5uifPDesGiCpZr6QdQSPGehfH9f274barfRHHWl/AqSLrH98RMndljt/vjpgcCGYP1qcAGCnWWwtPLfGsX/UXmDA59syGV/hhzPpSpPz383muW1ugqDrI+khJawEjzvqBHNz+Nbj3Vt+HUCXWS8z6p3aGzF2Z53e7QiYHQoORmmV9fQLAxSNk1sIzj8GNl8CKP3sPX6rEeis4Va59Ic/XegsUEsL6OgOAQuSGporvvBY653tAlFmv1WH9s7tC5vbkeWhHyKRAaE0I6+sHAJWs/8sffIvW0id9Dr88t1cF1oNyw5oBrl4zwO7Isz5KEOvrAwDlsm1Ygru/AT+60Qt8kPU6rKwnZv2y3RFze3L8envIxECYECSP9ckGgHM+3rIW/vpHuOkSePZx36iRHVdF1sPNvQNcuWaAnWGyWZ9cAJRZ7yK45wb/KRaGWD+M7diVrF/ZF3FhT577t5XqgvXJA0Dl6NXKZ7yt/9MjnvVNrVVl/a1rC8xbnWdbHbE+WQAos14Vfvhtb+8L+Zj10fCzHs/65/sjLurJs3BrifGBMKmOWJ8MAFSy/vmlnvVPdVeN9ZGCtb5Yc9v6Ape9kGdzSZkas74ehV+7AKgcwuic72P7XF9VRq+03KqYEXpznvX3binRaoXJdcr62gVA5ejVmhWe9U/8ZmjgsiotWoK1cNeLBb7y/AAbSq7uWT86ACgXvsPQx+4V+0r/hvU//y7c/nXo21l11q/POy7uyfGTl0q0jBHWj5IG0KHdAAO5ismwCtavWwU3XQqP/covV6jC6NVgY6YVfrShyJeez7Ou4JgyhljPqLWFG+N37W7ZOFSWFeM/C38Anz/bN21MnOrLucM8hFFux95YUj6xtJ+PL+tne6hMiQs4Y0z2owAAMV79r1/lw7pM1nfifuU8+OYFPqlTHr0axlRuFCsfmxF+urHI25/ezT2bikzKCFkZe6wfRScwlsSKZ/zXRXf6MesdL1Vt9Kps618acHxpeY47NxVpNDLI+rF+Rmc49LnH4Yp/h//7OTS2QOukqg5h/GJTkYtX5Vk14G29KqnwR2c8XH3//aZ1fsNGlYYwyqzfVnB8eUWO2zcWyRphag2yXuJryQgEI9wRPDp5AFUIAsgM/yKlStZ3vVTiop4cK/K1z3qH0mg8CEZ6ZDYYvT79Ktj6QNhVclzWk+c7LxbI1Cjr/2ZrnsKRWQNGcCM8HZT4lrDy6JXNCA9uKXHRqjzPlkevEmDrBf+Mr200EL8WyaTFoEMbwugPlctX+IFLkZePXiUlFj+txaa1gMMZuOzeWuLCVXn+2Dc0cJkk4ZcUJmeEt44PIG52SgFwkAOXX12Z41t7GbhMyrECO0PlXZMyzGyyOKfpePjBjF49uj1kbk+OP8SjV5LQbF7Z/n9sWmbI/qcaYB/CD4RipFyzKs831xaIGBrCSOLGWQP0R3BKs+V9R2TRULGS+gB7jRhNIDy1K+Q/VuZ4bFd54DLZqVwjkHPKxcc0MC4jRKUUAHt39gLh9hcLzFmRw1Z4+EluzAwEtoXKuZMD/u3ILG6U2F/zAJDY8zu5ydJsZXDTXJKPERhwMDUQvnVc09D6XBnLr43bz2VFkfLmyQHfPb6JnZGiCd5tZ2IAF5zy/ROaeE2LHfHMX+L2BFqBsKh84MgsNx3XyPZQcfH3kxbyRcCuUPnO8U2cMy1LWNJR/zuCpNjMsKR85phxZET4Qk8OI9BshFICTEJGoC9SBOGO1zXx4aMaCEtKIOmLIw8JBFFJ+eSMBha+oYXpWcPmkk+c1Ko2iHdCsbmktI0z/PKU5poSfuJWxdoYBP80OcNvT23l09Oz5J2yPY4HAxm9rdtlp9WKfw4FtpWUoipzjmrgt6e2csakDFENCb/23h5+iHV/rPDY9pAb1w+weFvItlDJCowzQqb8ovERSlGr+rz+gFOKClMC4ezJGb44o4HTJwYQqd9jIenbw4e9BwBgeV/EfVtLLN5eYlkuYmtJKbrBpvOqq9EGA1MyhpObDGdNyvDeqRn+rtnGzc86qprpQABwNf96Sw480GmsDMZZGwccqwYcqwccGwqOYpVavgVoNMKrssJrxhle02iZ1mDi5wAXZ6tM7d6uis5qK4EkvjHElTVC+fXDI025WCWpDr0BpPYdLC0FKHkMrUmfijAVTFMFF+qI/kmVmAskIaVIx0AAbEekFVVNsinYmzeenv3oKxEB3W6A9b43mbRTfuyI37+XRmSdQVgev74tBcDY0gCArjAoT6f3MWbPUwHG/Z5QHIJN72OMHMESOoe4xw277bPA6tiFdunt1P1xsaxXs9s+a6R7zQDow1jRFABjBABWFPRh6V4zEOcqzM9RBCUNnsaA+4ciiL13qBpYzP+GMNqIFZtqgbpnvyV0GyjkHgIw2t4eyOJN/ajcGWdPUgDUNwBAuUsWb+rX9vbAcGa3F3jEAsJoINYKaU6gHpU/WEouDzIfgDO7nZErcNqBlV+tWY3jdjLG4NvX0lNfJyJjBPR26Vq9RjuwcgWunAL0rH/fMdNxZhnQUk4WpvdWR64f9GHciSxcuyFeTeBMXDxxdGBk4doXUa5MtUBdst+gXCkL175IB0ZiX08q93fRgWEzQsvMxwjM6ZRclGYIE8/9iIyxhO5J+ta8lWkonbjyNiJTUUJVTkKlm5BIP0Gk+fhfU4cwyeI3QKR5lI9LNyEnoZWrqF7WtDLoED7QuxTnPktgbGoKEq76A2Nx7jPStWZZ2fFjf23h0kmk7QTS1XsXhehqsiYASuldJu6UyJqAQnS1dPXere0E0vm3ZN6nl6/tBNJNqOe2LaAhOJ9iVAIy6b0mRfg2QyG8Rbp6Z5dlySENhnQTaQdWunpnUwoXkDUZlCjtHKrxTh8lImsyFMIF0tU7WzuwdO/bjJv99NUpnTidh5FFvXMouKvIGIsRQVO/oCa9fSNCxlgK7irp6p2j8zCVHv8+R/APtN6ZDox0EumstvMwsgBjWgldCNg0WVQbu7MITIBzu3E6W+7v/V/twB5I+Ie0lXTQJ5g14/WIvYWMOYOSA9UQJAXCqAheI0QCMgZK7hHEfVbuW/uX/dn8wwYAgHZgpdOP5vGetgsQcylWJhEOAsEkeH9D8gQfGIh0O+quYVHv9ULst3UevIk+JGFJJ5HO84s7ZFHvdUScSqTzgX4yNsCIiR3FiLSszDDvk46G7LwNgH4inU/EqbKo9zohlk3noflnh622K5Gm751xHGo/jfAhjGlD4hFep+AXevihExn8fam52Lc9L89olO/M+Hclx1cWurXAD5Hou3Lfup49ZcHh7GF6Je//KDuI/kGOaGGg+Z0o/wz6jyjHEhgztCG84mt69i6N8ky7DArcIbwA/A7lF9i+B2Xh1t1lwR+Mo1c1AAwCYR6GJZhKx0PfM70JHfd6iN4M5jRwJwLTQcaj2oxIJtUElRG8loAcyHaEDaDLgafBPoEMPCeLNuQqHXLOxO2Z1j2c8/+QQPspAPb1uQAAAABJRU5ErkJggg==" alt="" width="26" height="26">
-        Shuffly<span class="dot">.</span>
+        <span>Shuffly<span class="dot">.</span></span>
       </a>
       <nav class="nav-links">
         <a href="#how-it-works">How it works</a>
         <a href="#features">Features</a>
+        <a href="#use-cases">Use cases</a>
         <a href="#insights">Insights</a>
         <a href="#pricing">Pricing</a>
         <a href="#faq">FAQ</a>
       </nav>
-      <div class="nav-cta">
-        <a class="btn btn-primary" href="#contact">Get in touch <span aria-hidden="true">&rarr;</span></a>
-      </div>
     </div>
   </div>
 </header>
@@ -584,15 +691,16 @@
     <div class="hero-glow" aria-hidden="true"></div>
     <div class="wrap">
       <h1>Your collections, <em>fresh every morning.</em></h1>
-      <p class="lede">Shuffly reorders the products inside your Shopify collections — daily, weekly, or on a custom schedule — while pinned products stay put and sold-out items drop to the bottom.</p>
+      <p class="lede">Shuffly reorders the products inside your Shopify collections — every few hours, daily or weekly — while pinned products stay put, new arrivals get their moment, and sold-out items drop to the bottom without waiting for the next run.</p>
       <p class="hero-tag">No theme code, no scripts, no speed cost.</p>
       <div class="hero-ctas">
-        <a class="btn btn-primary" href="#contact">Get early access</a>
+        <a class="btn btn-primary" href="#contact" data-cta>Get early access</a>
         <a class="btn btn-ghost" href="#how-it-works">See how it works</a>
       </div>
       <div class="hero-strip">
         <span><i class="dot"></i>Works with every theme</span>
         <span><i class="dot"></i>Nothing added to your storefront</span>
+        <span><i class="dot"></i>Every run can be undone</span>
         <span><i class="dot"></i>Uninstall-safe</span>
       </div>
     </div>
@@ -679,27 +787,27 @@
           <button type="button" class="hiw-step on" data-step="0">
             <span class="hiw-chip">1</span>
             <h3>Pick your collections</h3>
-            <p>Turn Shuffly on for one collection or many at once. Bulk-enable makes large catalogues quick to configure.</p>
+            <p>Add one collection or many at once, then press Shuffle on a real preview before anything is saved. Any collection that isn't on Manual sort is flagged and can be switched in one click.</p>
             <div class="hiw-step-chips">
-              <span>Bulk-enable</span><span>Large catalogues</span><span>Quick setup</span>
+              <span>Bulk add</span><span>Real preview first</span><span>One-click Manual sort</span>
             </div>
           </button>
 
           <button type="button" class="hiw-step" data-step="1">
             <span class="hiw-chip">2</span>
             <h3>Set the rules</h3>
-            <p>Pin your first few products so hero items never move, exclude tags that should stay put (gift cards, preorders, and bundles by default), and decide whether sold-out products get pushed to the end.</p>
+            <p>Pin your first few products so hero items never move, keep anything tagged gift-card, preorder or bundle exactly where it is (or your own tags), push sold-out products to the end, and give every other product a fair turn near the front.</p>
             <div class="hiw-step-chips">
-              <span>Pinning</span><span>Tag exclusions</span><span>Sold-out demotion</span>
+              <span>Pinning</span><span>Never-move tags</span><span>Sold-out to the end</span><span>Fair rotation</span>
             </div>
           </button>
 
           <button type="button" class="hiw-step" data-step="2">
             <span class="hiw-chip">3</span>
             <h3>Choose a schedule</h3>
-            <p>Daily, twice a day, weekly, or manual-only — in your store's own timezone, at the time you pick.</p>
+            <p>Every few hours (as often as hourly on Pro), every day at a time you pick, once a week, or only when you press Shuffle — set per collection, in your store's own timezone.</p>
             <div class="hiw-step-chips">
-              <span>Daily</span><span>Twice a day</span><span>Weekly</span><span>Manual-only</span>
+              <span>Every 1–12 hours</span><span>Every day</span><span>Once a week</span><span>Manual only</span>
             </div>
           </button>
 
@@ -715,7 +823,7 @@
           <button type="button" class="hiw-step" data-step="4">
             <span class="hiw-chip">5</span>
             <h3>Every run is logged</h3>
-            <p>Last run, next run, how many products moved — and if anything looks wrong, a full undo is one click away.</p>
+            <p>Last run, next run, how many products moved — and if anything looks wrong, one click undoes it and pauses that collection so it doesn't reshuffle straight away.</p>
             <div class="hiw-step-chips">
               <span>Full history</span><span>Undo any run</span><span>Last &amp; next run</span>
             </div>
@@ -725,7 +833,7 @@
         <div class="hiw-right">
           <div class="hiw-stage">
 
-            <div class="hiw-panel on" data-panel="0" aria-hidden="true">
+            <div class="hiw-panel on" data-panel="0" aria-hidden="true" data-shot>
               <div class="hiw-panel-label">Collections</div>
               <div class="hiw-row">
                 <span class="hiw-check on"></span>
@@ -747,20 +855,29 @@
                 <span class="hiw-row-name">Clearance</span>
                 <span class="hiw-row-count">7 products</span>
               </div>
+              <figure class="shot-frame">
+                <div class="shot-bar"><i></i><i></i><i></i><span>Shopify admin · Shuffly · Collections</span></div>
+                <img class="shot-img" src="/assets/screenshots/collections.png" width="1600" height="1000" loading="lazy" decoding="async"
+                     alt="Shuffly's Collections page in Shopify admin: tracked collections with their schedule, pinned products and next shuffle time">
+              </figure>
             </div>
 
             <div class="hiw-panel" data-panel="1" aria-hidden="true">
               <div class="hiw-panel-label">Rules</div>
               <div class="hiw-toggle-row">
-                <span class="hiw-toggle-label">Pin top products</span>
+                <span class="hiw-toggle-label">Pin the first 2 products</span>
                 <span class="hiw-toggle on"></span>
               </div>
               <div class="hiw-toggle-row">
-                <span class="hiw-toggle-label">Exclude tagged products</span>
+                <span class="hiw-toggle-label">Push sold-out products to the end</span>
                 <span class="hiw-toggle on"></span>
               </div>
               <div class="hiw-toggle-row">
-                <span class="hiw-toggle-label">Boost new arrivals</span>
+                <span class="hiw-toggle-label">Give everyone a turn</span>
+                <span class="hiw-toggle on"></span>
+              </div>
+              <div class="hiw-toggle-row">
+                <span class="hiw-toggle-label">Keep new products on top for 48 h</span>
                 <span class="hiw-toggle"></span>
               </div>
               <div class="hiw-tiles-mini">
@@ -780,10 +897,10 @@
                 <div class="hiw-time-sub">America/New_York</div>
               </div>
               <div class="hiw-pill-row">
-                <span class="hiw-sched-pill selected">Daily</span>
-                <span class="hiw-sched-pill">Twice daily</span>
-                <span class="hiw-sched-pill">Weekly</span>
-                <span class="hiw-sched-pill">Manual</span>
+                <span class="hiw-sched-pill">Every few hours</span>
+                <span class="hiw-sched-pill selected">Every day</span>
+                <span class="hiw-sched-pill">Once a week</span>
+                <span class="hiw-sched-pill">Only when I press Shuffle</span>
               </div>
               <div class="hiw-next-run">Next run: <strong>tomorrow at 6:00 AM</strong></div>
             </div>
@@ -826,10 +943,10 @@
               </div>
               <div class="hiw-log-row">
                 <span class="hiw-dot hot"></span>
-                <span class="hiw-log-text">Manual shuffle — Clearance</span>
+                <span class="hiw-log-text">Triggered by new products (3 added) — New Arrivals</span>
                 <span class="hiw-log-time">Yesterday</span>
               </div>
-              <button type="button" class="hiw-undo-btn" tabindex="-1">Undo any run for 30 days</button>
+              <button type="button" class="hiw-undo-btn" tabindex="-1">Undo any run — up to 30 days back</button>
             </div>
 
           </div>
@@ -837,7 +954,7 @@
           <div class="footnote-strip">
             <span class="footnote-chip">Zero lines of theme code</span>
             <span class="footnote-chip">0 KB added to your page weight</span>
-            <span class="footnote-chip">2 permissions requested: read products, write products</span>
+            <span class="footnote-chip">3 permissions: read &amp; write products, read inventory</span>
           </div>
         </div>
       </div>
@@ -879,7 +996,7 @@
             </svg>
           </div>
           <h3>Control</h3>
-          <p>Pin your first N products so hero items never move. Exclude anything tagged gift-card, preorder, or bundle — or your own custom tags.</p>
+          <p>Pin your first few products so hero items never move. Anything tagged gift-card, preorder or bundle — or your own tags — keeps its exact slot. Each collection card shows what's pinned and excluded at a glance.</p>
         </div>
         <div class="diff-card">
           <div class="diff-icon" aria-hidden="true">
@@ -888,7 +1005,7 @@
             </svg>
           </div>
           <h3>Freshness</h3>
-          <p>Sold-out products get pushed to the end automatically. Products created in the last 14 days get boosted toward the top instead of starting buried on page twelve.</p>
+          <p>Sold-out products drop to the end after Shopify reports the stock change — no waiting for the next run. Products added in the last 14 days get boosted instead of starting buried on page twelve.</p>
         </div>
         <div class="diff-card featured">
           <div class="diff-icon" aria-hidden="true">
@@ -896,9 +1013,9 @@
               <path d="M12 3v18M5 21h14M8 7h8M3 13a3 3 0 0 0 6 0l-3-6-3 6zM15 13a3 3 0 0 0 6 0l-3-6-3 6z"/>
             </svg>
           </div>
-          <div class="diff-kicker">Why it's worth paying for</div>
+          <div class="diff-kicker">Included on every plan</div>
           <h3>Fairness, measured</h3>
-          <p>Insights shows exactly how evenly turns are shared across a collection — not just that it happened, but who's waited longest and how fast a sold-out item actually got demoted.</p>
+          <p>Insights shows how evenly turns are shared across a collection, who's waited longest, and how fast a sold-out item got demoted — then lets you put the longest-waiting products first on the next run.</p>
         </div>
         <div class="diff-card">
           <div class="diff-icon" aria-hidden="true">
@@ -908,17 +1025,86 @@
             </svg>
           </div>
           <h3>Honesty</h3>
-          <p>Off by default on every collection you haven't explicitly turned on. Every run is logged, visible, and can be undone.</p>
+          <p>Off on every collection you haven't added. If someone changes a collection's sort in Shopify, Shuffly pauses it instead of fighting you. Every run is logged and can be undone.</p>
         </div>
       </div>
     </div>
   </section>
 
-  <!-- 04 COMPARISON -->
-  <section style="background:var(--grey-50);">
+  <!-- 04 USE CASES -->
+  <section id="use-cases" style="background:var(--grey-50);">
     <div class="wrap">
       <div class="section-head">
-        <div class="section-num">04 — Market comparison</div>
+        <div class="section-num">04 — Use cases</div>
+        <h2 style="margin-top:10px; max-width:640px;">One app, set up for every kind of collection</h2>
+        <p class="diff-subhead">Each collection gets its own schedule and rules, so your new-in page, your sale page and your full catalogue can each behave the way they should.</p>
+      </div>
+      <div class="uc-grid">
+        <article class="uc-card">
+          <div class="uc-tag">New arrivals</div>
+          <h3>Keep the newest products leading</h3>
+          <p>New stock goes straight to the top and stays there for as long as you choose, then joins the rotation. Adding products triggers a reshuffle 10–25 minutes later, so a bulk import is handled as one batch.</p>
+          <div class="uc-setup">
+            <div class="uc-setup-label">One-click &ldquo;New arrivals&rdquo; setup</div>
+            <ul>
+              <li>Every 2 hours</li>
+              <li>Reshuffle when products are added</li>
+              <li>New products on top for 48 h <span>(24 h – 7 days)</span></li>
+            </ul>
+          </div>
+          <div class="uc-plan">Pro</div>
+        </article>
+        <article class="uc-card">
+          <div class="uc-tag">Big catalogues</div>
+          <h3>Give every product a turn on page one</h3>
+          <p>Fair rotation favours products that haven't been near the front for a while, so the long tail actually gets seen. Insights shows who's still waiting.</p>
+          <div class="uc-setup">
+            <div class="uc-setup-label">Suggested setup</div>
+            <ul>
+              <li>Every day at 6:00 AM, store time</li>
+              <li>Give everyone a turn</li>
+              <li>&ldquo;Put these first&rdquo; for the longest-waiting</li>
+            </ul>
+          </div>
+          <div class="uc-plan">Starter &amp; Pro</div>
+        </article>
+        <article class="uc-card">
+          <div class="uc-tag">Sale &amp; clearance</div>
+          <h3>Never lead with something you can't sell</h3>
+          <p>When a product sells out, Shuffly moves it to the end after Shopify reports the change — not at the next scheduled run. Collections where everything's gone are flagged.</p>
+          <div class="uc-setup">
+            <div class="uc-setup-label">Suggested setup</div>
+            <ul>
+              <li>Push sold-out products to the end</li>
+              <li>Once a week, or any schedule</li>
+              <li>&ldquo;All sold out&rdquo; status on the card</li>
+            </ul>
+          </div>
+          <div class="uc-plan">Every plan</div>
+        </article>
+        <article class="uc-card">
+          <div class="uc-tag">Campaigns &amp; launches</div>
+          <h3>Lock the hero, freeze it when it matters</h3>
+          <p>Pin the campaign products at the top while the rest keeps moving. Running a promotion that needs a fixed order? Pause one collection, or every collection at once, and resume afterwards.</p>
+          <div class="uc-setup">
+            <div class="uc-setup-label">Suggested setup</div>
+            <ul>
+              <li>Pin the first few products</li>
+              <li>Pause all / Resume all</li>
+              <li>Undo any run if something looks off</li>
+            </ul>
+          </div>
+          <div class="uc-plan">Starter &amp; Pro</div>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <!-- 05 COMPARISON -->
+  <section>
+    <div class="wrap">
+      <div class="section-head">
+        <div class="section-num">05 — Market comparison</div>
         <h2 style="margin-top:10px;">How the alternatives stack up</h2>
       </div>
       <div class="table-wrap">
@@ -938,63 +1124,63 @@
               <td class="hl-col mark-yes">✓</td>
               <td class="mark-no">–</td>
               <td class="mark-no">–</td>
-              <td class="mark-yes">✓</td>
+              <td class="mark-varies">Varies</td>
             </tr>
             <tr>
               <td>Zero theme code</td>
               <td class="hl-col mark-yes">✓</td>
               <td class="mark-yes">✓</td>
               <td class="mark-no">–</td>
-              <td class="mark-mid">~</td>
+              <td class="mark-varies">Varies</td>
             </tr>
             <tr>
               <td>Zero page-weight cost</td>
               <td class="hl-col mark-yes">✓</td>
               <td class="mark-yes">✓</td>
               <td class="mark-no">–</td>
-              <td class="mark-mid">~</td>
+              <td class="mark-varies">Varies</td>
             </tr>
             <tr>
               <td>Works with any theme</td>
               <td class="hl-col mark-yes">✓</td>
               <td class="mark-yes">✓</td>
-              <td class="mark-mid">~</td>
-              <td class="mark-mid">~</td>
+              <td class="mark-varies">Varies</td>
+              <td class="mark-varies">Varies</td>
             </tr>
             <tr>
               <td>Pin &amp; tag-exclusion control</td>
               <td class="hl-col mark-yes">✓</td>
               <td class="mark-no">–</td>
               <td class="mark-no">–</td>
-              <td class="mark-yes">✓</td>
+              <td class="mark-varies">Varies</td>
             </tr>
             <tr>
               <td>Sold-out auto-demotion</td>
               <td class="hl-col mark-yes">✓</td>
               <td class="mark-no">–</td>
               <td class="mark-no">–</td>
-              <td class="mark-mid">~</td>
+              <td class="mark-varies">Varies</td>
             </tr>
             <tr>
               <td>Fairness / rotation insights</td>
               <td class="hl-col mark-yes">✓</td>
               <td class="mark-no">–</td>
               <td class="mark-no">–</td>
-              <td class="mark-no">–</td>
+              <td class="mark-varies">Varies</td>
             </tr>
             <tr>
               <td>Full run history + undo</td>
               <td class="hl-col mark-yes">✓</td>
               <td class="mark-no">–</td>
               <td class="mark-no">–</td>
-              <td class="mark-mid">~</td>
+              <td class="mark-varies">Varies</td>
             </tr>
             <tr>
               <td>Under $5 / month</td>
               <td class="hl-col mark-yes">✓</td>
               <td class="mark-yes">✓</td>
               <td class="mark-yes">✓</td>
-              <td class="mark-no">–</td>
+              <td class="mark-varies">Varies</td>
             </tr>
           </tbody>
         </table>
@@ -1007,9 +1193,9 @@
     <div class="wrap">
       <div class="insights-layout">
         <div>
-          <div class="section-num">05 — Insights</div>
+          <div class="section-num">06 — Insights</div>
           <h2 style="margin-top:10px;">Know if it's actually working</h2>
-          <p class="lede" style="margin-top:14px;">Every collection Shuffly touches gets measured, not just moved. Insights turns each run into a real answer to "is this fair, and is it working" — no spreadsheet required.</p>
+          <p class="lede" style="margin-top:14px;">Every collection Shuffly touches gets measured, not just moved. Insights turns each run into a real answer to "is this fair, and is it working" — no spreadsheet required, and it's included on every plan, Free too.</p>
           <div class="insights-list">
             <div class="insights-item">
               <div class="ico"><span></span></div>
@@ -1022,14 +1208,14 @@
               <div class="ico"><span></span></div>
               <div>
                 <h3>Typical &amp; longest wait</h3>
-                <p>The median gap between a product's turns, and exactly which product has been waiting longest for its next one.</p>
+                <p>The median gap between a product's turns, and exactly which products have waited longest — with one click to put them first on the next run.</p>
               </div>
             </div>
             <div class="insights-item">
               <div class="ico"><span></span></div>
               <div>
                 <h3>Sold-out reaction time</h3>
-                <p>Sold-out products are handled automatically after Shopify reports an inventory change.</p>
+                <p>How many seconds it took, on average, to move a product to the end after Shopify reported it sold out.</p>
               </div>
             </div>
             <div class="insights-item">
@@ -1041,7 +1227,13 @@
             </div>
           </div>
         </div>
-        <div>
+        <div data-shot>
+          <figure class="shot-frame">
+            <div class="shot-bar"><i></i><i></i><i></i><span>Shopify admin · Shuffly · Insights</span></div>
+            <img class="shot-img" src="/assets/screenshots/insights.png" width="1600" height="1000" loading="lazy" decoding="async"
+                 alt="Shuffly's Insights page: rotation fairness score, typical and longest wait, sold-out response time, and a grid of which products have had a turn">
+            <figcaption class="shot-cap">Screenshot from our demo store</figcaption>
+          </figure>
           <div class="mock">
             <div class="mock-tiles">
               <div class="mock-tile lead">
@@ -1058,7 +1250,7 @@
               </div>
               <div class="mock-tile">
                 <div class="bar"></div>
-                <div class="lbl">Longest wait</div>
+                <div class="lbl">Longest wait (all-time)</div>
                 <div class="val">11<span style="font-size:12px;font-weight:600;"> days</span></div>
                 <div class="dsc">Utility Cord 4m</div>
               </div>
@@ -1096,7 +1288,7 @@
   <section id="pricing">
     <div class="wrap">
       <div class="section-head">
-        <div class="section-num">06 — Pricing</div>
+        <div class="section-num">07 — Pricing</div>
         <h2 style="margin-top:10px;">Plans that scale with your catalogue</h2>
       </div>
       <div class="toggle-row">
@@ -1118,7 +1310,7 @@
             <li>Manual &ldquo;Shuffle now&rdquo; anytime</li>
             <li>Automatic sold-out handling</li>
           </ul>
-          <a class="btn btn-ghost" href="#contact">Get early access</a>
+          <a class="btn btn-ghost" href="#contact" data-cta>Get early access</a>
           <p class="price-cta-note">No payment collected here — Free stays $0, billed by Shopify.</p>
         </div>
 
@@ -1138,7 +1330,7 @@
             <li>Automatic sold-out handling</li>
             <li>7-day undo history</li>
           </ul>
-          <a class="btn btn-primary" href="#contact">Get early access</a>
+          <a class="btn btn-primary" href="#contact" data-cta>Get early access</a>
           <p class="price-cta-note">No payment collected here — subscribing happens inside Shopify, via Shopify Billing.</p>
         </div>
 
@@ -1152,12 +1344,13 @@
           <p class="price-desc">For larger catalogues that want full control over the schedule.</p>
           <ul class="price-feats">
             <li>Unlimited collections</li>
-            <li>Up to twice-daily schedule</li>
-            <li>Everything in Starter</li>
+            <li>Unlimited shuffles &mdash; as often as every hour</li>
             <li>30-day undo history</li>
-            <li>Priority support</li>
+            <li>Pin your best sellers to the top</li>
+            <li>Reshuffle automatically when new products arrive</li>
+            <li>Keep new arrivals on top</li>
           </ul>
-          <a class="btn btn-ghost" href="#contact">Get early access</a>
+          <a class="btn btn-ghost" href="#contact" data-cta>Get early access</a>
           <p class="price-cta-note">No payment collected here — subscribing happens inside Shopify, via Shopify Billing.</p>
         </div>
       </div>
@@ -1166,6 +1359,7 @@
         <span>Change plan instantly</span>
         <span>Billed through Shopify</span>
       </div>
+      <p class="price-included"><strong>Every plan includes</strong> Insights, automatic sold-out handling, never-move tags, a real preview before your first shuffle, run history with undo (1 day on Free, 7 on Starter, 30 on Pro), and the app in English or French. Downgrading never deletes anything — collections over the new limit are paused, and we tell you which first.</p>
       <p class="price-disclaimer">Every paid plan is billed exclusively through Shopify's own Billing API, approved on Shopify's native charge screen when you install the app — this site never collects payment details or arranges pricing directly.</p>
     </div>
   </section>
@@ -1174,7 +1368,7 @@
   <section id="faq" style="background:var(--grey-50);">
     <div class="wrap">
       <div class="section-head">
-        <div class="section-num">07 — FAQ</div>
+        <div class="section-num">08 — FAQ</div>
         <h2 style="margin-top:10px;">Questions merchants actually ask</h2>
       </div>
 
@@ -1237,7 +1431,7 @@
             <span>What data can Shuffly see?</span><span class="faq-toggle"></span>
           </button>
           <div class="faq-panel" id="faq-panel-6" role="region" aria-labelledby="faq-btn-6">
-            <p>Two permissions: read products and write products. No access to orders, customers, discounts, or any financial data.</p>
+            <p>Three permissions: read and write products (to see your collections and set their order) and read inventory (so a product that sells out can drop to the end without waiting for the next run). No access to orders, customers, discounts, your theme, or any financial data.</p>
           </div>
         </div>
 
@@ -1255,11 +1449,38 @@
             <span>Can I undo a run?</span><span class="faq-toggle"></span>
           </button>
           <div class="faq-panel" id="faq-panel-8" role="region" aria-labelledby="faq-btn-8">
-            <p>Yes. Every run is logged and can be undone — 1 day of history on Free, 7 days on Starter, 30 days on Pro.</p>
+            <p>Yes. Every run is logged and can be undone — 1 day of history on Free, 7 days on Starter, 30 days on Pro. Undoing also pauses that collection, so it doesn't reshuffle straight away while you take a look.</p>
+          </div>
+        </div>
+
+        <div class="faq-item" data-topic="how-it-works">
+          <button class="faq-q" id="faq-btn-10" aria-expanded="false" aria-controls="faq-panel-10">
+            <span>What if I reorder products myself?</span><span class="faq-toggle"></span>
+          </button>
+          <div class="faq-panel" id="faq-panel-10" role="region" aria-labelledby="faq-btn-10">
+            <p>Your changes stand until the next scheduled run, and pins are re-applied then. If you switch a collection away from Manual sort in Shopify, Shuffly pauses it instead of fighting you, and picks up again once it's back on Manual.</p>
+          </div>
+        </div>
+
+        <div class="faq-item" data-topic="how-it-works">
+          <button class="faq-q" id="faq-btn-11" aria-expanded="false" aria-controls="faq-panel-11">
+            <span>Can I stop it during a campaign?</span><span class="faq-toggle"></span>
+          </button>
+          <div class="faq-panel" id="faq-panel-11" role="region" aria-labelledby="faq-btn-11">
+            <p>Yes. Pause a single collection, pause every collection at once with Pause all, or switch a collection to &ldquo;Only when I press Shuffle&rdquo;. Resume whenever you're ready.</p>
           </div>
         </div>
 
         <div class="faq-item" data-topic="billing">
+          <button class="faq-q" id="faq-btn-12" aria-expanded="false" aria-controls="faq-panel-12">
+            <span>What happens if I downgrade?</span><span class="faq-toggle"></span>
+          </button>
+          <div class="faq-panel" id="faq-panel-12" role="region" aria-labelledby="faq-btn-12">
+            <p>Nothing is deleted. Collections over your new plan's limit are paused, schedules your plan doesn't include are adjusted, and the app shows you exactly what changed. Plan changes take effect immediately, from the Plan page inside the app.</p>
+          </div>
+        </div>
+
+        <div class="faq-item" data-topic="billing" data-early-only>
           <button class="faq-q" id="faq-btn-9" aria-expanded="false" aria-controls="faq-panel-9">
             <span>Is Shuffly on the Shopify App Store yet?</span><span class="faq-toggle"></span>
           </button>
@@ -1275,7 +1496,7 @@
           <h3>Still not sure?</h3>
           <p>Ask us anything before you install. We answer in one business day.</p>
         </div>
-        <a class="btn-email" href="mailto:team@mapetitecoree.com?subject=Shuffly%20question">Email us</a>
+        <a class="btn-email" href="mailto:team@mpctrades.com?subject=Shuffly%20question">Email us</a>
       </div>
     </div>
   </section>
@@ -1286,16 +1507,20 @@
       <div class="contact-inner">
         <div>
           <div class="contact-eyebrow">Get in touch</div>
-          <h2>Want it on your store first?</h2>
+          <h2 data-live-text="Questions before you install?">Want it on your store first?</h2>
           <p class="contact-lede">Tell us roughly how big your catalogue is and what you'd want rotating. We reply to everything, and we'll say so plainly if Shuffly isn't right for you.</p>
           <ul class="contact-checks">
-            <li>Early access is free while we build</li>
+            <li data-early-only>Early access is free while we build</li>
             <li>No card, no commitment, no sales call</li>
-            <li>Email us directly: <a href="mailto:team@mapetitecoree.com">team@mapetitecoree.com</a></li>
+            <li>Email us directly: <a href="mailto:team@mpctrades.com">team@mpctrades.com</a></li>
           </ul>
         </div>
 
-        <form class="contact-form" id="contact-form">
+        <form class="contact-form" id="contact-form" action="/api/contact" method="POST">
+          <div class="contact-hp" aria-hidden="true">
+            <label for="cf-bot">Leave this field empty</label>
+            <input type="checkbox" id="cf-bot" name="botcheck" tabindex="-1" autocomplete="off">
+          </div>
           <div class="contact-field">
             <label for="cf-name">Name</label>
             <input type="text" id="cf-name" name="name" placeholder="Your name" required>
@@ -1312,7 +1537,7 @@
             <label for="cf-topic">What's this about?</label>
             <select id="cf-topic" name="topic">
               <option>General question</option>
-              <option>Early access</option>
+              <option data-early-only>Early access</option>
               <option>Other</option>
             </select>
           </div>
@@ -1320,8 +1545,9 @@
             <label for="cf-message">Message</label>
             <textarea id="cf-message" name="message" placeholder="How many products and collections do you have, and what would you want rotating?" required></textarea>
           </div>
-          <button type="submit" class="contact-submit">Send message <span aria-hidden="true">&rarr;</span></button>
-          <p class="contact-note">We usually reply within a day.</p>
+          <button type="submit" class="contact-submit" id="cf-submit">Send message <span aria-hidden="true">&rarr;</span></button>
+          <p class="contact-status" id="cf-status" role="status" aria-live="polite"></p>
+          <p class="contact-note">We usually reply within a day. We only use your details to reply. See our <a href="https://dev.shuffly.mpctrades.com/privacy" target="_blank" rel="noopener">privacy policy</a>.</p>
         </form>
       </div>
     </div>
@@ -1331,12 +1557,13 @@
 
 <footer>
   <div class="wrap footer-row">
-    <p class="footer-disclaimer">Shuffly is currently submitted for Shopify App Store review. Not affiliated with or endorsed by Shopify Inc.</p>
+    <p class="footer-disclaimer"><span data-early-only>Shuffly is currently submitted for Shopify App Store review. </span>Not affiliated with or endorsed by Shopify Inc.</p>
     <div class="footer-links">
       <a href="#how-it-works">How it works</a>
       <a href="#pricing">Pricing</a>
       <a href="#faq">FAQ</a>
-      <a href="mailto:team@mapetitecoree.com">Contact</a>
+      <a href="mailto:team@mpctrades.com">Contact</a>
+      <a href="https://dev.shuffly.mpctrades.com/privacy" target="_blank" rel="noopener">Privacy policy</a>
     </div>
   </div>
 </footer>
@@ -1479,28 +1706,155 @@
 </script>
 
 <script>
-  // This is a static file with no backend to POST to, so "submitting" opens
-  // the visitor's own email client with the message pre-filled instead of
-  // silently failing against a form action that doesn't exist.
+  // Contact form -> /api/contact (same origin) -> emailed to team@mpctrades.com.
+  //
+  // Posts JSON over fetch so the visitor never leaves the page. The endpoint
+  // is the shared relay in contact-relay/, proxied by nginx on this same
+  // host, so there's no third-party form relay and no CORS. It brands the
+  // email per site from the Host header, so nothing here carries a product
+  // name and no key is needed client-side.
+  //
+  // If the request fails (offline, service down), we fall back to the
+  // visitor's own mail client with the message pre-filled, so something
+  // someone took the trouble to write never just disappears.
   (function () {
+    var SUPPORT_EMAIL = 'team@mpctrades.com';
+    var ENDPOINT = '/api/contact';
+    var ERRORS = {
+      rate_limited: 'You\u2019ve sent a few messages already \u2014 please give it an hour.',
+      invalid_fields: 'Please check your name, email and message.',
+      invalid_json: 'Sorry, that didn\u2019t go through.',
+      payload_too_large: 'That message is too long to send.',
+      send_failed: 'Sorry, that didn\u2019t go through.'
+    };
+
     var form = document.getElementById('contact-form');
     if (!form) return;
+
+    var button = document.getElementById('cf-submit');
+    var status = document.getElementById('cf-status');
+    var buttonHTML = button ? button.innerHTML : '';
+
+    function val(id) {
+      var el = document.getElementById(id);
+      return el ? String(el.value || '').trim() : '';
+    }
+
+    function say(kind, html) {
+      if (!status) return;
+      status.className = 'contact-status show ' + kind;
+      status.innerHTML = '<span>' + html + '</span>';
+    }
+
+    function clearStatus() {
+      if (!status) return;
+      status.className = 'contact-status';
+      status.innerHTML = '';
+    }
+
+    function busy(on) {
+      if (!button) return;
+      button.disabled = on;
+      button.innerHTML = on ? 'Sending…' : buttonHTML;
+    }
+
+    // Last resort: hand the message to the visitor's own mail client.
+    function mailtoFallback() {
+      var store = val('cf-store');
+      var topic = val('cf-topic');
+      var subject = 'Shuffly — ' + topic + (store ? ' — ' + store : '');
+      var lines = ['Name: ' + val('cf-name'), 'Email: ' + val('cf-email')];
+      if (store) lines.push('Store: ' + store);
+      lines.push('Topic: ' + topic, '', val('cf-message'));
+      return 'mailto:' + SUPPORT_EMAIL
+        + '?subject=' + encodeURIComponent(subject)
+        + '&body=' + encodeURIComponent(lines.join('\n'));
+    }
+
+    function failed(reason) {
+      say('bad', reason + ' You can send it straight to us instead — '
+        + '<a href="' + mailtoFallback() + '">open this in your email app</a>, '
+        + 'or write to <a href="mailto:' + SUPPORT_EMAIL + '">' + SUPPORT_EMAIL + '</a>.');
+    }
+
     form.addEventListener('submit', function (e) {
       e.preventDefault();
-      var name = form.name.value.trim();
-      var email = form.email.value.trim();
-      var store = form.store.value.trim();
-      var topic = form.topic.value;
-      var message = form.message.value.trim();
+      if (button && button.disabled) return;
+      clearStatus();
+      busy(true);
 
-      var subject = 'Shuffly — ' + topic + (store ? ' — ' + store : '');
-      var bodyLines = ['Name: ' + name, 'Email: ' + email];
-      if (store) bodyLines.push('Store: ' + store);
-      bodyLines.push('Topic: ' + topic, '', message);
+      var payload = {
+        name: val('cf-name'),
+        email: val('cf-email'),
+        store: val('cf-store'),
+        // Just the topic. The relay brands the email from the host it was
+        // posted to, so the product name doesn't belong in here any more.
+        topic: val('cf-topic'),
+        message: val('cf-message'),
+        company: (document.getElementById('cf-bot') && document.getElementById('cf-bot').checked) ? 'bot' : ''
+      };
 
-      window.location.href = 'mailto:team@mapetitecoree.com'
-        + '?subject=' + encodeURIComponent(subject)
-        + '&body=' + encodeURIComponent(bodyLines.join('\n'));
+      fetch(ENDPOINT, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify(payload)
+      })
+        .then(function (res) {
+          return res.json()
+            .catch(function () { return {}; })
+            .then(function (body) { return { ok: res.ok, body: body }; });
+        })
+        .then(function (r) {
+          if (r.ok && r.body && r.body.ok) {
+            form.reset();
+            say('ok', 'Thanks — your message is on its way to us. '
+              + 'We usually reply within one business day.');
+          } else if (r.body && r.body.error) {
+            // The relay answers with machine codes, not prose - translate
+            // them, or the visitor reads "invalid_fields" at us.
+            failed(ERRORS[r.body.error] || 'Sorry, that didn\u2019t go through.');
+          } else {
+            failed('Sorry, that didn’t go through.');
+          }
+        })
+        .catch(function () {
+          failed('Sorry, that didn’t go through.');
+        })
+        .then(function () { busy(false); });
+    });
+  })();
+</script>
+
+<script>
+  // Launch switch (config lives in <head>) — rewrites CTAs only in "live" mode,
+  // so early-access renders exactly the static markup above.
+  (function () {
+    var c = window.SHUFFLY_SITE || {};
+    if (document.documentElement.getAttribute("data-launch") !== "live") return;
+    document.querySelectorAll("[data-cta]").forEach(function (a) {
+      a.textContent = "Install on Shopify";
+      a.href = c.APP_STORE_URL;
+      a.target = "_blank";
+      a.rel = "noopener";
+    });
+    document.querySelectorAll("[data-live-text]").forEach(function (el) {
+      el.textContent = el.getAttribute("data-live-text");
+    });
+  })();
+
+  // Screenshot slots: swap a drawn mock-up for the real screenshot once one
+  // with real dimensions has loaded. The shipped placeholders are 1x1.
+  (function () {
+    document.querySelectorAll("[data-shot]").forEach(function (host) {
+      var img = host.querySelector(".shot-img");
+      if (!img) return;
+      function check() {
+        if (img.naturalWidth > 1) {
+          host.classList.add("has-shot");
+          host.removeAttribute("aria-hidden");
+        }
+      }
+      if (img.complete) check(); else img.addEventListener("load", check);
     });
   })();
 </script>

@@ -8,7 +8,9 @@ import type { AdminApiContext } from "@shopify/shopify-app-react-router/server";
 import type { CollectionConfig } from "@prisma/client";
 import db from "../db.server";
 import { getCollectionProductsInOrder } from "./collections.server";
-import { computeShuffledOrder, type ShuffleProductInput } from "./shuffle-algorithm.server";
+import { computeShuffledOrder } from "./shuffle-algorithm.server";
+import { buildShuffleInputs } from "./shuffle-inputs.server";
+import { canUseNewArrivals } from "./plans";
 
 export interface ShuffleAllPreview {
   collections: number;
@@ -48,6 +50,7 @@ export async function previewShuffleAll(
   neverMoveTagsCsv: string,
 ): Promise<ShuffleAllPreview> {
   const neverMoveTags = parseNeverMoveTags(neverMoveTagsCsv);
+  const plan = (await db.shopSettings.findUnique({ where: { shop }, select: { plan: true } }))?.plan;
   const preview: ShuffleAllPreview = {
     collections: 0,
     productsMoving: 0,
@@ -65,26 +68,17 @@ export async function previewShuffleAll(
     }
 
     const currentOrder = products.map((p) => p.id);
-    const now = Date.now();
-    const newArrivalMs = config.newArrivalDays * 86_400_000;
-    const productsById = new Map<string, ShuffleProductInput>(
-      products.map((p) => [
-        p.id,
-        {
-          id: p.id,
-          isSoldOut: p.tracksInventory && p.totalInventory <= 0,
-          isNew: now - new Date(p.createdAt).getTime() <= newArrivalMs,
-          neverMove: p.tags.some((t) => neverMoveTags.has(t.toLowerCase())),
-        },
-      ]),
-    );
-    const turnCounts: Record<string, number> = JSON.parse(config.turnCounts || "{}");
-    const result = computeShuffledOrder(currentOrder, productsById, turnCounts, {
-      pins: config.pins,
-      pushSoldOutToEnd: config.pushSoldOutToEnd,
-      boostNewArrivals: config.boostNewArrivals,
-      giveEveryoneATurn: config.giveEveryoneATurn,
+    const seen = config.keepNewOnTop ? await db.productSeen.findMany({ where: { collectionId: config.id } }) : [];
+    const { productsById, turnCounts, options } = buildShuffleInputs({
+      config,
+      products,
+      currentOrder,
+      neverMoveTags,
+      now: Date.now(),
+      seen,
+      newArrivalsAllowed: canUseNewArrivals(plan),
     });
+    const result = computeShuffledOrder(currentOrder, productsById, turnCounts, options);
 
     preview.collections += 1;
     preview.productsMoving += result.shuffledCount;

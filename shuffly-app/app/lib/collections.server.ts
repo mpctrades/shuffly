@@ -5,6 +5,9 @@
 // collections whose sortOrder is MANUAL.
 
 import type { AdminApiContext } from "@shopify/shopify-app-react-router/server";
+import { deflateRawSync, inflateRawSync } from "node:zlib";
+
+import { adminGraphql } from "./admin-graphql.server";
 
 export interface ShopifyProductSummary {
   id: string; // gid://shopify/Product/...
@@ -24,7 +27,7 @@ export interface ShopifyCollectionSummary {
 }
 
 export async function getShopTimezone(admin: AdminApiContext): Promise<string> {
-  const res = await admin.graphql(`#graphql
+  const res = await adminGraphql(admin, `#graphql
     query ShopTimezone { shop { ianaTimezone } }`);
   const json = await res.json();
   return json.data?.shop?.ianaTimezone ?? "UTC";
@@ -33,14 +36,14 @@ export async function getShopTimezone(admin: AdminApiContext): Promise<string> {
 /** The shop's own contact email — used as a fallback on the Settings page
  * when the current session isn't tied to a specific staff member's email. */
 export async function getShopContactEmail(admin: AdminApiContext): Promise<string | null> {
-  const res = await admin.graphql(`#graphql
+  const res = await adminGraphql(admin, `#graphql
     query ShopEmail { shop { email } }`);
   const json = await res.json();
   return json.data?.shop?.email ?? null;
 }
 
 export async function getTotalCollectionsCount(admin: AdminApiContext): Promise<number> {
-  const res = await admin.graphql(`#graphql
+  const res = await adminGraphql(admin, `#graphql
     query TotalCollections { collectionsCount { count } }`);
   const json = await res.json();
   return json.data?.collectionsCount?.count ?? 0;
@@ -75,7 +78,7 @@ export async function listAllCollections(
   for (;;) {
     const remaining = limit - out.length;
     if (remaining <= 0) break;
-    const res: Response = await admin.graphql(
+    const res: Response = await adminGraphql(admin,
       `#graphql
       query ShopCollections($first: Int!, $after: String, $query: String) {
         collections(first: $first, after: $after, sortKey: TITLE, query: $query) {
@@ -143,7 +146,7 @@ export async function hydrateTrackedCollections(
 ): Promise<Map<string, HydratedCollection>> {
   const out = new Map<string, HydratedCollection>();
   if (ids.length === 0) return out;
-  const res = await admin.graphql(
+  const res = await adminGraphql(admin,
     `#graphql
     query HydrateTrackedCollections($ids: [ID!]!, $thumbs: Int!) {
       nodes(ids: $ids) {
@@ -230,7 +233,7 @@ export async function fetchSortOrders(
   for (let i = 0; i < ids.length; i += 250) {
     const chunk = ids.slice(i, i + 250);
     if (chunk.length === 0) continue;
-    const res = await admin.graphql(
+    const res = await adminGraphql(admin,
       `#graphql
       query SortOrders($ids: [ID!]!) {
         nodes(ids: $ids) {
@@ -263,7 +266,7 @@ export async function getCollectionPreviewAndCount(
   collectionGid: string,
   previewSize = 16,
 ): Promise<{ sortOrder: string; totalCount: number; preview: ShopifyProductSummary[] }> {
-  const res = await admin.graphql(
+  const res = await adminGraphql(admin,
     `#graphql
     query CollectionPreview($id: ID!, $first: Int!) {
       collection(id: $id) {
@@ -297,16 +300,27 @@ export async function getCollectionPreviewAndCount(
   };
 }
 
+/** Products per page when reading a whole collection — Shopify's maximum,
+ * so a 1,000-product collection is 4 reads, not 10. */
+const PRODUCTS_PAGE_SIZE = 250;
+
+/**
+ * Every product in the collection, in its current order. No upper limit:
+ * until Update 2 this stopped at 2,000, which meant products past position
+ * 2,000 in a large collection were never shuffled, never reached the top,
+ * and never counted for fair rotation. `limit` stays only for callers that
+ * genuinely want a prefix.
+ */
 export async function getCollectionProductsInOrder(
   admin: AdminApiContext,
   collectionGid: string,
-  limit = 2000,
+  limit = Infinity,
 ): Promise<{ sortOrder: string; products: ShopifyProductSummary[] }> {
   const products: ShopifyProductSummary[] = [];
   let after: string | null = null;
   let sortOrder = "MANUAL";
   for (;;) {
-    const res: Response = await admin.graphql(
+    const res: Response = await adminGraphql(admin,
       `#graphql
       query CollectionProducts($id: ID!, $first: Int!, $after: String) {
         collection(id: $id) {
@@ -321,7 +335,7 @@ export async function getCollectionProductsInOrder(
           }
         }
       }`,
-      { variables: { id: collectionGid, first: 100, after } },
+      { variables: { id: collectionGid, first: PRODUCTS_PAGE_SIZE, after } },
     );
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- raw GraphQL JSON, no generated types for this ad-hoc query
     const json: any = await res.json();
@@ -355,7 +369,7 @@ export async function getCollectionGidsContainingProduct(
   admin: AdminApiContext,
   productGid: string,
 ): Promise<string[]> {
-  const res = await admin.graphql(
+  const res = await adminGraphql(admin,
     `#graphql
     query ProductCollections($id: ID!) {
       product(id: $id) {
@@ -380,7 +394,7 @@ export async function fetchProductThumbnails(
 ): Promise<Map<string, { title: string; imageUrl: string | null }>> {
   const out = new Map<string, { title: string; imageUrl: string | null }>();
   if (productGids.length === 0) return out;
-  const res = await admin.graphql(
+  const res = await adminGraphql(admin,
     `#graphql
     query ProductThumbnails($ids: [ID!]!) {
       nodes(ids: $ids) {
@@ -410,7 +424,7 @@ export async function setCollectionManualSort(
   admin: AdminApiContext,
   collectionGid: string,
 ): Promise<{ ok: boolean; error?: string; previousSortOrder?: string }> {
-  const currentRes = await admin.graphql(
+  const currentRes = await adminGraphql(admin,
     `#graphql
     query CurrentSortOrder($id: ID!) { collection(id: $id) { id sortOrder } }`,
     { variables: { id: collectionGid } },
@@ -418,7 +432,7 @@ export async function setCollectionManualSort(
   const currentJson = await currentRes.json();
   const previousSortOrder: string | undefined = currentJson.data?.collection?.sortOrder;
 
-  const res = await admin.graphql(
+  const res = await adminGraphql(admin,
     `#graphql
     mutation SetManualSort($id: ID!) {
       collectionUpdate(collection: {id: $id, sortOrder: MANUAL}) {
@@ -434,41 +448,195 @@ export async function setCollectionManualSort(
   return { ok: true, previousSortOrder };
 }
 
+export type ReorderMove = { id: string; newPosition: string };
+
 /**
- * Diff `currentOrder` -> `targetOrder` into the minimal list of
- * { id, newPosition } moves that collectionReorderProducts expects,
- * simulating the exact "remove then reinsert, applied sequentially"
- * semantics Shopify documents for this mutation.
+ * Apply moves exactly as Shopify documents collectionReorderProducts
+ * (Admin API 2026-07): each move is applied in order; `newPosition` is a
+ * zero-based index into the collection *as it is at that moment* (after the
+ * product has been taken out and after every earlier move); a position at
+ * or past the end means "last". Used by the tests to prove that what we send
+ * produces the order we meant — and by nothing in production.
  */
-export function diffToMoves(
-  currentOrder: string[],
-  targetOrder: string[],
-): Array<{ id: string; newPosition: string }> {
-  const moves: Array<{ id: string; newPosition: string }> = [];
+export function applyMoves(order: string[], moves: ReorderMove[]): string[] {
+  const working = order.slice();
+  for (const move of moves) {
+    const from = working.indexOf(move.id);
+    if (from === -1) continue;
+    working.splice(from, 1);
+    const to = Math.min(Number(move.newPosition), working.length);
+    working.splice(to, 0, move.id);
+  }
+  return working;
+}
+
+/** Indexes (into `seq`) of one longest strictly increasing subsequence.
+ * Patience sorting, O(n log n). */
+function longestIncreasingSubsequence(seq: number[]): number[] {
+  const tailIdx: number[] = []; // tailIdx[k] = index of the smallest tail of an LIS of length k+1
+  const prev = new Array<number>(seq.length).fill(-1);
+  for (let i = 0; i < seq.length; i++) {
+    let lo = 0;
+    let hi = tailIdx.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (seq[tailIdx[mid]] < seq[i]) lo = mid + 1;
+      else hi = mid;
+    }
+    if (lo > 0) prev[i] = tailIdx[lo - 1];
+    tailIdx[lo] = i;
+  }
+  const out: number[] = [];
+  for (let i = tailIdx.length ? tailIdx[tailIdx.length - 1] : -1; i !== -1; i = prev[i]) out.push(i);
+  return out.reverse();
+}
+
+/**
+ * Diff `currentOrder` -> `targetOrder` into the FEWEST moves
+ * collectionReorderProducts needs (brief §8, "only move what changes").
+ *
+ * The products that can stay put are a longest increasing subsequence of
+ * their target positions, read in current order — every other product has
+ * to move, and moving exactly those is optimal (n − LIS moves). The previous
+ * greedy left-to-right diff moved whatever wasn't in place yet, so taking
+ * one product from the top to the bottom cost n−1 moves instead of 1.
+ *
+ * Movers are sent in target order, each placed directly after its target
+ * predecessor (which is either a product that stays or a mover already
+ * placed), with `newPosition` computed against the order as it stands after
+ * the earlier moves — Shopify's sequential semantics, see applyMoves.
+ *
+ * Ids only in `currentOrder` are left where they are; ids only in
+ * `targetOrder` are ignored (they aren't in the collection to move).
+ */
+export function diffToMoves(currentOrder: string[], targetOrder: string[]): ReorderMove[] {
+  const present = new Set(currentOrder);
+  const seen = new Set<string>();
+  const target = targetOrder.filter((id) => present.has(id) && !seen.has(id) && Boolean(seen.add(id)));
+  const targetIndex = new Map(target.map((id, i) => [id, i]));
+
+  const inTarget = currentOrder.filter((id) => targetIndex.has(id));
+  const stay = new Set(longestIncreasingSubsequence(inTarget.map((id) => targetIndex.get(id)!)).map((i) => inTarget[i]));
+  if (stay.size === target.length) return [];
+
   const working = currentOrder.slice();
-  for (let i = 0; i < targetOrder.length; i++) {
-    if (working[i] === targetOrder[i]) continue;
-    const j = working.indexOf(targetOrder[i], i);
-    if (j === -1) continue; // shouldn't happen if both arrays hold the same ids
-    const [item] = working.splice(j, 1);
-    working.splice(i, 0, item);
-    moves.push({ id: item, newPosition: String(i) });
+  const position = (id: string) => working.indexOf(id);
+  const moves: ReorderMove[] = [];
+  for (let t = 0; t < target.length; t++) {
+    const id = target[t];
+    if (stay.has(id)) continue;
+    working.splice(position(id), 1);
+    const newPosition = t === 0 ? 0 : position(target[t - 1]) + 1;
+    working.splice(newPosition, 0, id);
+    moves.push({ id, newPosition: String(newPosition) });
   }
   return moves;
+}
+
+/** Shopify's documented cap for a single collectionReorderProducts call. A
+ * bigger reorder has to go out as several calls, and because moves are
+ * applied *sequentially* each chunk has to wait for the previous job to
+ * finish — otherwise the later chunks' newPosition values are computed
+ * against an order that's still shifting underneath them. */
+const MAX_MOVES_PER_CALL = 250;
+
+/** Two overlapping reorder jobs on one collection make Shopify answer
+ * TOO_MANY_ATTEMPTS_TO_REORDER_PRODUCTS ("Products are currently being
+ * reordered. Please try again later."), so every reorder for a given
+ * collection queues behind the one before it. Keyed by collection gid, so
+ * different collections still run concurrently — which is what the cron
+ * sweep and "Shuffle all now" actually do.
+ *
+ * In-process only: it covers the single always-on container this app
+ * deploys as (see scheduler.server.ts). The retry in sendMovesWithRetry is
+ * the backstop for anything this map can't see — another replica, or a
+ * merchant dragging products in Shopify admin at the same moment. */
+const reorderChains = new Map<string, Promise<unknown>>();
+
+function serializePerCollection<T>(collectionGid: string, task: () => Promise<T>): Promise<T> {
+  const previous = reorderChains.get(collectionGid) ?? Promise.resolve();
+  // Run `task` whether the previous reorder resolved *or* rejected — one
+  // thrown error must not wedge this collection's queue forever.
+  const result = previous.then(task, task);
+  const settled = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  reorderChains.set(collectionGid, settled);
+  void settled.then(() => {
+    // Only drop the entry if nothing else queued behind us meanwhile.
+    if (reorderChains.get(collectionGid) === settled) reorderChains.delete(collectionGid);
+  });
+  return result;
+}
+
+/** Backoff for TOO_MANY_ATTEMPTS_TO_REORDER_PRODUCTS. Three tries over ~11s:
+ * long enough to outlast a reorder job started a moment earlier, short
+ * enough that a cron sweep of many collections doesn't stall on one. */
+const REORDER_RETRY_DELAYS_MS = [1_000, 3_000, 7_000];
+
+export interface ReorderResult {
+  ok: boolean;
+  error?: string;
+  /** Shopify's own CollectionReorderProductsUserErrorCode, when it gave one —
+   * so callers can tell "currently being reordered" apart from "this
+   * collection isn't manually sorted". */
+  code?: string;
 }
 
 export async function reorderCollectionProducts(
   admin: AdminApiContext,
   collectionGid: string,
   moves: Array<{ id: string; newPosition: string }>,
-): Promise<{ ok: boolean; error?: string }> {
+): Promise<ReorderResult> {
   if (moves.length === 0) return { ok: true };
-  const res = await admin.graphql(
+
+  return serializePerCollection(collectionGid, async () => {
+    for (let offset = 0; offset < moves.length; offset += MAX_MOVES_PER_CALL) {
+      const chunk = moves.slice(offset, offset + MAX_MOVES_PER_CALL);
+      const isLastChunk = offset + MAX_MOVES_PER_CALL >= moves.length;
+      // Every chunk waits for its job, the last one included (Update 2).
+      // Middle chunks must — the next chunk's positions assume they've
+      // landed. The last one used to be fire-and-forget, which was fine at
+      // one run a day; with hourly runs and the new-products trigger the next
+      // run on this collection can start while it's still applying, and then
+      // reads a half-written order and trips TOO_MANY_ATTEMPTS.
+      const result = await sendMovesWithRetry(admin, collectionGid, chunk, !isLastChunk);
+      if (!result.ok) return result;
+    }
+    return { ok: true };
+  });
+}
+
+async function sendMovesWithRetry(
+  admin: AdminApiContext,
+  collectionGid: string,
+  moves: Array<{ id: string; newPosition: string }>,
+  mustWaitForJob: boolean,
+): Promise<ReorderResult> {
+  for (let attempt = 0; ; attempt++) {
+    const result = await sendMoves(admin, collectionGid, moves, mustWaitForJob);
+    if (result.ok || result.code !== "TOO_MANY_ATTEMPTS_TO_REORDER_PRODUCTS") return result;
+    const delay = REORDER_RETRY_DELAYS_MS[attempt];
+    if (delay == null) return result;
+    // Routine, not an error: Shopify is still applying an earlier reorder.
+    console.info(`[reorder] ${collectionGid} busy at Shopify, retrying in ${delay}ms (attempt ${attempt + 2})`);
+    await new Promise((resolve) => setTimeout(resolve, delay));
+  }
+}
+
+async function sendMoves(
+  admin: AdminApiContext,
+  collectionGid: string,
+  moves: Array<{ id: string; newPosition: string }>,
+  mustWaitForJob: boolean,
+): Promise<ReorderResult> {
+  const res = await adminGraphql(admin,
     `#graphql
     mutation ReorderCollectionProducts($id: ID!, $moves: [MoveInput!]!) {
       collectionReorderProducts(id: $id, moves: $moves) {
         job { id done }
-        userErrors { field message }
+        userErrors { field message code }
       }
     }`,
     { variables: { id: collectionGid, moves } },
@@ -477,25 +645,179 @@ export async function reorderCollectionProducts(
   const payload = json.data?.collectionReorderProducts;
   const errors = payload?.userErrors ?? [];
   if (errors.length) {
-    return { ok: false, error: errors.map((e: { message: string }) => e.message).join("; ") };
+    return {
+      ok: false,
+      error: errors.map((e: { message: string }) => e.message).join("; "),
+      code: errors[0]?.code ?? undefined,
+    };
   }
+
   const jobId = payload?.job?.id as string | undefined;
-  if (jobId && payload?.job?.done === false) {
-    await pollJob(admin, jobId);
+  if (jobId && payload?.job?.done !== true) {
+    // An intermediate chunk MUST land before the next one is computed, so
+    // give it longer and treat a timeout as a real failure. For the final
+    // chunk a timeout isn't one: the job is asynchronous by design and
+    // Shopify finishes it on its own — which is exactly why the UI says
+    // "changes can take a few minutes to appear on your store".
+    const done = await pollJob(admin, jobId, 60_000);
+    if (!done && !mustWaitForJob) {
+      // The final chunk: Shopify finishes it on its own, so a slow job is
+      // not a failed run. Logged as routine.
+      console.info(`[reorder] ${collectionGid} last job still running after 60s; Shopify will finish it`);
+    }
+    if (!done && mustWaitForJob) {
+      return {
+        ok: false,
+        error: "Shopify is still applying an earlier part of this reorder. Try again in a few minutes.",
+        code: "JOB_TIMEOUT",
+      };
+    }
   }
   return { ok: true };
 }
 
-async function pollJob(admin: AdminApiContext, jobId: string, maxWaitMs = 15_000): Promise<void> {
+/** Resolves true once Shopify reports the job done, false if `maxWaitMs`
+ * elapsed first (the job usually still completes — it just outlived our
+ * willingness to hold a request open for it). */
+async function pollJob(admin: AdminApiContext, jobId: string, maxWaitMs = 15_000): Promise<boolean> {
   const start = Date.now();
   while (Date.now() - start < maxWaitMs) {
-    const res = await admin.graphql(
+    const res = await adminGraphql(admin,
       `#graphql
       query PollJob($id: ID!) { job(id: $id) { id done } }`,
       { variables: { id: jobId } },
     );
     const json = await res.json();
-    if (json.data?.job?.done) return;
+    if (json.data?.job?.done) return true;
     await new Promise((r) => setTimeout(r, 500));
   }
+  return false;
+}
+
+// ---------------------------------------------------------------------------
+// Adding any collection: capturing what it looked like first, restoring it
+// afterwards, and doing a batch of them without hammering Shopify.
+// ---------------------------------------------------------------------------
+
+/** Product ids are stored without the "gid://shopify/Product/" prefix — a
+ * quarter of the bytes on a large collection, and the prefix is a constant. */
+const PRODUCT_GID_PREFIX = "gid://shopify/Product/";
+
+export function packProductIds(gids: string[]): string {
+  return JSON.stringify(gids.map((gid) => gid.replace(PRODUCT_GID_PREFIX, "")));
+}
+
+export function unpackProductIds(packed: string | null): string[] {
+  if (!packed) return [];
+  try {
+    const ids: unknown = JSON.parse(packed);
+    if (!Array.isArray(ids)) return [];
+    return ids.map((id) => `${PRODUCT_GID_PREFIX}${id}`);
+  } catch {
+    return [];
+  }
+}
+
+/** Prefix of the compact undo format; anything else is legacy JSON. */
+const UNDO_FORMAT = "z1:";
+
+/**
+ * Pack a run's "order before" for Undo (Update 2). Hourly runs keep up to
+ * 24 snapshots a day per collection for 30 days on Pro, so the format
+ * matters: numeric ids (no gid prefix), deflated, base64. Measured in
+ * undo-storage.test.ts: ~9.7 KB for 1,000 products against ~37 KB for the
+ * old JSON of full GIDs. Only what's needed to restore — the ordered ids.
+ */
+export function packUndoOrder(gids: string[]): string {
+  return UNDO_FORMAT + deflateRawSync(Buffer.from(packProductIds(gids))).toString("base64");
+}
+
+/** Reads both the compact format and the JSON array older runs stored. */
+export function unpackUndoOrder(stored: string | null): string[] {
+  if (!stored) return [];
+  if (!stored.startsWith(UNDO_FORMAT)) {
+    try {
+      const v: unknown = JSON.parse(stored);
+      return Array.isArray(v) ? v.map(String) : [];
+    } catch {
+      return [];
+    }
+  }
+  return unpackProductIds(inflateRawSync(Buffer.from(stored.slice(UNDO_FORMAT.length), "base64")).toString());
+}
+
+/**
+ * The order a collection had at the moment it was added to Shuffly.
+ *
+ * Deliberately separate from ShuffleRun.previousOrder: that one is a per-run
+ * snapshot which pruneExpiredUndoSnapshots deletes after the plan's retention
+ * window (one day on Free), so it can't back a "put it back how it was before
+ * Shuffly" promise months later. This is captured once and never pruned.
+ *
+ * Returns null when the order can't be read — the caller stores nothing
+ * rather than a partial list, and the remove dialog then says it has no
+ * snapshot instead of offering a restore it can't perform.
+ */
+export async function captureOriginalOrder(
+  admin: AdminApiContext,
+  collectionGid: string,
+): Promise<{ packed: string; count: number } | null> {
+  try {
+    const { products } = await getCollectionProductsInOrder(admin, collectionGid);
+    if (products.length === 0) return null;
+    return { packed: packProductIds(products.map((p) => p.id)), count: products.length };
+  } catch (err) {
+    console.error(`[collections] couldn't snapshot ${collectionGid} before switching:`, err);
+    return null;
+  }
+}
+
+/** Put a collection's sortOrder back to what it was before Shuffly switched
+ * it. Restoring an automatic sort makes product positions irrelevant —
+ * Shopify recomputes the order — which is why the remove flow offers the sort
+ * restore and the product-order restore as one choice, not two. */
+export async function restoreCollectionSort(
+  admin: AdminApiContext,
+  collectionGid: string,
+  sortOrder: string,
+): Promise<{ ok: boolean; error?: string }> {
+  const res = await adminGraphql(admin,
+    `#graphql
+    mutation RestoreCollectionSort($id: ID!, $sortOrder: CollectionSortOrder!) {
+      collectionUpdate(collection: {id: $id, sortOrder: $sortOrder}) {
+        collection { id sortOrder }
+        userErrors { field message }
+      }
+    }`,
+    { variables: { id: collectionGid, sortOrder } },
+  );
+  const json = await res.json();
+  const errors = json.data?.collectionUpdate?.userErrors ?? [];
+  if (errors.length) return { ok: false, error: errors.map((e: { message: string }) => e.message).join("; ") };
+  return { ok: true };
+}
+
+/**
+ * Run `task` over `items` with at most `limit` in flight, preserving result
+ * order. Adding twenty collections shouldn't fire twenty concurrent mutations
+ * at Shopify's rate limiter, and it shouldn't crawl through them one at a
+ * time either. Hand-rolled because p-map is only an npm override in this
+ * repo, not a dependency — not worth adding one for ten lines.
+ */
+export async function mapWithLimit<T, R>(
+  items: T[],
+  limit: number,
+  task: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let cursor = 0;
+  const workers = Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, async () => {
+    for (;;) {
+      const index = cursor++;
+      if (index >= items.length) return;
+      results[index] = await task(items[index], index);
+    }
+  });
+  await Promise.all(workers);
+  return results;
 }

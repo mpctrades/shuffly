@@ -1,10 +1,21 @@
 import type { AdminApiContext } from "@shopify/shopify-app-react-router/server";
 
+import type { CollectionConfig } from "@prisma/client";
 import db from "../db.server";
+import { withRunLockWaiting } from "./run-lock.server";
 import {
   getCollectionGidsContainingProduct,
   reorderCollectionProducts,
 } from "./collections.server";
+
+/** Every running collection with "sold-out to the end" on, for this shop. */
+const optedIn = (shop: string) => ({ shop, status: "RUNNING", pushSoldOutToEnd: true });
+
+/** Whether a sold-out webhook for this shop could change anything at all —
+ * checked before spending an Admin API call to find out what sold out. */
+export async function shopHasSoldOutReaction(shop: string): Promise<boolean> {
+  return (await db.collectionConfig.count({ where: optedIn(shop) })) > 0;
+}
 
 /**
  * Move a sold-out product to the end of every running, opted-in collection.
@@ -18,39 +29,92 @@ export async function reactToSoldOutProduct(
   shop: string,
   productGid: string,
 ): Promise<void> {
+  // Our own table first: a shop with nothing running "sold-out to the end"
+  // has no reason to ask Shopify which collections hold this product, and
+  // that lookup used to run on every sold-out webhook regardless.
+  const opted = await db.collectionConfig.findMany({ where: optedIn(shop) });
+  if (opted.length === 0) return;
+
   const memberGids = new Set(
     await getCollectionGidsContainingProduct(admin, productGid),
   );
-  if (memberGids.size === 0) return;
-
-  const candidates = await db.collectionConfig.findMany({
-    where: {
-      shop,
-      status: "RUNNING",
-      pushSoldOutToEnd: true,
-      collectionGid: { in: Array.from(memberGids) },
-    },
-  });
+  const candidates = opted.filter((config) => memberGids.has(config.collectionGid));
 
   for (const config of candidates) {
+    // Waits for (rather than skips) a run in progress: the product sold out
+    // and should still go to the end, just after that run has written its
+    // order — not interleaved with it. Re-read inside the lock, since the run
+    // we waited for has just replaced lastKnownOrder.
+    const outcome = await withRunLockWaiting(config.id, async () => {
+      const fresh = await db.collectionConfig.findUnique({ where: { id: config.id } });
+      if (fresh) await moveSoldOutToEnd(admin, shop, fresh, productGid);
+    });
+    if (!outcome.locked) {
+      console.info(`[sold-out] ${shop} ${config.collectionGid}: still busy after waiting, leaving it to the next run`);
+    }
+  }
+}
+
+async function moveSoldOutToEnd(
+  admin: AdminApiContext,
+  shop: string,
+  config: CollectionConfig,
+  productGid: string,
+): Promise<void> {
+  {
+    let lastKnownOrder: string[] | null = null;
+    try {
+      lastKnownOrder = config.lastKnownOrder ? JSON.parse(config.lastKnownOrder) : null;
+    } catch {
+      lastKnownOrder = null;
+    }
+
+    // products/update and inventory_levels/update both call this for the
+    // same underlying inventory change, and can arrive close together. If
+    // this product is already the last thing we wrote to Shopify for this
+    // collection, a previous call (from either webhook) already handled it —
+    // reacting again would be a duplicate write and a duplicate Activity
+    // row for nothing that actually changed. This doesn't close the window
+    // between two truly concurrent calls (there's no claim/lock), just the
+    // sequential-arrival case the two webhooks actually produce.
+    if (lastKnownOrder && lastKnownOrder.length > 0 && lastKnownOrder[lastKnownOrder.length - 1] === productGid) {
+      return;
+    }
+
     const started = Date.now();
     const result = await reorderCollectionProducts(admin, config.collectionGid, [
       { id: productGid, newPosition: "999999" },
     ]);
-    await db.shuffleRun.create({
-      data: {
-        shop,
-        collectionId: config.id,
-        trigger: "SOLD_OUT_REACTION",
-        status: result.ok ? "OK" : "FAILED",
-        movedCount: result.ok ? 1 : 0,
-        pinnedCount: 0,
-        soldOutCount: result.ok ? 1 : 0,
-        durationMs: Date.now() - started,
-        message: result.ok
-          ? "1 product sold out — moved to the end"
-          : result.error ?? "Failed to react to sell-out",
-      },
-    });
+    // Keep lastKnownOrder's own invariant ("exactly what we last wrote to
+    // Shopify") true after this targeted move too — otherwise the next full
+    // shuffle's drift check would mistake this for an external hand-drag.
+    const nextKnownOrder =
+      result.ok && lastKnownOrder ? [...lastKnownOrder.filter((id) => id !== productGid), productGid] : null;
+
+    await db.$transaction([
+      db.shuffleRun.create({
+        data: {
+          shop,
+          collectionId: config.id,
+          trigger: "SOLD_OUT_REACTION",
+          status: result.ok ? "OK" : "FAILED",
+          movedCount: result.ok ? 1 : 0,
+          pinnedCount: 0,
+          soldOutCount: result.ok ? 1 : 0,
+          durationMs: Date.now() - started,
+          message: result.ok
+            ? "1 product sold out — moved to the end"
+            : result.error ?? "Failed to react to sell-out",
+        },
+      }),
+      ...(nextKnownOrder
+        ? [
+            db.collectionConfig.update({
+              where: { id: config.id },
+              data: { lastKnownOrder: JSON.stringify(nextKnownOrder) },
+            }),
+          ]
+        : []),
+    ]);
   }
 }

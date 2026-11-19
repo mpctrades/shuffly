@@ -18,7 +18,7 @@ import { useAppBridge } from "@shopify/app-bridge-react";
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { getOrCreateShopSettings } from "../lib/shop-context.server";
-import { PLANS, planOf, type PlanDefinition, type PlanId } from "../lib/plans";
+import { PLANS, nextPlanOf, planOf, type PlanDefinition, type PlanId } from "../lib/plans";
 import {
   enforcePlanCollectionCap,
   enforcePlanEntitlements,
@@ -32,16 +32,6 @@ import {
   type BillingSummary,
 } from "../lib/billing.server";
 import { KeyValueRows } from "../components/KeyValueRows";
-
-/** The plan we'd pitch to a shop on `key`, or null when they're already at
- * the top of what's offered. AGENCY is legacy — nobody new lands on it, and
- * there's nothing above it — so it has no upsell either. */
-const NEXT_PUBLIC_TIER: Record<PlanId, PlanId | null> = {
-  FREE: "STARTER",
-  STARTER: "PRO",
-  PRO: null,
-  AGENCY: null,
-};
 
 // Shopify runs all three, so all three are honest to promise here.
 const TRUST_ITEMS = ["Cancel any time", "Change plan instantly", "Billed through Shopify"];
@@ -85,13 +75,17 @@ function upgradeBenefits(current: PlanDefinition, next: PlanDefinition): string[
     );
   }
 
-  const gainsTwiceDaily =
-    next.allowedSchedules.includes("TWICE_DAILY") &&
-    !current.allowedSchedules.includes("TWICE_DAILY");
+  const gainsInterval =
+    next.allowedSchedules.includes("INTERVAL") && !current.allowedSchedules.includes("INTERVAL");
   const gainsDaily =
     next.allowedSchedules.includes("DAILY") && !current.allowedSchedules.includes("DAILY");
-  if (gainsTwiceDaily) gains.push("Shuffle twice a day, not just once");
+  // "Unlimited" never appears without "as often as every hour" (listing rule).
+  if (gainsInterval) gains.push("Unlimited shuffles — as often as every hour");
   else if (gainsDaily) gains.push("Daily shuffles at a time you pick");
+  if (next.newArrivalsFeatures && !current.newArrivalsFeatures) {
+    gains.push("Reshuffle automatically when new products arrive");
+    gains.push("Keep new arrivals on top");
+  }
 
   if (next.canPin && !current.canPin) gains.push("Pin your best sellers to the top");
 
@@ -107,8 +101,8 @@ function upgradeBenefits(current: PlanDefinition, next: PlanDefinition): string[
  * straight from PLANS. Balances the "Your plan" card against the upsell and
  * answers "what am I actually on?" without a price table. */
 function currentPlanSummary(plan: PlanDefinition): string[] {
-  const schedule = plan.allowedSchedules.includes("TWICE_DAILY")
-    ? "Shuffle up to twice a day"
+  const schedule = plan.allowedSchedules.includes("INTERVAL")
+    ? "Unlimited shuffles — as often as every hour"
     : plan.allowedSchedules.includes("DAILY")
       ? "Daily shuffles at a time you pick"
       : "Weekly shuffles";
@@ -121,6 +115,10 @@ function currentPlanSummary(plan: PlanDefinition): string[] {
     `${plan.undoRetentionDays}-day undo history`,
   ];
   if (plan.canPin) lines.push("Pin your best sellers to the top");
+  if (plan.newArrivalsFeatures) {
+    lines.push("Reshuffle automatically when new products arrive");
+    lines.push("Keep new arrivals on top");
+  }
   return lines;
 }
 
@@ -162,7 +160,15 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     // any store still inside managed pricing's trial — hold a *test*
     // subscription, so `isTest: false` filters out the very plan the
     // merchant just picked and the page keeps insisting they're on Free.
+    // Forced, not throttled: the merchant is looking at the plan page, so
+    // the number on it has to be current rather than up to 15 minutes old.
+    // Same helper the embedded layout uses, so the two can't reconcile
+    // differently.
     const { appSubscriptions } = await billing.check({ isTest: true });
+    // Read before reconciling, so a downgrade notice can say what it was.
+    const previousPlan = planOf(
+      (await db.shopSettings.findUnique({ where: { shop }, select: { plan: true } }))?.plan,
+    ).id;
     const reconciled = await reconcilePlanFromSubscriptions(
       shop,
       appSubscriptions.map((s) => ({
@@ -180,7 +186,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     subscriptionId = reconciled.subscriptionId;
     billingSummary = reconciled.billing;
     await enforcePlanCollectionCap(shop, planId);
-    await enforcePlanEntitlements(shop, planId);
+    await enforcePlanEntitlements(shop, planId, previousPlan);
     await pruneExpiredUndoSnapshots(shop, planId);
   } catch (err) {
     // Fall back to whatever we last knew — better than a blank page.
@@ -249,8 +255,11 @@ export default function Plan() {
     navigation.state === "loading" && navigation.location?.pathname === "/app/plan";
 
   const plan = planOf(currentPlanId);
-  const nextTierId = NEXT_PUBLIC_TIER[currentPlanId];
-  const nextTier = nextTierId ? PLANS[nextTierId] : null;
+  // Was a hand-written FREE->STARTER->PRO map here. It duplicated the tier
+  // order that plans.ts already derives from PLANS by price, which is the
+  // same source the Collections plan bar upsells from — so the two could
+  // have disagreed about what to pitch. One derivation now.
+  const nextTier = nextPlanOf(currentPlanId);
   const benefits = nextTier ? upgradeBenefits(plan, nextTier) : [];
   const included = currentPlanSummary(plan);
 

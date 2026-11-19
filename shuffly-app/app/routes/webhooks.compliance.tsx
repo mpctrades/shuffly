@@ -37,6 +37,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           db.collectionConfig.deleteMany({ where: { shop } }),
           db.shopSettings.deleteMany({ where: { shop } }),
           db.session.deleteMany({ where: { shop } }),
+          db.processedWebhook.deleteMany({ where: { shop } }),
         ]);
         break;
       default:
